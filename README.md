@@ -1,4 +1,4 @@
-# @swarmmachina/uws-native
+# @swarmmachina/swm-uws
 
 Small, controlled Node-API binding for pinned uWebSockets and uSockets sources.
 It intentionally exposes only the API required by the v0.1 smoke test.
@@ -27,7 +27,7 @@ Windows ARM64 is not supported in v0.1.
 ## API
 
 ```js
-import { createApp, version } from '@swarmmachina/uws-native'
+import { createApp, version } from '@swarmmachina/swm-uws'
 
 console.log(version())
 
@@ -141,7 +141,7 @@ at startup with the detected platform, architecture, and Node module ABI:
 
 ```text
 No native binary for linux/x64/node-vXXX.
-Build @swarmmachina/uws-native for this target first.
+Build @swarmmachina/swm-uws for this target first.
 ```
 
 Vendored source provenance is recorded in `vendor/VERSIONS.md`.

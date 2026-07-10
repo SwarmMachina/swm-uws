@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - master
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -261,3 +263,41 @@ jobs:
           npm init -y
           npm install "$tgz" --omit=dev
           node smoke.mjs
+
+  publish:
+    name: Publish npm package
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package-smoke
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          test "$tag_version" = "$package_version"
+
+      - name: Download tested npm package
+        uses: actions/download-artifact@v4
+        with:
+          name: swm-uws-release-candidate
+          path: dist
+
+      - name: Publish npm package
+        shell: bash
+        run: |
+          tgz="$(find "$GITHUB_WORKSPACE/dist" -name '*.tgz' -type f -print -quit)"
+          test -n "$tgz"
+          npm publish "$tgz" --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

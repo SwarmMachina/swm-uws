@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { createApp, version } from '@swarmmachina/uws-native'
+import { createApp, version } from '@swarmmachina/swm-uws'
 
 assert.equal(version(), '0.1.0+uWebSockets-v20.67.0')
 

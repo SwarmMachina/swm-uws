@@ -1,5 +1,5 @@
 {
-  "name": "@swarmmachina/uws-native",
+  "name": "@swarmmachina/swm-uws",
   "version": "0.1.0",
   "description": "Minimal Node-API binding for pinned uWebSockets and uSockets sources",
   "type": "module",
@@ -30,7 +30,7 @@
     "test": "node test/smoke.js"
   },
   "devDependencies": {
-    "@swarmmachina/standards": "^1.0.3",
+    "@swarmmachina/standards": "^1.0.4",
     "node-addon-api": "^8.0.0",
     "node-gyp": "^11.0.0"
   }
