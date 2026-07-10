@@ -34,7 +34,7 @@ for (const artifact of expected) {
 
   try {
     bytes = readFileSync(path)
-  } catch (error) {
+  } catch {
     console.error(`Missing release prebuild: ${artifact.path}`)
     failed = true
     continue

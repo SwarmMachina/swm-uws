@@ -12,6 +12,7 @@ const serveOnly = process.argv.includes('--serve')
 const port = serveOnly ? Number(process.env.PORT || 3000) : 30_000 + (process.pid % 10_000)
 const host = serveOnly ? '0.0.0.0' : '127.0.0.1'
 const app = createApp()
+
 let completedResponse
 let closedSocket
 let closeCount = 0

@@ -15,12 +15,7 @@ if (!targetDirectory) {
   process.exit(0)
 }
 
-const destination = join(
-  root,
-  'prebuilds',
-  targetDirectory,
-  `node-v${process.versions.modules}.node`
-)
+const destination = join(root, 'prebuilds', targetDirectory, `node-v${process.versions.modules}.node`)
 
 mkdirSync(dirname(destination), { recursive: true })
 copyFileSync(source, destination)

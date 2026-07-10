@@ -1,4 +1,4 @@
-name: Windows prebuilds
+name: Prebuilds
 
 on:
   pull_request:
@@ -11,9 +11,86 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  quality:
+    name: Code quality
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check shared standards
+        run: npm run check
+
+  linux:
+    name: Linux x64 / Node.js ${{ matrix.node }}
+    runs-on: ubuntu-24.04
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: 22
+            abi: 127
+          - node: 24
+            abi: 137
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install build dependencies
+        run: npm ci
+
+      - name: Build native addon
+        run: npm run build:native
+
+      - name: Run HTTP and WebSocket smoke test
+        run: npm test
+
+      - name: Verify runtime-only installation
+        run: |
+          rm -rf build node_modules
+          npm ci --omit=dev
+          test ! -d node_modules/@swarmmachina/standards
+          test ! -d node_modules/node-addon-api
+          test ! -d node_modules/node-gyp
+          npm test
+
+      - name: Verify prebuild
+        run: |
+          path="prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node"
+          test -f "$path"
+          file "$path" | grep -q 'ELF 64-bit'
+          sha256sum "$path"
+
+      - name: Upload ABI prebuild
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64-node-v${{ matrix.abi }}
+          path: prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
     name: Windows x64 / Node.js ${{ matrix.node }}
     runs-on: windows-2022
+    needs: quality
     strategy:
       fail-fast: false
       matrix:
@@ -45,8 +122,11 @@ jobs:
       - name: Verify runtime-only installation
         shell: pwsh
         run: |
-          Remove-Item -Recurse -Force build
+          Remove-Item -Recurse -Force build, node_modules
           npm ci --omit=dev
+          if (Test-Path node_modules/@swarmmachina/standards) {
+            throw "@swarmmachina/standards leaked into the runtime installation"
+          }
           if (Test-Path node_modules/node-addon-api) {
             throw "node-addon-api leaked into the runtime installation"
           }
@@ -74,9 +154,11 @@ jobs:
           retention-days: 14
 
   package:
-    name: Assemble Windows package
+    name: Assemble npm package
     runs-on: ubuntu-24.04
-    needs: build
+    needs:
+      - linux
+      - windows
 
     steps:
       - name: Checkout
@@ -88,24 +170,32 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Download Node.js 22 prebuild
+      - name: Download Linux Node.js 22 prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x64-node-v127
+          path: prebuilds/linux-x64-glibc
+
+      - name: Download Linux Node.js 24 prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x64-node-v137
+          path: prebuilds/linux-x64-glibc
+
+      - name: Download Windows Node.js 22 prebuild
         uses: actions/download-artifact@v4
         with:
           name: windows-x64-node-v127
           path: prebuilds/win32-x64
 
-      - name: Download Node.js 24 prebuild
+      - name: Download Windows Node.js 24 prebuild
         uses: actions/download-artifact@v4
         with:
           name: windows-x64-node-v137
           path: prebuilds/win32-x64
 
-      - name: Verify package inputs
-        run: |
-          test -f prebuilds/linux-x64-glibc/node-v127.node
-          test -f prebuilds/linux-x64-glibc/node-v137.node
-          test -f prebuilds/win32-x64/node-v127.node
-          test -f prebuilds/win32-x64/node-v137.node
+      - name: Install dependencies
+        run: npm ci
 
       - name: Validate release prebuild formats
         run: npm run check:release
@@ -118,15 +208,56 @@ jobs:
       - name: Upload combined prebuilds
         uses: actions/upload-artifact@v4
         with:
-          name: windows-x64-prebuilds
-          path: prebuilds/win32-x64/*.node
+          name: release-prebuilds
+          path: prebuilds/**/*.node
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload npm package
         uses: actions/upload-artifact@v4
         with:
-          name: swm-uws-windows-release-candidate
+          name: swm-uws-release-candidate
           path: dist/*.tgz
           if-no-files-found: error
           retention-days: 14
+
+  package-smoke:
+    name: Package smoke / ${{ matrix.os }} / Node.js ${{ matrix.node }}
+    needs: package
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2022
+        node:
+          - 22
+          - 24
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Download npm package
+        uses: actions/download-artifact@v4
+        with:
+          name: swm-uws-release-candidate
+          path: dist
+
+      - name: Install and smoke-test packed package
+        shell: bash
+        run: |
+          tgz="$(find "$GITHUB_WORKSPACE/dist" -name '*.tgz' -type f -print -quit)"
+          test -n "$tgz"
+          mkdir consumer
+          cp test/installed-smoke.js consumer/smoke.mjs
+          cd consumer
+          npm init -y
+          npm install "$tgz" --omit=dev
+          node smoke.mjs

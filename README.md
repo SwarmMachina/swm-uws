@@ -112,16 +112,16 @@ The resulting file is copied to:
 prebuilds/win32-x64/node-v${process.versions.modules}.node
 ```
 
-The `Windows prebuilds` workflow builds Node.js 22 and 24 separately, runs the
-same HTTP/WebSocket smoke test, and uploads:
+The `Prebuilds` workflow builds Node.js 22 and 24 separately on native Linux
+and Windows x64 runners, runs the same HTTP/WebSocket smoke test, and uploads:
 
-- the two `win32-x64` prebuilds;
+- the two `linux-x64-glibc` and two `win32-x64` prebuilds;
 - a combined npm release-candidate tarball containing Linux and Windows files.
 
-Do not publish a package from a non-Windows checkout unless the two Windows
-workflow artifacts have first been placed under `prebuilds/win32-x64/`.
-The `prepublishOnly` guard verifies that all four ABI files exist and that the
-Linux files are ELF while the Windows files are PE binaries.
+The workflow installs the packed release candidate and smoke-tests it on both
+operating systems with Node.js 22 and 24. The `prepublishOnly` guard verifies
+that all four ABI files exist and that the Linux files are ELF while the
+Windows files are PE binaries.
 
 ## Docker smoke
 

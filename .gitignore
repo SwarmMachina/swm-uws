@@ -1,4 +1,27 @@
+# Node
 node_modules/
-build/
-.DS_Store
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+
+# System
+.DS_Store
+Thumbs.db
+
+# Temp
+dist/
+tmp/
+temp/
+
+# Coverage / Test
+coverage/
+*.lcov
+
+# Native build
+build/
