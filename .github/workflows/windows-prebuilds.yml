@@ -36,7 +36,9 @@ jobs:
 
   linux:
     name: Linux x64 / Node.js ${{ matrix.node }}
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: swm-ci
+      labels: swm-linux
     needs: quality
     strategy:
       fail-fast: false
@@ -92,7 +94,9 @@ jobs:
 
   windows:
     name: Windows x64 / Node.js ${{ matrix.node }}
-    runs-on: [self-hosted, Windows, X64, swm-uws-release]
+    runs-on:
+      group: swm-ci
+      labels: swm-win
     needs: quality
     strategy:
       fail-fast: false
@@ -227,22 +231,24 @@ jobs:
   package-smoke:
     name: Package smoke / ${{ matrix.os }} / Node.js ${{ matrix.node }}
     needs: package
-    runs-on: ${{ matrix.runner }}
+    runs-on:
+      group: swm-ci
+      labels: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
-            runner: ubuntu-24.04
+            runner: swm-linux
             node: 22
           - os: ubuntu-24.04
-            runner: ubuntu-24.04
+            runner: swm-linux
             node: 24
           - os: windows-self-hosted
-            runner: swm-uws-release
+            runner: swm-win
             node: 22
           - os: windows-self-hosted
-            runner: swm-uws-release
+            runner: swm-win
             node: 24
 
     steps:
