@@ -1,0 +1,132 @@
+name: Windows prebuilds
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows x64 / Node.js ${{ matrix.node }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: 22
+            abi: 127
+          - node: 24
+            abi: 137
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install build dependencies
+        run: npm ci
+
+      - name: Build native addon
+        run: npm run build:native
+
+      - name: Run HTTP and WebSocket smoke test
+        run: npm test
+
+      - name: Verify runtime-only installation
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force build
+          npm ci --omit=dev
+          if (Test-Path node_modules/node-addon-api) {
+            throw "node-addon-api leaked into the runtime installation"
+          }
+          if (Test-Path node_modules/node-gyp) {
+            throw "node-gyp leaked into the runtime installation"
+          }
+          npm test
+
+      - name: Verify prebuild
+        shell: pwsh
+        run: |
+          $path = "prebuilds/win32-x64/node-v${{ matrix.abi }}.node"
+          if (-not (Test-Path $path)) {
+            throw "Missing expected prebuild: $path"
+          }
+          Get-Item $path
+          Get-FileHash -Algorithm SHA256 $path
+
+      - name: Upload ABI prebuild
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-node-v${{ matrix.abi }}
+          path: prebuilds/win32-x64/node-v${{ matrix.abi }}.node
+          if-no-files-found: error
+          retention-days: 14
+
+  package:
+    name: Assemble Windows package
+    runs-on: ubuntu-24.04
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Download Node.js 22 prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x64-node-v127
+          path: prebuilds/win32-x64
+
+      - name: Download Node.js 24 prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x64-node-v137
+          path: prebuilds/win32-x64
+
+      - name: Verify package inputs
+        run: |
+          test -f prebuilds/linux-x64-glibc/node-v127.node
+          test -f prebuilds/linux-x64-glibc/node-v137.node
+          test -f prebuilds/win32-x64/node-v127.node
+          test -f prebuilds/win32-x64/node-v137.node
+
+      - name: Validate release prebuild formats
+        run: npm run check:release
+
+      - name: Pack release candidate
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination dist
+
+      - name: Upload combined prebuilds
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-prebuilds
+          path: prebuilds/win32-x64/*.node
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload npm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: swm-uws-windows-release-candidate
+          path: dist/*.tgz
+          if-no-files-found: error
+          retention-days: 14

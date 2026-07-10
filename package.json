@@ -1,0 +1,34 @@
+{
+  "name": "@swarmmachina/uws-native",
+  "version": "0.1.0",
+  "description": "Minimal Node-API binding for pinned uWebSockets and uSockets sources",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "files": [
+    "LICENSES/",
+    "lib/",
+    "prebuilds/",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "install": "node -e \"\"",
+    "build:native": "node-gyp rebuild && node scripts/copy-prebuild.js",
+    "build:prebuilds": "npm run build:prebuilds:linux",
+    "build:prebuilds:linux": "node scripts/build-linux-prebuilds.js",
+    "check:release": "node scripts/check-release-prebuilds.js",
+    "clean": "node-gyp clean",
+    "prepublishOnly": "npm run check:release",
+    "test": "node test/smoke.js"
+  },
+  "devDependencies": {
+    "node-addon-api": "^8.0.0",
+    "node-gyp": "^11.0.0"
+  }
+}

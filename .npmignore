@@ -1,0 +1,6 @@
+binding.gyp
+Dockerfile
+scripts/
+src/
+test/
+vendor/
