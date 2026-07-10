@@ -92,7 +92,7 @@ jobs:
 
   windows:
     name: Windows x64 / Node.js ${{ matrix.node }}
-    runs-on: windows-2022
+    runs-on: [self-hosted, Windows, X64, swm-uws-release]
     needs: quality
     strategy:
       fail-fast: false
@@ -123,7 +123,7 @@ jobs:
         run: npm test
 
       - name: Verify runtime-only installation
-        shell: pwsh
+        shell: powershell
         run: |
           Remove-Item -Recurse -Force build, node_modules
           npm ci --omit=dev
@@ -139,7 +139,7 @@ jobs:
           npm test
 
       - name: Verify prebuild
-        shell: pwsh
+        shell: powershell
         run: |
           $path = "prebuilds/win32-x64/node-v${{ matrix.abi }}.node"
           if (-not (Test-Path $path)) {
@@ -227,16 +227,23 @@ jobs:
   package-smoke:
     name: Package smoke / ${{ matrix.os }} / Node.js ${{ matrix.node }}
     needs: package
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-24.04
-          - windows-2022
-        node:
-          - 22
-          - 24
+        include:
+          - os: ubuntu-24.04
+            runner: ubuntu-24.04
+            node: 22
+          - os: ubuntu-24.04
+            runner: ubuntu-24.04
+            node: 24
+          - os: windows-self-hosted
+            runner: swm-uws-release
+            node: 22
+          - os: windows-self-hosted
+            runner: swm-uws-release
+            node: 24
 
     steps:
       - name: Checkout
@@ -253,7 +260,8 @@ jobs:
           name: swm-uws-release-candidate
           path: dist
 
-      - name: Install and smoke-test packed package
+      - name: Install and smoke-test packed package on Linux
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           tgz="$(find "$GITHUB_WORKSPACE/dist" -name '*.tgz' -type f -print -quit)"
@@ -263,6 +271,21 @@ jobs:
           cd consumer
           npm init -y
           npm install "$tgz" --omit=dev
+          node smoke.mjs
+
+      - name: Install and smoke-test packed package on Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $tgz = Get-ChildItem "$env:GITHUB_WORKSPACE\dist" -Filter '*.tgz' -File | Select-Object -First 1
+          if (-not $tgz) {
+            throw 'Missing packed npm package'
+          }
+          New-Item -ItemType Directory consumer | Out-Null
+          Copy-Item test/installed-smoke.js consumer/smoke.mjs
+          Set-Location consumer
+          npm.cmd init -y
+          npm.cmd install $tgz.FullName --omit=dev
           node smoke.mjs
 
   publish:
