@@ -45,12 +45,141 @@ void ThrowTypeError(Napi::Env env, const char *message) {
     Napi::TypeError::New(env, message).ThrowAsJavaScriptException();
 }
 
-Napi::Value ResponseEnd(const Napi::CallbackInfo &info) {
-    Napi::Env env = info.Env();
+HttpResponseState *GetValidHttpResponseState(const Napi::CallbackInfo &info) {
     auto *state = static_cast<HttpResponseState *>(info.Data());
 
     if (!state || !state->valid || !state->response) {
-        Napi::Error::New(env, "HTTP response is no longer valid").ThrowAsJavaScriptException();
+        Napi::Error::New(info.Env(), "HTTP response is no longer valid")
+            .ThrowAsJavaScriptException();
+        return nullptr;
+    }
+
+    return state;
+}
+
+bool IsHttpTokenCharacter(unsigned char character) {
+    if ((character >= '0' && character <= '9') ||
+        (character >= 'A' && character <= 'Z') ||
+        (character >= 'a' && character <= 'z')) {
+        return true;
+    }
+
+    switch (character) {
+        case '!':
+        case '#':
+        case '$':
+        case '%':
+        case '&':
+        case '\'':
+        case '*':
+        case '+':
+        case '-':
+        case '.':
+        case '^':
+        case '_':
+        case '`':
+        case '|':
+        case '~':
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsValidHeaderName(std::string_view name) {
+    if (name.empty()) {
+        return false;
+    }
+
+    for (unsigned char character : name) {
+        if (!IsHttpTokenCharacter(character)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool ContainsInvalidHeaderValueCharacter(std::string_view value) {
+    for (unsigned char character : value) {
+        if ((character < 0x20 && character != '\t') || character == 0x7f) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool IsValidStatus(std::string_view status) {
+    if (status.length() < 3 || status[0] < '1' || status[0] > '9' ||
+        status[1] < '0' || status[1] > '9' || status[2] < '0' || status[2] > '9') {
+        return false;
+    }
+
+    if (status.length() > 3 && status[3] != ' ') {
+        return false;
+    }
+
+    return !ContainsInvalidHeaderValueCharacter(status);
+}
+
+Napi::Value ResponseWriteStatus(const Napi::CallbackInfo &info) {
+    HttpResponseState *state = GetValidHttpResponseState(info);
+
+    if (!state) {
+        return info.Env().Undefined();
+    }
+
+    if (info.Length() != 1 || !info[0].IsString()) {
+        ThrowTypeError(info.Env(), "res.writeStatus(status) expects a string");
+        return info.Env().Undefined();
+    }
+
+    std::string status = info[0].As<Napi::String>().Utf8Value();
+
+    if (!IsValidStatus(status)) {
+        ThrowTypeError(info.Env(), "res.writeStatus(status) expects a three-digit status without control characters");
+        return info.Env().Undefined();
+    }
+
+    state->response->writeStatus(status);
+    return info.This();
+}
+
+Napi::Value ResponseWriteHeader(const Napi::CallbackInfo &info) {
+    HttpResponseState *state = GetValidHttpResponseState(info);
+
+    if (!state) {
+        return info.Env().Undefined();
+    }
+
+    if (info.Length() != 2 || !info[0].IsString() || !info[1].IsString()) {
+        ThrowTypeError(info.Env(), "res.writeHeader(name, value) expects two strings");
+        return info.Env().Undefined();
+    }
+
+    std::string name = info[0].As<Napi::String>().Utf8Value();
+    std::string value = info[1].As<Napi::String>().Utf8Value();
+
+    if (!IsValidHeaderName(name)) {
+        ThrowTypeError(info.Env(), "res.writeHeader(name, value) expects a valid HTTP header name");
+        return info.Env().Undefined();
+    }
+
+    if (ContainsInvalidHeaderValueCharacter(value)) {
+        ThrowTypeError(info.Env(), "res.writeHeader(name, value) does not allow control characters in value");
+        return info.Env().Undefined();
+    }
+
+    state->response->writeHeader(name, value);
+    return info.This();
+}
+
+Napi::Value ResponseEnd(const Napi::CallbackInfo &info) {
+    Napi::Env env = info.Env();
+    HttpResponseState *state = GetValidHttpResponseState(info);
+
+    if (!state) {
         return env.Undefined();
     }
 
@@ -68,7 +197,7 @@ Napi::Value ResponseEnd(const Napi::CallbackInfo &info) {
     state->response->end(body);
     state->response = nullptr;
     state->valid = false;
-    return env.Undefined();
+    return info.This();
 }
 
 Napi::Object CreateResponseObject(Napi::Env env, HttpResponse *response, HttpResponseState **stateOut) {
@@ -82,6 +211,8 @@ Napi::Object CreateResponseObject(Napi::Env env, HttpResponse *response, HttpRes
         });
 
     object.Set(Napi::Symbol::New(env, "swm.http-response-state"), external);
+    object.Set("writeStatus", Napi::Function::New(env, ResponseWriteStatus, "writeStatus", state));
+    object.Set("writeHeader", Napi::Function::New(env, ResponseWriteHeader, "writeHeader", state));
     object.Set("end", Napi::Function::New(env, ResponseEnd, "end", state));
     *stateOut = state;
     return object;
@@ -223,10 +354,17 @@ public:
                 InstanceMethod("get", &AppWrap::Get),
                 InstanceMethod("ws", &AppWrap::Ws),
                 InstanceMethod("listen", &AppWrap::Listen),
+                InstanceMethod("close", &AppWrap::Close),
             });
     }
 
 private:
+    enum class Lifecycle {
+        Created,
+        Listening,
+        Closed,
+    };
+
     Napi::FunctionReference *StoreFunction(const Napi::Value &value) {
         auto reference = std::make_unique<Napi::FunctionReference>(
             Napi::Persistent(value.As<Napi::Function>()));
@@ -310,6 +448,7 @@ private:
             SocketState *state = nullptr;
             Napi::Object socketObject = CreateSocketObject(env, socket, &state);
             socket->getUserData()->state = state;
+            activeSockets_++;
 
             if (openHandler) {
                 openHandler->Call({socketObject});
@@ -359,6 +498,8 @@ private:
             }
 
             state->object.Reset();
+            activeSockets_--;
+            ReleaseSelfReferenceIfClosed();
         };
 
         app_->ws<PerSocketData>(path, std::move(behavior));
@@ -373,8 +514,15 @@ private:
             return env.Undefined();
         }
 
-        if (listening_) {
-            Napi::Error::New(env, "app.listen() has already succeeded").ThrowAsJavaScriptException();
+        if (lifecycle_ == Lifecycle::Listening) {
+            Napi::Error::New(env, "app.listen() has already succeeded")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+
+        if (lifecycle_ == Lifecycle::Closed) {
+            Napi::Error::New(env, "app.listen() cannot be called after app.close()")
+                .ThrowAsJavaScriptException();
             return env.Undefined();
         }
 
@@ -397,9 +545,11 @@ private:
         app_->listen(host, port, [this, callback](us_listen_socket_t *socket) {
             Napi::Env env(env_);
 
-            if (socket && !listening_) {
-                listening_ = true;
+            if (socket && lifecycle_ == Lifecycle::Created) {
+                listenSocket_ = socket;
+                lifecycle_ = Lifecycle::Listening;
                 Ref();
+                selfReferenced_ = true;
             }
 
             callback->Call({Napi::Boolean::New(env, socket != nullptr)});
@@ -408,10 +558,41 @@ private:
         return info.This();
     }
 
+    Napi::Value Close(const Napi::CallbackInfo &info) {
+        if (info.Length() != 0) {
+            ThrowTypeError(info.Env(), "app.close() does not accept arguments");
+            return info.Env().Undefined();
+        }
+
+        if (lifecycle_ == Lifecycle::Closed) {
+            return info.This();
+        }
+
+        lifecycle_ = Lifecycle::Closed;
+
+        if (listenSocket_) {
+            us_listen_socket_close(0, listenSocket_);
+            listenSocket_ = nullptr;
+        }
+
+        ReleaseSelfReferenceIfClosed();
+        return info.This();
+    }
+
+    void ReleaseSelfReferenceIfClosed() {
+        if (lifecycle_ == Lifecycle::Closed && activeSockets_ == 0 && selfReferenced_) {
+            selfReferenced_ = false;
+            Unref();
+        }
+    }
+
     napi_env env_;
     std::unique_ptr<uWS::App> app_;
     std::vector<std::unique_ptr<Napi::FunctionReference>> handlers_;
-    bool listening_ = false;
+    us_listen_socket_t *listenSocket_ = nullptr;
+    std::size_t activeSockets_ = 0;
+    Lifecycle lifecycle_ = Lifecycle::Created;
+    bool selfReferenced_ = false;
 };
 
 Napi::Value CreateApp(const Napi::CallbackInfo &info) {

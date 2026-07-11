@@ -28,5 +28,5 @@ const response = await fetch(`http://127.0.0.1:${port}/`, {
 
 assert.equal(response.status, 200)
 assert.equal(await response.text(), 'ok')
+assert.equal(app.close(), app)
 console.log(`installed package smoke ok: ${version()}`)
-process.exit(0)

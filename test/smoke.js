@@ -22,6 +22,19 @@ app.get('/', (res) => {
   res.end('ok')
 })
 
+app.get('/metadata', (res) => {
+  assert.throws(() => res.writeStatus(418), /expects a string/)
+  assert.throws(() => res.writeStatus('418\r\nX-Injected: yes'), /without control characters/)
+  assert.throws(() => res.writeHeader('invalid name', 'value'), /valid HTTP header name/)
+  assert.throws(() => res.writeHeader('x-test', 'value\r\nX-Injected: yes'), /control characters/)
+
+  assert.equal(res.writeStatus('418 I am a teapot'), res)
+  assert.equal(res.writeHeader('content-type', 'application/json'), res)
+  assert.equal(res.writeHeader('x-swm-test', 'metadata'), res)
+  assert.equal(res.end('{"ok":false}'), res)
+  assert.throws(() => res.writeHeader('x-late', 'value'), /HTTP response is no longer valid/)
+})
+
 app.ws('/ws', {
   open(ws) {
     ws.send('open')
@@ -68,6 +81,15 @@ async function runSelfTest() {
   assert.equal(await response.text(), 'ok')
   assert.throws(() => completedResponse.end('late'), /HTTP response is no longer valid/)
 
+  const metadataResponse = await fetch(`http://127.0.0.1:${port}/metadata`, {
+    signal: AbortSignal.timeout(5_000)
+  })
+
+  assert.equal(metadataResponse.status, 418)
+  assert.equal(metadataResponse.headers.get('content-type'), 'application/json')
+  assert.equal(metadataResponse.headers.get('x-swm-test'), 'metadata')
+  assert.deepEqual(await metadataResponse.json(), { ok: false })
+
   const client = new WebSocket(`ws://127.0.0.1:${port}/ws`)
   client.binaryType = 'arraybuffer'
   const greeting = nextMessage(client)
@@ -89,6 +111,14 @@ async function runSelfTest() {
   client.send(Uint8Array.from([1, 2, 3, 255]))
   assert.deepEqual(new Uint8Array(await binaryEcho), Uint8Array.from([1, 2, 3, 255]))
 
+  assert.equal(app.close(), app)
+  assert.equal(app.close(), app)
+  assert.throws(() => app.listen(host, port, () => {}), /app\.listen\(\) cannot be called after app\.close\(\)/)
+
+  const echoAfterClose = nextMessage(client)
+  client.send('still connected')
+  assert.equal(await echoAfterClose, 'still connected')
+
   await new Promise((resolve) => {
     client.addEventListener('close', resolve, { once: true })
     client.close(1000, 'done')
@@ -99,5 +129,4 @@ async function runSelfTest() {
   assert.throws(() => closedSocket.send('late'), /WebSocket is no longer valid/)
 
   console.log(`smoke ok: ${version()}, HTTP + WebSocket on ${port}`)
-  process.exit(0)
 }

@@ -34,7 +34,7 @@ console.log(version())
 const app = createApp()
 
 app.get('/', (res) => {
-  res.end('ok')
+  res.writeStatus('200 OK').writeHeader('content-type', 'application/json').end('{"ok":true}')
 })
 
 app.ws('/ws', {
@@ -52,11 +52,24 @@ app.ws('/ws', {
 app.listen('0.0.0.0', 3000, (ok) => {
   if (!ok) process.exit(1)
 })
+
+process.on('SIGTERM', () => {
+  // Stop accepting new connections. Existing WebSockets may finish normally.
+  app.close()
+})
 ```
 
 HTTP handlers are synchronous in v0.1. A response wrapper becomes invalid when
 its route callback returns. A WebSocket wrapper becomes invalid before its
 `close` callback runs.
+
+HTTP responses support `writeStatus(status)`, `writeHeader(name, value)`, and
+`end(body)`. These methods return the response for chaining. Status and header
+values containing control characters are rejected.
+
+`app.close()` is idempotent. It closes the listening socket immediately and
+allows active WebSockets to finish before releasing the native app. A closed
+app cannot listen again.
 
 No other uWebSockets.js API is implemented.
 
