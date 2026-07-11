@@ -14,6 +14,7 @@ const host = serveOnly ? '0.0.0.0' : '127.0.0.1'
 const app = createApp()
 
 let completedResponse
+let completedRequest
 let closedSocket
 let closeCount = 0
 
@@ -22,7 +23,14 @@ app.get('/', (res) => {
   res.end('ok')
 })
 
-app.get('/metadata', (res) => {
+app.get('/metadata', (res, req) => {
+  completedRequest = req
+  assert.equal(req.getMethod(), 'get')
+  assert.equal(req.getUrl(), '/metadata')
+  assert.equal(req.getHeader('X-Request-Test'), 'request-metadata')
+  assert.equal(req.getHeader('x-missing'), '')
+  assert.throws(() => req.getHeader('invalid name'), /valid HTTP header name/)
+
   assert.throws(() => res.writeStatus(418), /expects a string/)
   assert.throws(() => res.writeStatus('418\r\nX-Injected: yes'), /without control characters/)
   assert.throws(() => res.writeHeader('invalid name', 'value'), /valid HTTP header name/)
@@ -82,6 +90,7 @@ async function runSelfTest() {
   assert.throws(() => completedResponse.end('late'), /HTTP response is no longer valid/)
 
   const metadataResponse = await fetch(`http://127.0.0.1:${port}/metadata`, {
+    headers: { 'x-request-test': 'request-metadata' },
     signal: AbortSignal.timeout(5_000)
   })
 
@@ -89,6 +98,7 @@ async function runSelfTest() {
   assert.equal(metadataResponse.headers.get('content-type'), 'application/json')
   assert.equal(metadataResponse.headers.get('x-swm-test'), 'metadata')
   assert.deepEqual(await metadataResponse.json(), { ok: false })
+  assert.throws(() => completedRequest.getUrl(), /HTTP request is no longer valid/)
 
   const client = new WebSocket(`ws://127.0.0.1:${port}/ws`)
   client.binaryType = 'arraybuffer'

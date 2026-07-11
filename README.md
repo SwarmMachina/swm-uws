@@ -33,7 +33,9 @@ console.log(version())
 
 const app = createApp()
 
-app.get('/', (res) => {
+app.get('/', (res, req) => {
+  console.log(req.getMethod(), req.getUrl(), req.getHeader('user-agent'))
+
   res.writeStatus('200 OK').writeHeader('content-type', 'application/json').end('{"ok":true}')
 })
 
@@ -66,6 +68,10 @@ its route callback returns. A WebSocket wrapper becomes invalid before its
 HTTP responses support `writeStatus(status)`, `writeHeader(name, value)`, and
 `end(body)`. These methods return the response for chaining. Status and header
 values containing control characters are rejected.
+
+HTTP requests support `getMethod()`, `getUrl()`, and `getHeader(name)`. Request
+wrappers are valid only while their route callback is running. Returned strings
+are safe to retain.
 
 `app.close()` is idempotent. It closes the listening socket immediately and
 allows active WebSockets to finish before releasing the native app. A closed

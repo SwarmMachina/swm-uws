@@ -18,6 +18,11 @@ struct HttpResponseState {
     bool valid = false;
 };
 
+struct HttpRequestState {
+    uWS::HttpRequest *request = nullptr;
+    bool valid = false;
+};
+
 struct SocketState;
 
 struct PerSocketData {
@@ -123,6 +128,79 @@ bool IsValidStatus(std::string_view status) {
     return !ContainsInvalidHeaderValueCharacter(status);
 }
 
+HttpRequestState *GetValidHttpRequestState(const Napi::CallbackInfo &info) {
+    auto *state = static_cast<HttpRequestState *>(info.Data());
+
+    if (!state || !state->valid || !state->request) {
+        Napi::Error::New(info.Env(), "HTTP request is no longer valid")
+            .ThrowAsJavaScriptException();
+        return nullptr;
+    }
+
+    return state;
+}
+
+Napi::Value RequestGetMethod(const Napi::CallbackInfo &info) {
+    HttpRequestState *state = GetValidHttpRequestState(info);
+
+    if (!state) {
+        return info.Env().Undefined();
+    }
+
+    if (info.Length() != 0) {
+        ThrowTypeError(info.Env(), "req.getMethod() does not accept arguments");
+        return info.Env().Undefined();
+    }
+
+    std::string_view method = state->request->getMethod();
+    return Napi::String::New(info.Env(), method.data(), method.length());
+}
+
+Napi::Value RequestGetUrl(const Napi::CallbackInfo &info) {
+    HttpRequestState *state = GetValidHttpRequestState(info);
+
+    if (!state) {
+        return info.Env().Undefined();
+    }
+
+    if (info.Length() != 0) {
+        ThrowTypeError(info.Env(), "req.getUrl() does not accept arguments");
+        return info.Env().Undefined();
+    }
+
+    std::string_view url = state->request->getUrl();
+    return Napi::String::New(info.Env(), url.data(), url.length());
+}
+
+Napi::Value RequestGetHeader(const Napi::CallbackInfo &info) {
+    HttpRequestState *state = GetValidHttpRequestState(info);
+
+    if (!state) {
+        return info.Env().Undefined();
+    }
+
+    if (info.Length() != 1 || !info[0].IsString()) {
+        ThrowTypeError(info.Env(), "req.getHeader(name) expects a string");
+        return info.Env().Undefined();
+    }
+
+    std::string name = info[0].As<Napi::String>().Utf8Value();
+
+    if (!IsValidHeaderName(name)) {
+        ThrowTypeError(info.Env(), "req.getHeader(name) expects a valid HTTP header name");
+        return info.Env().Undefined();
+    }
+
+    for (char &character : name) {
+        if (character >= 'A' && character <= 'Z') {
+            character = static_cast<char>(character + ('a' - 'A'));
+        }
+    }
+
+    std::string_view value = state->request->getHeader(name);
+    return Napi::String::New(info.Env(), value.data(), value.length());
+}
+
 Napi::Value ResponseWriteStatus(const Napi::CallbackInfo &info) {
     HttpResponseState *state = GetValidHttpResponseState(info);
 
@@ -214,6 +292,27 @@ Napi::Object CreateResponseObject(Napi::Env env, HttpResponse *response, HttpRes
     object.Set("writeStatus", Napi::Function::New(env, ResponseWriteStatus, "writeStatus", state));
     object.Set("writeHeader", Napi::Function::New(env, ResponseWriteHeader, "writeHeader", state));
     object.Set("end", Napi::Function::New(env, ResponseEnd, "end", state));
+    *stateOut = state;
+    return object;
+}
+
+Napi::Object CreateRequestObject(
+    Napi::Env env,
+    uWS::HttpRequest *request,
+    HttpRequestState **stateOut) {
+    auto *state = new HttpRequestState{request, true};
+    Napi::Object object = Napi::Object::New(env);
+    Napi::External<HttpRequestState> external = Napi::External<HttpRequestState>::New(
+        env,
+        state,
+        [](Napi::Env, HttpRequestState *value) {
+            delete value;
+        });
+
+    object.Set(Napi::Symbol::New(env, "swm.http-request-state"), external);
+    object.Set("getMethod", Napi::Function::New(env, RequestGetMethod, "getMethod", state));
+    object.Set("getUrl", Napi::Function::New(env, RequestGetUrl, "getUrl", state));
+    object.Set("getHeader", Napi::Function::New(env, RequestGetHeader, "getHeader", state));
     *stateOut = state;
     return object;
 }
@@ -389,19 +488,23 @@ private:
         std::string path = info[0].As<Napi::String>().Utf8Value();
         Napi::FunctionReference *handler = StoreFunction(info[1]);
 
-        app_->get(path, [this, handler](HttpResponse *response, uWS::HttpRequest *) {
+        app_->get(path, [this, handler](HttpResponse *response, uWS::HttpRequest *request) {
             Napi::Env env(env_);
             Napi::HandleScope scope(env);
-            HttpResponseState *state = nullptr;
-            Napi::Object responseObject = CreateResponseObject(env, response, &state);
-            Napi::Object requestObject = Napi::Object::New(env);
+            HttpResponseState *responseState = nullptr;
+            HttpRequestState *requestState = nullptr;
+            Napi::Object responseObject = CreateResponseObject(env, response, &responseState);
+            Napi::Object requestObject = CreateRequestObject(env, request, &requestState);
 
             handler->Call({responseObject, requestObject});
 
-            if (state->valid && state->response) {
-                state->response->close();
-                state->response = nullptr;
-                state->valid = false;
+            requestState->request = nullptr;
+            requestState->valid = false;
+
+            if (responseState->valid && responseState->response) {
+                responseState->response->close();
+                responseState->response = nullptr;
+                responseState->valid = false;
             }
         });
 
