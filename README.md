@@ -70,6 +70,11 @@ WebSockets support `send(message[, isBinary])`, immediate `close()`, graceful
 `end(code, reason)`, and `getBufferedAmount()`. Close reasons are limited to 123
 UTF-8 bytes and invalid or reserved close codes are rejected.
 
+`app.ws(path, behavior)` accepts `maxPayloadLength` (default 16 KiB),
+`idleTimeout` (default 120 seconds; either 0 or 8–960), `maxBackpressure`
+(default 64 KiB), and `closeOnBackpressureLimit` (default false). The optional
+`drain(ws)` callback reports writable progress after backpressure.
+
 HTTP responses support `writeStatus(status)`, `writeHeader(name, value)`, and
 `end(body)`. These methods return the response for chaining. Status and header
 values containing control characters are rejected.

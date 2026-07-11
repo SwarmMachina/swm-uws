@@ -21,6 +21,18 @@ let abortedResponse
 let closedSocket
 let closeCount = 0
 const socketCloses = []
+let limitedMessageCount = 0
+let limitedCloseCount = 0
+let resolveLimitedClose
+const limitedClosed = new Promise((resolve) => {
+  resolveLimitedClose = resolve
+})
+let drainCount = 0
+let backpressureObserved = false
+let resolveDrained
+const drained = new Promise((resolve) => {
+  resolveDrained = resolve
+})
 let abortCount = 0
 let resolveAborted
 const aborted = new Promise((resolve) => {
@@ -133,6 +145,51 @@ app.ws('/ws', {
   }
 })
 
+assert.throws(() => app.ws('/invalid-idle', { idleTimeout: 1 }), /must be 0 or between 8 and 960/)
+assert.throws(() => app.ws('/invalid-payload', { maxPayloadLength: 0 }), /between 1 and/)
+assert.throws(() => app.ws('/invalid-backpressure', { maxBackpressure: -1 }), /between 0 and/)
+assert.throws(() => app.ws('/invalid-close-limit', { closeOnBackpressureLimit: 'yes' }), /must be a boolean/)
+assert.throws(() => app.ws('/invalid-drain', { drain: true }), /handlers must be functions/)
+
+app.ws('/limited', {
+  maxPayloadLength: 16,
+  idleTimeout: 8,
+  maxBackpressure: 1024,
+  closeOnBackpressureLimit: true,
+  message() {
+    limitedMessageCount++
+  },
+  close() {
+    limitedCloseCount++
+    resolveLimitedClose()
+  }
+})
+
+app.ws('/drain', {
+  maxPayloadLength: 1024,
+  idleTimeout: 120,
+  maxBackpressure: 32 * 1024 * 1024,
+  closeOnBackpressureLimit: false,
+  open(ws) {
+    const payload = 'x'.repeat(256 * 1024)
+
+    for (let index = 0; index < 64; index++) {
+      if (ws.send(payload) === 0) {
+        backpressureObserved = true
+        return
+      }
+    }
+
+    ws.end(4500, 'backpressure not observed')
+  },
+  drain(ws) {
+    drainCount++
+    assert.ok(ws.getBufferedAmount() >= 0)
+    ws.end(1000, 'drained')
+    resolveDrained()
+  }
+})
+
 await new Promise((resolve, reject) => {
   app.listen(host, port, (ok) => {
     if (!ok) {
@@ -240,6 +297,26 @@ async function runSelfTest() {
   const immediateCloseEvent = await immediateClose
   assert.equal(immediateCloseEvent.code, 1006)
 
+  const limitedClient = new WebSocket(`ws://127.0.0.1:${port}/limited`)
+  const limitedClientClose = nextClose(limitedClient)
+  await nextOpen(limitedClient)
+  limitedClient.send('this payload is too long')
+  await withTimeout(limitedClosed, 5_000, 'limited WebSocket close callback timed out')
+  const limitedCloseEvent = await withTimeout(limitedClientClose, 5_000, 'limited WebSocket client close timed out')
+  assert.equal(limitedCloseEvent.code, 1006)
+  assert.equal(limitedMessageCount, 0)
+  assert.equal(limitedCloseCount, 1)
+
+  const drainClient = new WebSocket(`ws://127.0.0.1:${port}/drain`)
+  const drainClientClose = nextClose(drainClient)
+  await nextOpen(drainClient)
+  await withTimeout(drained, 5_000, 'WebSocket drain callback timed out')
+  const drainCloseEvent = await withTimeout(drainClientClose, 5_000, 'drain WebSocket close timed out')
+  assert.equal(backpressureObserved, true)
+  assert.equal(drainCount, 1)
+  assert.equal(drainCloseEvent.code, 1000)
+  assert.equal(drainCloseEvent.reason, 'drained')
+
   assert.equal(app.close(), app)
   assert.equal(app.close(), app)
   assert.throws(() => app.listen(host, port, () => {}), /app\.listen\(\) cannot be called after app\.close\(\)/)
@@ -283,6 +360,15 @@ async function openWebSocketClient() {
 function nextClose(socket) {
   return new Promise((resolve) => {
     socket.addEventListener('close', resolve, { once: true })
+  })
+}
+
+function nextOpen(socket) {
+  return new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve, { once: true })
+    socket.addEventListener('error', () => reject(new Error('WebSocket open failed')), {
+      once: true
+    })
   })
 }
 

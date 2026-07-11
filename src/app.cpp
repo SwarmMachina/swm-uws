@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -172,6 +173,61 @@ bool IsValidStatus(std::string_view status) {
     }
 
     return !ContainsInvalidHeaderValueCharacter(status);
+}
+
+bool ReadUnsignedIntegerOption(
+    Napi::Env env,
+    const Napi::Object &options,
+    const char *name,
+    unsigned int minimum,
+    unsigned int maximum,
+    unsigned int *result) {
+    Napi::Value value = options.Get(name);
+
+    if (value.IsUndefined()) {
+        return true;
+    }
+
+    if (!value.IsNumber()) {
+        std::string message = std::string("WebSocket ") + name + " must be a number";
+        Napi::TypeError::New(env, message).ThrowAsJavaScriptException();
+        return false;
+    }
+
+    double number = value.As<Napi::Number>().DoubleValue();
+
+    if (!std::isfinite(number) || std::floor(number) != number || number < minimum ||
+        number > maximum) {
+        std::string message = std::string("WebSocket ") + name +
+            " must be an integer between " + std::to_string(minimum) + " and " +
+            std::to_string(maximum);
+        Napi::TypeError::New(env, message).ThrowAsJavaScriptException();
+        return false;
+    }
+
+    *result = static_cast<unsigned int>(number);
+    return true;
+}
+
+bool ReadBooleanOption(
+    Napi::Env env,
+    const Napi::Object &options,
+    const char *name,
+    bool *result) {
+    Napi::Value value = options.Get(name);
+
+    if (value.IsUndefined()) {
+        return true;
+    }
+
+    if (!value.IsBoolean()) {
+        std::string message = std::string("WebSocket ") + name + " must be a boolean";
+        Napi::TypeError::New(env, message).ThrowAsJavaScriptException();
+        return false;
+    }
+
+    *result = value.As<Napi::Boolean>().Value();
+    return true;
 }
 
 HttpRequestState *GetValidHttpRequestState(const Napi::CallbackInfo &info) {
@@ -855,22 +911,64 @@ private:
         Napi::Value openValue = options.Get("open");
         Napi::Value messageValue = options.Get("message");
         Napi::Value closeValue = options.Get("close");
+        Napi::Value drainValue = options.Get("drain");
 
         if ((!openValue.IsUndefined() && !openValue.IsFunction()) ||
             (!messageValue.IsUndefined() && !messageValue.IsFunction()) ||
-            (!closeValue.IsUndefined() && !closeValue.IsFunction())) {
-            ThrowTypeError(env, "WebSocket open, message, and close handlers must be functions");
+            (!closeValue.IsUndefined() && !closeValue.IsFunction()) ||
+            (!drainValue.IsUndefined() && !drainValue.IsFunction())) {
+            ThrowTypeError(
+                env,
+                "WebSocket open, message, drain, and close handlers must be functions");
             return env.Undefined();
         }
 
+        uWS::App::WebSocketBehavior<PerSocketData> behavior;
+        unsigned int idleTimeout = behavior.idleTimeout;
+
+        if (!ReadUnsignedIntegerOption(
+                env,
+                options,
+                "maxPayloadLength",
+                1,
+                std::numeric_limits<unsigned int>::max(),
+                &behavior.maxPayloadLength) ||
+            !ReadUnsignedIntegerOption(
+                env,
+                options,
+                "idleTimeout",
+                0,
+                960,
+                &idleTimeout) ||
+            !ReadUnsignedIntegerOption(
+                env,
+                options,
+                "maxBackpressure",
+                0,
+                std::numeric_limits<unsigned int>::max(),
+                &behavior.maxBackpressure) ||
+            !ReadBooleanOption(
+                env,
+                options,
+                "closeOnBackpressureLimit",
+                &behavior.closeOnBackpressureLimit)) {
+            return env.Undefined();
+        }
+
+        if (idleTimeout > 0 && idleTimeout < 8) {
+            ThrowTypeError(env, "WebSocket idleTimeout must be 0 or between 8 and 960");
+            return env.Undefined();
+        }
+
+        behavior.idleTimeout = static_cast<unsigned short>(idleTimeout);
         Napi::FunctionReference *openHandler =
             openValue.IsFunction() ? StoreFunction(openValue) : nullptr;
         Napi::FunctionReference *messageHandler =
             messageValue.IsFunction() ? StoreFunction(messageValue) : nullptr;
         Napi::FunctionReference *closeHandler =
             closeValue.IsFunction() ? StoreFunction(closeValue) : nullptr;
-
-        uWS::App::WebSocketBehavior<PerSocketData> behavior;
+        Napi::FunctionReference *drainHandler =
+            drainValue.IsFunction() ? StoreFunction(drainValue) : nullptr;
         behavior.open = [this, openHandler](NativeWebSocket *socket) {
             Napi::Env env(env_);
             Napi::HandleScope scope(env);
@@ -903,6 +1001,21 @@ private:
             bool isBinary = opcode == uWS::OpCode::BINARY;
             messageHandler->Call(
                 {state->object.Value(), copy, Napi::Boolean::New(env, isBinary)});
+        };
+        behavior.drain = [this, drainHandler](NativeWebSocket *socket) {
+            if (!drainHandler) {
+                return;
+            }
+
+            SocketState *state = socket->getUserData()->state;
+
+            if (!state || !state->valid) {
+                return;
+            }
+
+            Napi::Env env(env_);
+            Napi::HandleScope scope(env);
+            drainHandler->Call({state->object.Value()});
         };
         behavior.close = [this, closeHandler](
                              NativeWebSocket *socket,
