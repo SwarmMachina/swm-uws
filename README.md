@@ -126,6 +126,36 @@ npm run build:prebuilds
 
 The script always targets `linux/amd64`, including on ARM64 development hosts.
 
+## Performance baseline
+
+Build the native module, start the instrumented server, and warm it before each
+measurement:
+
+```bash
+npm run build:native
+npm run bench:server
+```
+
+HTTP baseline parameters are 50 connections, 10 seconds, and pipelining 1:
+
+```bash
+curl -sS http://127.0.0.1:30123/reset
+npm exec --yes autocannon -- -c 50 -d 10 -p 1 -j http://127.0.0.1:30123/
+curl -sS http://127.0.0.1:30123/metrics
+```
+
+The WebSocket echo baseline uses 50 connections, 256-byte messages, 10 seconds,
+and one in-flight message per connection:
+
+```bash
+curl -sS http://127.0.0.1:30123/reset
+CONNECTIONS=50 DURATION_MS=10000 PAYLOAD_BYTES=256 npm run bench:ws
+curl -sS http://127.0.0.1:30123/metrics
+```
+
+Benchmark numbers are machine-specific. Compare changes on the same idle host
+using identical parameters and report throughput, p95/p99, ELU, and memory.
+
 ## Windows build
 
 Windows builds are native MSVC/node-gyp builds; they are not cross-compiled

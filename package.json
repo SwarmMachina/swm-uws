@@ -18,6 +18,8 @@
     "node": ">=22"
   },
   "scripts": {
+    "bench:server": "node scripts/bench-server.js",
+    "bench:ws": "node scripts/bench-ws.js",
     "check": "prettier . --check && eslint .",
     "fix": "prettier . --write && eslint . --fix",
     "install": "node -e \"\"",
