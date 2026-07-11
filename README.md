@@ -13,17 +13,21 @@ used by `swm-core`.
 - Windows x64:
   - native prebuilds produced on the `windows-2022` GitHub Actions runner
   - no Visual Studio, Python, or node-gyp required at runtime
+- macOS 15:
+  - Apple Silicon arm64 prebuilds produced on `macos-15`
+  - Intel x64 prebuilds produced on `macos-15-intel`
+  - no Xcode or node-gyp required at runtime
 
 TLS and permessage-deflate are disabled. Terminate TLS at an ingress or reverse
 proxy.
 
-Alpine Linux is not supported in v0.2.
+Alpine Linux is not supported in v0.3.
 
 Alpine uses musl libc, while the first prebuild target is glibc. A separate
 `linux-x64-musl` binary and CI job will be required later. Use
 `node:22-bookworm-slim` or `node:24-bookworm-slim` for now.
 
-Windows ARM64 is not supported in v0.2.
+Windows ARM64 is not supported in v0.3.
 
 ## API
 
@@ -117,15 +121,18 @@ npm run build:native
 npm test
 ```
 
-On Linux x64, `build:native` copies the binary to:
+On supported targets, `build:native` copies the binary to the matching ABI path:
 
 ```text
 prebuilds/linux-x64-glibc/node-v${process.versions.modules}.node
+prebuilds/win32-x64/node-v${process.versions.modules}.node
+prebuilds/darwin-arm64/node-v${process.versions.modules}.node
+prebuilds/darwin-x64/node-v${process.versions.modules}.node
 ```
 
-On other development platforms the loader uses
-`build/Release/swm_uws.node`. Package installation itself uses an explicit
-no-op install script and never compiles native code.
+On unsupported development platforms the loader uses `build/Release/swm_uws.node`.
+Package installation itself uses an explicit no-op install script and never
+compiles native code.
 
 To rebuild both supported Linux prebuilds with Docker:
 

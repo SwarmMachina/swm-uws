@@ -4,7 +4,7 @@ import { createConnection } from 'node:net'
 import { createApp, version } from '../lib/index.js'
 import { resolvePrebuildTarget } from '../lib/load-native.js'
 
-assert.equal(version(), '0.2.0+uWebSockets-v20.67.0')
+assert.equal(version(), '0.3.0+uWebSockets-v20.67.0')
 assert.equal(resolvePrebuildTarget('linux', 'x64'), 'linux-x64-glibc')
 assert.equal(resolvePrebuildTarget('win32', 'x64'), 'win32-x64')
 assert.equal(resolvePrebuildTarget('darwin', 'arm64'), 'darwin-arm64')

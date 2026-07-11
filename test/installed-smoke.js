@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { App, us_listen_socket_close, version } from '@swarmmachina/swm-uws'
 
-assert.equal(version(), '0.2.0+uWebSockets-v20.67.0')
+assert.equal(version(), '0.3.0+uWebSockets-v20.67.0')
 
 const port = 30_000 + (process.pid % 10_000)
 const app = App()

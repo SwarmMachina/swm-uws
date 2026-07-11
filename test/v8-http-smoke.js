@@ -7,7 +7,7 @@ const { App, createApp, us_listen_socket_close, version } = require('../build/Re
 const port = 40_000 + (process.pid % 10_000)
 const app = App()
 
-assert.equal(version(), '0.2.0+uWebSockets-v20.67.0')
+assert.equal(version(), '0.3.0+uWebSockets-v20.67.0')
 assert.equal(typeof createApp, 'function')
 
 let completedResponse
