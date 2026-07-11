@@ -20,6 +20,7 @@ let completedBodyResponse
 let abortedResponse
 let closedSocket
 let closeCount = 0
+const socketCloses = []
 let abortCount = 0
 let resolveAborted
 const aborted = new Promise((resolve) => {
@@ -99,14 +100,36 @@ app.post('/abort', (res) => {
 
 app.ws('/ws', {
   open(ws) {
+    assert.equal(ws.getBufferedAmount(), 0)
+    assert.throws(() => ws.getBufferedAmount(1), /does not accept arguments/)
+    assert.throws(() => ws.close(1000), /does not accept arguments/)
+    assert.throws(() => ws.end('invalid'), /expects a number and a string/)
+    assert.throws(() => ws.end(1000.5), /must be an integer/)
+    assert.throws(() => ws.end(1005), /valid WebSocket close code/)
+    assert.throws(() => ws.end(0, 'ignored'), /requires a non-zero close code/)
+    assert.throws(() => ws.end(1000, 'x'.repeat(124)), /at most 123 UTF-8 bytes/)
     ws.send('open')
   },
   message(ws, message, isBinary) {
+    const text = isBinary ? null : Buffer.from(message).toString()
+
+    if (text === 'server-close') {
+      assert.equal(ws.close(), ws)
+      return
+    }
+
+    if (text === 'server-end') {
+      assert.equal(ws.end(4001, 'server done'), ws)
+      return
+    }
+
     ws.send(message, isBinary)
   },
-  close(ws) {
+  close(ws, code, reason) {
     closedSocket = ws
     closeCount++
+    socketCloses.push({ code, reason: Buffer.from(reason).toString() })
+    assert.throws(() => ws.getBufferedAmount(), /WebSocket is no longer valid/)
   }
 })
 
@@ -211,6 +234,12 @@ async function runSelfTest() {
   client.send(Uint8Array.from([1, 2, 3, 255]))
   assert.deepEqual(new Uint8Array(await binaryEcho), Uint8Array.from([1, 2, 3, 255]))
 
+  const immediateClient = await openWebSocketClient()
+  const immediateClose = nextClose(immediateClient)
+  immediateClient.send('server-close')
+  const immediateCloseEvent = await immediateClose
+  assert.equal(immediateCloseEvent.code, 1006)
+
   assert.equal(app.close(), app)
   assert.equal(app.close(), app)
   assert.throws(() => app.listen(host, port, () => {}), /app\.listen\(\) cannot be called after app\.close\(\)/)
@@ -219,16 +248,42 @@ async function runSelfTest() {
   client.send('still connected')
   assert.equal(await echoAfterClose, 'still connected')
 
-  await new Promise((resolve) => {
-    client.addEventListener('close', resolve, { once: true })
-    client.close(1000, 'done')
-  })
+  const gracefulClose = nextClose(client)
+  client.send('server-end')
+  const gracefulCloseEvent = await gracefulClose
+  assert.equal(gracefulCloseEvent.code, 4001)
+  assert.equal(gracefulCloseEvent.reason, 'server done')
 
   await new Promise((resolve) => setImmediate(resolve))
-  assert.equal(closeCount, 1)
+  assert.equal(closeCount, 2)
+  assert.deepEqual(socketCloses, [
+    { code: 1006, reason: '' },
+    { code: 4001, reason: 'server done' }
+  ])
   assert.throws(() => closedSocket.send('late'), /WebSocket is no longer valid/)
 
   console.log(`smoke ok: ${version()}, HTTP + WebSocket on ${port}`)
+}
+
+async function openWebSocketClient() {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`)
+  const greeting = nextMessage(socket)
+
+  await new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve, { once: true })
+    socket.addEventListener('error', () => reject(new Error('WebSocket open failed')), {
+      once: true
+    })
+  })
+
+  assert.equal(await greeting, 'open')
+  return socket
+}
+
+function nextClose(socket) {
+  return new Promise((resolve) => {
+    socket.addEventListener('close', resolve, { once: true })
+  })
 }
 
 function abortRequest() {

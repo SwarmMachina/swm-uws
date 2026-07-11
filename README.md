@@ -66,6 +66,10 @@ callback only when `onData` or `onAborted` has been registered; otherwise an
 unfinished response is closed. A WebSocket wrapper becomes invalid before its
 `close` callback runs.
 
+WebSockets support `send(message[, isBinary])`, immediate `close()`, graceful
+`end(code, reason)`, and `getBufferedAmount()`. Close reasons are limited to 123
+UTF-8 bytes and invalid or reserved close codes are rejected.
+
 HTTP responses support `writeStatus(status)`, `writeHeader(name, value)`, and
 `end(body)`. These methods return the response for chaining. Status and header
 values containing control characters are rejected.

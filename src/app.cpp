@@ -3,6 +3,7 @@
 #include <App.h>
 #include <uv.h>
 
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -528,6 +529,118 @@ Napi::Value SocketSend(const Napi::CallbackInfo &info) {
     return Napi::Number::New(env, static_cast<int>(status));
 }
 
+SocketState *GetValidSocketState(const Napi::CallbackInfo &info) {
+    auto *state = static_cast<SocketState *>(info.Data());
+
+    if (!state || !state->valid || !state->socket) {
+        Napi::Error::New(info.Env(), "WebSocket is no longer valid")
+            .ThrowAsJavaScriptException();
+        return nullptr;
+    }
+
+    return state;
+}
+
+bool IsValidWebSocketCloseCode(int code) {
+    if (code == 0) {
+        return true;
+    }
+
+    if (code < 1000 || code > 4999) {
+        return false;
+    }
+
+    return code != 1004 && code != 1005 && code != 1006 && code != 1015;
+}
+
+Napi::Value SocketClose(const Napi::CallbackInfo &info) {
+    SocketState *state = GetValidSocketState(info);
+
+    if (!state) {
+        return info.Env().Undefined();
+    }
+
+    if (info.Length() != 0) {
+        ThrowTypeError(info.Env(), "ws.close() does not accept arguments");
+        return info.Env().Undefined();
+    }
+
+    state->socket->close();
+    return info.This();
+}
+
+Napi::Value SocketEnd(const Napi::CallbackInfo &info) {
+    SocketState *state = GetValidSocketState(info);
+
+    if (!state) {
+        return info.Env().Undefined();
+    }
+
+    if (info.Length() > 2 ||
+        (info.Length() > 0 && !info[0].IsUndefined() && !info[0].IsNumber()) ||
+        (info.Length() > 1 && !info[1].IsUndefined() && !info[1].IsString())) {
+        ThrowTypeError(info.Env(), "ws.end([code[, reason]]) expects a number and a string");
+        return info.Env().Undefined();
+    }
+
+    int code = 0;
+
+    if (info.Length() > 0 && info[0].IsNumber()) {
+        double numericCode = info[0].As<Napi::Number>().DoubleValue();
+
+        if (!std::isfinite(numericCode) || std::floor(numericCode) != numericCode) {
+            ThrowTypeError(info.Env(), "ws.end() code must be an integer");
+            return info.Env().Undefined();
+        }
+
+        if (numericCode < 0 || numericCode > 4999) {
+            ThrowTypeError(info.Env(), "ws.end() code must be 0 or a valid WebSocket close code");
+            return info.Env().Undefined();
+        }
+
+        code = static_cast<int>(numericCode);
+    }
+
+    if (!IsValidWebSocketCloseCode(code)) {
+        ThrowTypeError(info.Env(), "ws.end() code must be 0 or a valid WebSocket close code");
+        return info.Env().Undefined();
+    }
+
+    std::string reason;
+
+    if (info.Length() > 1 && info[1].IsString()) {
+        reason = info[1].As<Napi::String>().Utf8Value();
+    }
+
+    if (code == 0 && !reason.empty()) {
+        ThrowTypeError(info.Env(), "ws.end() reason requires a non-zero close code");
+        return info.Env().Undefined();
+    }
+
+    if (reason.length() > 123) {
+        ThrowTypeError(info.Env(), "ws.end() reason must be at most 123 UTF-8 bytes");
+        return info.Env().Undefined();
+    }
+
+    state->socket->end(code, reason);
+    return info.This();
+}
+
+Napi::Value SocketGetBufferedAmount(const Napi::CallbackInfo &info) {
+    SocketState *state = GetValidSocketState(info);
+
+    if (!state) {
+        return info.Env().Undefined();
+    }
+
+    if (info.Length() != 0) {
+        ThrowTypeError(info.Env(), "ws.getBufferedAmount() does not accept arguments");
+        return info.Env().Undefined();
+    }
+
+    return Napi::Number::New(info.Env(), state->socket->getBufferedAmount());
+}
+
 Napi::Object CreateSocketObject(Napi::Env env, NativeWebSocket *socket, SocketState **stateOut) {
     auto *state = new SocketState;
     state->socket = socket;
@@ -543,6 +656,11 @@ Napi::Object CreateSocketObject(Napi::Env env, NativeWebSocket *socket, SocketSt
 
     object.Set(Napi::Symbol::New(env, "swm.websocket-state"), external);
     object.Set("send", Napi::Function::New(env, SocketSend, "send", state));
+    object.Set("close", Napi::Function::New(env, SocketClose, "close", state));
+    object.Set("end", Napi::Function::New(env, SocketEnd, "end", state));
+    object.Set(
+        "getBufferedAmount",
+        Napi::Function::New(env, SocketGetBufferedAmount, "getBufferedAmount", state));
     state->object = Napi::Persistent(object);
     *stateOut = state;
     return object;
