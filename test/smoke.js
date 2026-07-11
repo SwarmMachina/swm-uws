@@ -90,7 +90,7 @@ app.post('/body', (res) => {
   assert.equal(
     res.onData((chunk, isLast) => {
       assert.ok(chunk instanceof ArrayBuffer)
-      chunks.push(Buffer.from(chunk))
+      chunks.push(Buffer.from(new Uint8Array(chunk)))
 
       if (isLast) {
         res.writeHeader('content-type', 'application/octet-stream').end(Buffer.concat(chunks).toString('hex'))
