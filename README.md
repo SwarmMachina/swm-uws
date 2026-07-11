@@ -73,6 +73,9 @@ HTTP requests support `getMethod()`, `getUrl()`, and `getHeader(name)`. Request
 wrappers are valid only while their route callback is running. Returned strings
 are safe to retain.
 
+Routes can be registered with `get`, `post`, `put`, `patch`, `del`, `options`,
+`head`, and `any`. Every registration method returns the app for chaining.
+
 `app.close()` is idempotent. It closes the listening socket immediately and
 allows active WebSockets to finish before releasing the native app. A closed
 app cannot listen again.

@@ -43,6 +43,19 @@ app.get('/metadata', (res, req) => {
   assert.throws(() => res.writeHeader('x-late', 'value'), /HTTP response is no longer valid/)
 })
 
+const methodHandler = (res, req) => {
+  const method = req.getMethod()
+  res.writeHeader('x-request-method', method).end(method)
+}
+
+assert.equal(app.post('/method/post', methodHandler), app)
+assert.equal(app.put('/method/put', methodHandler), app)
+assert.equal(app.patch('/method/patch', methodHandler), app)
+assert.equal(app.del('/method/delete', methodHandler), app)
+assert.equal(app.options('/method/options', methodHandler), app)
+assert.equal(app.head('/method/head', methodHandler), app)
+assert.equal(app.any('/method/any', methodHandler), app)
+
 app.ws('/ws', {
   open(ws) {
     ws.send('open')
@@ -99,6 +112,25 @@ async function runSelfTest() {
   assert.equal(metadataResponse.headers.get('x-swm-test'), 'metadata')
   assert.deepEqual(await metadataResponse.json(), { ok: false })
   assert.throws(() => completedRequest.getUrl(), /HTTP request is no longer valid/)
+
+  for (const [method, path, expectedBody] of [
+    ['POST', '/method/post', 'post'],
+    ['PUT', '/method/put', 'put'],
+    ['PATCH', '/method/patch', 'patch'],
+    ['DELETE', '/method/delete', 'delete'],
+    ['OPTIONS', '/method/options', 'options'],
+    ['HEAD', '/method/head', ''],
+    ['DELETE', '/method/any', 'delete']
+  ]) {
+    const methodResponse = await fetch(`http://127.0.0.1:${port}${path}`, {
+      method,
+      signal: AbortSignal.timeout(5_000)
+    })
+
+    assert.equal(methodResponse.status, 200)
+    assert.equal(methodResponse.headers.get('x-request-method'), method.toLowerCase())
+    assert.equal(await methodResponse.text(), expectedBody)
+  }
 
   const client = new WebSocket(`ws://127.0.0.1:${port}/ws`)
   client.binaryType = 'arraybuffer'

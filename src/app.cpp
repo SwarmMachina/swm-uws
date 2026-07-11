@@ -451,6 +451,13 @@ public:
             "SwmUwsApp",
             {
                 InstanceMethod("get", &AppWrap::Get),
+                InstanceMethod("post", &AppWrap::Post),
+                InstanceMethod("put", &AppWrap::Put),
+                InstanceMethod("patch", &AppWrap::Patch),
+                InstanceMethod("del", &AppWrap::Del),
+                InstanceMethod("options", &AppWrap::Options),
+                InstanceMethod("head", &AppWrap::Head),
+                InstanceMethod("any", &AppWrap::Any),
                 InstanceMethod("ws", &AppWrap::Ws),
                 InstanceMethod("listen", &AppWrap::Listen),
                 InstanceMethod("close", &AppWrap::Close),
@@ -464,6 +471,17 @@ private:
         Closed,
     };
 
+    enum class HttpMethod {
+        Get,
+        Post,
+        Put,
+        Patch,
+        Delete,
+        Options,
+        Head,
+        Any,
+    };
+
     Napi::FunctionReference *StoreFunction(const Napi::Value &value) {
         auto reference = std::make_unique<Napi::FunctionReference>(
             Napi::Persistent(value.As<Napi::Function>()));
@@ -472,7 +490,10 @@ private:
         return result;
     }
 
-    Napi::Value Get(const Napi::CallbackInfo &info) {
+    Napi::Value RegisterHttpRoute(
+        const Napi::CallbackInfo &info,
+        HttpMethod method,
+        const char *methodName) {
         Napi::Env env = info.Env();
 
         if (!app_) {
@@ -481,14 +502,18 @@ private:
         }
 
         if (info.Length() != 2 || !info[0].IsString() || !info[1].IsFunction()) {
-            ThrowTypeError(env, "app.get(path, handler) expects a string and a function");
+            std::string message = "app." + std::string(methodName) +
+                "(path, handler) expects a string and a function";
+            Napi::TypeError::New(env, message).ThrowAsJavaScriptException();
             return env.Undefined();
         }
 
         std::string path = info[0].As<Napi::String>().Utf8Value();
         Napi::FunctionReference *handler = StoreFunction(info[1]);
 
-        app_->get(path, [this, handler](HttpResponse *response, uWS::HttpRequest *request) {
+        auto routeHandler = [this, handler](
+                                HttpResponse *response,
+                                uWS::HttpRequest *request) {
             Napi::Env env(env_);
             Napi::HandleScope scope(env);
             HttpResponseState *responseState = nullptr;
@@ -506,9 +531,68 @@ private:
                 responseState->response = nullptr;
                 responseState->valid = false;
             }
-        });
+        };
+
+        switch (method) {
+            case HttpMethod::Get:
+                app_->get(path, std::move(routeHandler));
+                break;
+            case HttpMethod::Post:
+                app_->post(path, std::move(routeHandler));
+                break;
+            case HttpMethod::Put:
+                app_->put(path, std::move(routeHandler));
+                break;
+            case HttpMethod::Patch:
+                app_->patch(path, std::move(routeHandler));
+                break;
+            case HttpMethod::Delete:
+                app_->del(path, std::move(routeHandler));
+                break;
+            case HttpMethod::Options:
+                app_->options(path, std::move(routeHandler));
+                break;
+            case HttpMethod::Head:
+                app_->head(path, std::move(routeHandler));
+                break;
+            case HttpMethod::Any:
+                app_->any(path, std::move(routeHandler));
+                break;
+        }
 
         return info.This();
+    }
+
+    Napi::Value Get(const Napi::CallbackInfo &info) {
+        return RegisterHttpRoute(info, HttpMethod::Get, "get");
+    }
+
+    Napi::Value Post(const Napi::CallbackInfo &info) {
+        return RegisterHttpRoute(info, HttpMethod::Post, "post");
+    }
+
+    Napi::Value Put(const Napi::CallbackInfo &info) {
+        return RegisterHttpRoute(info, HttpMethod::Put, "put");
+    }
+
+    Napi::Value Patch(const Napi::CallbackInfo &info) {
+        return RegisterHttpRoute(info, HttpMethod::Patch, "patch");
+    }
+
+    Napi::Value Del(const Napi::CallbackInfo &info) {
+        return RegisterHttpRoute(info, HttpMethod::Delete, "del");
+    }
+
+    Napi::Value Options(const Napi::CallbackInfo &info) {
+        return RegisterHttpRoute(info, HttpMethod::Options, "options");
+    }
+
+    Napi::Value Head(const Napi::CallbackInfo &info) {
+        return RegisterHttpRoute(info, HttpMethod::Head, "head");
+    }
+
+    Napi::Value Any(const Napi::CallbackInfo &info) {
+        return RegisterHttpRoute(info, HttpMethod::Any, "any");
     }
 
     Napi::Value Ws(const Napi::CallbackInfo &info) {
