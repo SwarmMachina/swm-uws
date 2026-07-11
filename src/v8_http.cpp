@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -52,6 +53,7 @@ struct AppState {
     PerContextData *context = nullptr;
     us_listen_socket_t *listenSocket = nullptr;
     bool closed = false;
+    bool hasWebSockets = false;
     std::vector<std::unique_ptr<Global<Function>>> handlers;
 };
 
@@ -59,6 +61,7 @@ struct PerContextData {
     Isolate *isolate;
     Global<Object> responseTemplate;
     Global<Object> requestTemplate;
+    Global<Object> socketTemplate;
     Global<Function> appConstructor;
     std::vector<std::unique_ptr<AppState>> apps;
 };
@@ -74,6 +77,21 @@ struct AsyncResponseState : std::enable_shared_from_this<AsyncResponseState> {
     Global<Function> abortedHandler;
     Global<Function> writableHandler;
     Global<Object> object;
+};
+
+struct SocketState;
+
+struct PerSocketData {
+    SocketState *state = nullptr;
+};
+
+using NativeWebSocket = uWS::WebSocket<false, true, PerSocketData>;
+
+struct SocketState {
+    Isolate *isolate = nullptr;
+    NativeWebSocket *socket = nullptr;
+    Global<Object> object;
+    Global<Value> userData;
 };
 
 void *GetInternalPointer(const Local<Object> &object, int index = 0) {
@@ -482,6 +500,15 @@ Local<ArrayBuffer> CopyToArrayBuffer(Isolate *isolate, std::string_view value) {
     return ArrayBuffer::New(isolate, std::move(backing));
 }
 
+Local<ArrayBuffer> ExternalArrayBuffer(Isolate *isolate, std::string_view value) {
+    std::unique_ptr<v8::BackingStore> backing = ArrayBuffer::NewBackingStore(
+        const_cast<char *>(value.data()),
+        value.length(),
+        [](void *, size_t, void *) {},
+        nullptr);
+    return ArrayBuffer::New(isolate, std::move(backing));
+}
+
 void ResponseGetRemoteAddressAsText(const FunctionCallbackInfo<Value> &args) {
     HttpResponse *response = GetResponse(args);
     if (!response) return;
@@ -493,6 +520,37 @@ void ResponseGetRemoteAddressAsText(const FunctionCallbackInfo<Value> &args) {
     }
     args.GetReturnValue().Set(
         CopyToArrayBuffer(args.GetIsolate(), response->getRemoteAddressAsText()));
+}
+
+void ResponseUpgrade(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() != 5 || !args[1]->IsString() || !args[2]->IsString() ||
+        !args[3]->IsString() || !args[4]->IsExternal()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "res.upgrade(userData, key, protocol, extensions, context) received invalid arguments");
+        return;
+    }
+    Isolate *isolate = args.GetIsolate();
+    NativeBytes key(isolate, args[1]);
+    NativeBytes protocol(isolate, args[2]);
+    NativeBytes extensions(isolate, args[3]);
+    auto *socketState = new SocketState;
+    socketState->isolate = isolate;
+    socketState->userData.Reset(isolate, args[0]);
+    auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
+    std::shared_ptr<AsyncResponseState> asyncState = async
+        ? async->shared_from_this()
+        : std::shared_ptr<AsyncResponseState>();
+    response->upgrade<PerSocketData>(
+        PerSocketData{socketState},
+        key.View(),
+        protocol.View(),
+        extensions.View(),
+        static_cast<us_socket_context_t *>(args[4].As<External>()->Value()));
+    if (asyncState) InvalidateAsyncResponse(asyncState);
+    else InvalidateResponseObject(args.This());
 }
 
 void ResponseOnData(const FunctionCallbackInfo<Value> &args) {
@@ -642,6 +700,118 @@ void RequestForEach(const FunctionCallbackInfo<Value> &args) {
     }
 }
 
+SocketState *GetSocketState(const FunctionCallbackInfo<Value> &args) {
+    auto *state = static_cast<SocketState *>(GetInternalPointer(args.This()));
+    if (!state || !state->socket) {
+        ThrowError(args.GetIsolate(), "WebSocket is no longer valid");
+        return nullptr;
+    }
+    return state;
+}
+
+void SocketSend(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() < 1 || args.Length() > 3 ||
+        (args.Length() > 1 && !args[1]->IsBoolean()) ||
+        (args.Length() > 2 && !args[2]->IsBoolean())) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.send(message, isBinary, compress) received invalid arguments");
+        return;
+    }
+    NativeBytes message(args.GetIsolate(), args[0]);
+    if (!message.IsValid()) {
+        ThrowTypeError(args.GetIsolate(), "ws.send(message) expects a string or buffer");
+        return;
+    }
+    const bool isBinary = args.Length() > 1
+        ? args[1]->BooleanValue(args.GetIsolate())
+        : !args[0]->IsString();
+    const bool compress = args.Length() > 2 && args[2]->BooleanValue(args.GetIsolate());
+    args.GetReturnValue().Set(static_cast<int>(state->socket->send(
+        message.View(),
+        isBinary ? uWS::OpCode::BINARY : uWS::OpCode::TEXT,
+        compress)));
+}
+
+void SocketEnd(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() > 2 || (args.Length() > 0 && !args[0]->IsNumber()) ||
+        (args.Length() > 1 && !args[1]->IsString())) {
+        ThrowTypeError(args.GetIsolate(), "ws.end(code, reason) received invalid arguments");
+        return;
+    }
+    const int code = args.Length() > 0
+        ? args[0]->Int32Value(args.GetIsolate()->GetCurrentContext()).FromMaybe(1000)
+        : 1000;
+    Local<Value> reasonValue = String::Empty(args.GetIsolate());
+    if (args.Length() > 1) reasonValue = args[1];
+    NativeBytes reason(args.GetIsolate(), reasonValue);
+    state->socket->end(code, reason.View());
+}
+
+void SocketClose(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "ws.close() does not accept arguments");
+        return;
+    }
+    state->socket->close();
+}
+
+void SocketGetBufferedAmount(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "ws.getBufferedAmount() does not accept arguments");
+        return;
+    }
+    args.GetReturnValue().Set(Number::New(
+        args.GetIsolate(),
+        static_cast<double>(state->socket->getBufferedAmount())));
+}
+
+void SocketGetUserData(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "ws.getUserData() does not accept arguments");
+        return;
+    }
+    if (!state->userData.IsEmpty()) {
+        args.GetReturnValue().Set(state->userData.Get(args.GetIsolate()));
+    }
+}
+
+void SocketSubscribe(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 1 || !args[0]->IsString()) {
+        ThrowTypeError(args.GetIsolate(), "ws.subscribe(topic) expects a string");
+        return;
+    }
+    NativeBytes topic(args.GetIsolate(), args[0]);
+    args.GetReturnValue().Set(Boolean::New(
+        args.GetIsolate(),
+        state->socket->subscribe(topic.View())));
+}
+
+void SocketUnsubscribe(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 1 || !args[0]->IsString()) {
+        ThrowTypeError(args.GetIsolate(), "ws.unsubscribe(topic) expects a string");
+        return;
+    }
+    NativeBytes topic(args.GetIsolate(), args[0]);
+    args.GetReturnValue().Set(Boolean::New(
+        args.GetIsolate(),
+        state->socket->unsubscribe(topic.View())));
+}
+
 void RegisterHttpRoute(
     const FunctionCallbackInfo<Value> &args,
     HttpMethod method,
@@ -739,6 +909,315 @@ void AppAny(const FunctionCallbackInfo<Value> &args) {
     RegisterHttpRoute(args, HttpMethod::Any, "any");
 }
 
+Local<Value> GetProperty(Isolate *isolate, Local<Object> object, const char *name) {
+    return object->Get(isolate->GetCurrentContext(), NewString(isolate, name))
+        .ToLocalChecked();
+}
+
+bool ReadUnsignedOption(
+    Isolate *isolate,
+    Local<Object> options,
+    const char *name,
+    unsigned int minimum,
+    unsigned int maximum,
+    unsigned int *target) {
+    Local<Value> value = GetProperty(isolate, options, name);
+    if (value->IsUndefined()) return true;
+    if (!value->IsNumber()) {
+        std::string message = "WebSocket " + std::string(name) + " must be a number";
+        ThrowTypeError(isolate, message.c_str());
+        return false;
+    }
+    const double number = value->NumberValue(isolate->GetCurrentContext()).FromMaybe(-1);
+    if (!std::isfinite(number) || std::floor(number) != number || number < minimum ||
+        number > maximum) {
+        std::string message = "WebSocket " + std::string(name) + " has an invalid value";
+        ThrowTypeError(isolate, message.c_str());
+        return false;
+    }
+    *target = static_cast<unsigned int>(number);
+    return true;
+}
+
+bool ReadBooleanOption(
+    Isolate *isolate,
+    Local<Object> options,
+    const char *name,
+    bool *target) {
+    Local<Value> value = GetProperty(isolate, options, name);
+    if (value->IsUndefined()) return true;
+    if (!value->IsBoolean()) {
+        std::string message = "WebSocket " + std::string(name) + " must be a boolean";
+        ThrowTypeError(isolate, message.c_str());
+        return false;
+    }
+    *target = value->BooleanValue(isolate);
+    return true;
+}
+
+Global<Function> *StoreOptionalHandler(
+    AppState *state,
+    Isolate *isolate,
+    Local<Object> options,
+    const char *name,
+    bool *valid) {
+    Local<Value> value = GetProperty(isolate, options, name);
+    if (value->IsUndefined()) return nullptr;
+    if (!value->IsFunction()) {
+        std::string message = "WebSocket " + std::string(name) + " handler must be a function";
+        ThrowTypeError(isolate, message.c_str());
+        *valid = false;
+        return nullptr;
+    }
+    auto handler = std::make_unique<Global<Function>>(isolate, value.As<Function>());
+    Global<Function> *pointer = handler.get();
+    state->handlers.push_back(std::move(handler));
+    return pointer;
+}
+
+Local<Object> EnsureSocketObject(
+    PerContextData *context,
+    NativeWebSocket *socket) {
+    Isolate *isolate = context->isolate;
+    SocketState *state = socket->getUserData()->state;
+    if (!state) {
+        state = new SocketState;
+        state->isolate = isolate;
+        socket->getUserData()->state = state;
+    }
+    state->socket = socket;
+    if (state->object.IsEmpty()) {
+        Local<Object> object = context->socketTemplate.Get(isolate)->Clone();
+        SetInternalPointer(object, state);
+        state->object.Reset(isolate, object);
+        return object;
+    }
+    return state->object.Get(isolate);
+}
+
+void AppWs(const FunctionCallbackInfo<Value> &args) {
+    Isolate *isolate = args.GetIsolate();
+    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
+    if (!state || args.Length() != 2 || !args[0]->IsString() || !args[1]->IsObject()) {
+        ThrowTypeError(isolate, "app.ws(path, behavior) expects a string and an object");
+        return;
+    }
+    Local<Object> options = args[1].As<Object>();
+    uWS::App::WebSocketBehavior<PerSocketData> behavior;
+    unsigned int idleTimeout = behavior.idleTimeout;
+    unsigned int maxLifetime = behavior.maxLifetime;
+    if (!ReadUnsignedOption(
+            isolate,
+            options,
+            "maxPayloadLength",
+            1,
+            std::numeric_limits<unsigned int>::max(),
+            &behavior.maxPayloadLength) ||
+        !ReadUnsignedOption(
+            isolate,
+            options,
+            "idleTimeout",
+            0,
+            960,
+            &idleTimeout) ||
+        !ReadUnsignedOption(
+            isolate,
+            options,
+            "maxBackpressure",
+            0,
+            std::numeric_limits<unsigned int>::max(),
+            &behavior.maxBackpressure) ||
+        !ReadUnsignedOption(
+            isolate,
+            options,
+            "maxLifetime",
+            0,
+            240,
+            &maxLifetime) ||
+        !ReadBooleanOption(
+            isolate,
+            options,
+            "closeOnBackpressureLimit",
+            &behavior.closeOnBackpressureLimit) ||
+        !ReadBooleanOption(
+            isolate,
+            options,
+            "resetIdleTimeoutOnSend",
+            &behavior.resetIdleTimeoutOnSend) ||
+        !ReadBooleanOption(
+            isolate,
+            options,
+            "sendPingsAutomatically",
+            &behavior.sendPingsAutomatically)) {
+        return;
+    }
+    if (idleTimeout > 0 && idleTimeout < 8) {
+        ThrowTypeError(isolate, "WebSocket idleTimeout must be 0 or between 8 and 960");
+        return;
+    }
+    behavior.idleTimeout = static_cast<unsigned short>(idleTimeout);
+    behavior.maxLifetime = static_cast<unsigned short>(maxLifetime);
+
+    bool handlersValid = true;
+    Global<Function> *upgrade = StoreOptionalHandler(state, isolate, options, "upgrade", &handlersValid);
+    Global<Function> *open = StoreOptionalHandler(state, isolate, options, "open", &handlersValid);
+    Global<Function> *message = StoreOptionalHandler(state, isolate, options, "message", &handlersValid);
+    Global<Function> *drain = StoreOptionalHandler(state, isolate, options, "drain", &handlersValid);
+    Global<Function> *subscription = StoreOptionalHandler(state, isolate, options, "subscription", &handlersValid);
+    Global<Function> *close = StoreOptionalHandler(state, isolate, options, "close", &handlersValid);
+    if (!handlersValid) return;
+
+    PerContextData *context = state->context;
+    if (upgrade) {
+        behavior.upgrade = [context, upgrade](
+                               HttpResponse *response,
+                               uWS::HttpRequest *request,
+                               us_socket_context_t *socketContext) {
+            Isolate *callbackIsolate = context->isolate;
+            HandleScope scope(callbackIsolate);
+            Local<Object> responseObject = context->responseTemplate.Get(callbackIsolate)->Clone();
+            Local<Object> requestObject = context->requestTemplate.Get(callbackIsolate)->Clone();
+            SetInternalPointer(responseObject, response, 0);
+            SetInternalPointer(responseObject, nullptr, 1);
+            SetInternalPointer(requestObject, request);
+            Local<Value> argv[] = {
+                responseObject,
+                requestObject,
+                External::New(callbackIsolate, socketContext)};
+            CallJs(callbackIsolate, upgrade->Get(callbackIsolate), 3, argv);
+            SetInternalPointer(requestObject, nullptr);
+            if (GetInternalPointer(responseObject) &&
+                !GetInternalPointer(responseObject, 1)) {
+                response->close();
+                InvalidateResponseObject(responseObject);
+            }
+        };
+    }
+    behavior.open = [context, open](NativeWebSocket *socket) {
+        Isolate *callbackIsolate = context->isolate;
+        HandleScope scope(callbackIsolate);
+        Local<Object> socketObject = EnsureSocketObject(context, socket);
+        if (open) {
+            Local<Value> argv[] = {socketObject};
+            CallJs(callbackIsolate, open->Get(callbackIsolate), 1, argv);
+        }
+    };
+    behavior.message = [context, message](
+                           NativeWebSocket *socket,
+                           std::string_view payload,
+                           uWS::OpCode opcode) {
+        if (!message) return;
+        Isolate *callbackIsolate = context->isolate;
+        HandleScope scope(callbackIsolate);
+        Local<Object> socketObject = EnsureSocketObject(context, socket);
+        Local<ArrayBuffer> buffer = ExternalArrayBuffer(callbackIsolate, payload);
+        Local<Value> argv[] = {
+            socketObject,
+            buffer,
+            Boolean::New(callbackIsolate, opcode == uWS::OpCode::BINARY)};
+        CallJs(callbackIsolate, message->Get(callbackIsolate), 3, argv);
+        buffer->Detach(Local<Value>()).FromMaybe(false);
+    };
+    behavior.drain = [context, drain](NativeWebSocket *socket) {
+        if (!drain) return;
+        Isolate *callbackIsolate = context->isolate;
+        HandleScope scope(callbackIsolate);
+        Local<Value> argv[] = {EnsureSocketObject(context, socket)};
+        CallJs(callbackIsolate, drain->Get(callbackIsolate), 1, argv);
+    };
+    behavior.subscription = [context, subscription](
+                                NativeWebSocket *socket,
+                                std::string_view topic,
+                                int newCount,
+                                int oldCount) {
+        if (!subscription) return;
+        Isolate *callbackIsolate = context->isolate;
+        HandleScope scope(callbackIsolate);
+        Local<ArrayBuffer> topicBuffer = ExternalArrayBuffer(callbackIsolate, topic);
+        Local<Value> argv[] = {
+            EnsureSocketObject(context, socket),
+            topicBuffer,
+            Number::New(callbackIsolate, newCount),
+            Number::New(callbackIsolate, oldCount)};
+        CallJs(callbackIsolate, subscription->Get(callbackIsolate), 4, argv);
+        topicBuffer->Detach(Local<Value>()).FromMaybe(false);
+    };
+    behavior.close = [context, close](
+                         NativeWebSocket *socket,
+                         int code,
+                         std::string_view reason) {
+        SocketState *socketState = socket->getUserData()->state;
+        if (!socketState) return;
+        Isolate *callbackIsolate = context->isolate;
+        HandleScope scope(callbackIsolate);
+        Local<Object> socketObject = socketState->object.Get(callbackIsolate);
+        SetInternalPointer(socketObject, nullptr);
+        socketState->socket = nullptr;
+        socket->getUserData()->state = nullptr;
+        if (close) {
+            Local<ArrayBuffer> reasonBuffer = ExternalArrayBuffer(callbackIsolate, reason);
+            Local<Value> argv[] = {
+                socketObject,
+                Number::New(callbackIsolate, code),
+                reasonBuffer};
+            CallJs(callbackIsolate, close->Get(callbackIsolate), 3, argv);
+            reasonBuffer->Detach(Local<Value>()).FromMaybe(false);
+        }
+        socketState->object.Reset();
+        socketState->userData.Reset();
+        delete socketState;
+    };
+
+    NativeBytes path(isolate, args[0]);
+    state->app->ws<PerSocketData>(std::string(path.View()), std::move(behavior));
+    state->hasWebSockets = true;
+    args.GetReturnValue().Set(args.This());
+}
+
+void AppPublish(const FunctionCallbackInfo<Value> &args) {
+    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
+    if (!state || args.Length() < 2 || args.Length() > 3 || !args[0]->IsString() ||
+        (args.Length() > 2 && !args[2]->IsBoolean())) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "app.publish(topic, message, isBinary) received invalid arguments");
+        return;
+    }
+    NativeBytes topic(args.GetIsolate(), args[0]);
+    NativeBytes message(args.GetIsolate(), args[1]);
+    if (!message.IsValid()) {
+        ThrowTypeError(args.GetIsolate(), "app.publish message expects a string or buffer");
+        return;
+    }
+    if (!state->hasWebSockets) {
+        args.GetReturnValue().Set(false);
+        return;
+    }
+    const bool isBinary = args.Length() > 2
+        ? args[2]->BooleanValue(args.GetIsolate())
+        : !args[1]->IsString();
+    args.GetReturnValue().Set(Boolean::New(
+        args.GetIsolate(),
+        state->app->publish(
+            topic.View(),
+            message.View(),
+            isBinary ? uWS::OpCode::BINARY : uWS::OpCode::TEXT)));
+}
+
+void AppNumSubscribers(const FunctionCallbackInfo<Value> &args) {
+    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
+    if (!state || args.Length() != 1 || !args[0]->IsString()) {
+        ThrowTypeError(args.GetIsolate(), "app.numSubscribers(topic) expects a string");
+        return;
+    }
+    if (!state->hasWebSockets) {
+        args.GetReturnValue().Set(0);
+        return;
+    }
+    NativeBytes topic(args.GetIsolate(), args[0]);
+    args.GetReturnValue().Set(state->app->numSubscribers(topic.View()));
+}
+
 void AppListen(const FunctionCallbackInfo<Value> &args) {
     Isolate *isolate = args.GetIsolate();
     auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
@@ -803,6 +1282,7 @@ void AppClose(const FunctionCallbackInfo<Value> &args) {
             us_listen_socket_close(0, state->listenSocket);
             state->listenSocket = nullptr;
         }
+        if (state->app) state->app->close();
     }
     args.GetReturnValue().Set(args.This());
 }
@@ -874,6 +1354,7 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
         response,
         "getRemoteAddressAsText",
         ResponseGetRemoteAddressAsText);
+    SetPrototypeMethod(isolate, response, "upgrade", ResponseUpgrade);
     SetPrototypeMethod(isolate, response, "onData", ResponseOnData);
     SetPrototypeMethod(isolate, response, "onAborted", ResponseOnAborted);
     context->responseTemplate.Reset(
@@ -898,6 +1379,22 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
             ->NewInstance(isolate->GetCurrentContext())
             .ToLocalChecked());
 
+    Local<FunctionTemplate> socket = FunctionTemplate::New(isolate);
+    socket->InstanceTemplate()->SetInternalFieldCount(1);
+    SetPrototypeMethod(isolate, socket, "send", SocketSend);
+    SetPrototypeMethod(isolate, socket, "end", SocketEnd);
+    SetPrototypeMethod(isolate, socket, "close", SocketClose);
+    SetPrototypeMethod(isolate, socket, "getBufferedAmount", SocketGetBufferedAmount);
+    SetPrototypeMethod(isolate, socket, "getUserData", SocketGetUserData);
+    SetPrototypeMethod(isolate, socket, "subscribe", SocketSubscribe);
+    SetPrototypeMethod(isolate, socket, "unsubscribe", SocketUnsubscribe);
+    context->socketTemplate.Reset(
+        isolate,
+        socket->GetFunction(isolate->GetCurrentContext())
+            .ToLocalChecked()
+            ->NewInstance(isolate->GetCurrentContext())
+            .ToLocalChecked());
+
     Local<FunctionTemplate> app = FunctionTemplate::New(isolate);
     app->InstanceTemplate()->SetInternalFieldCount(1);
     SetPrototypeMethod(isolate, app, "get", AppGet);
@@ -908,6 +1405,9 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     SetPrototypeMethod(isolate, app, "options", AppOptions);
     SetPrototypeMethod(isolate, app, "head", AppHead);
     SetPrototypeMethod(isolate, app, "any", AppAny);
+    SetPrototypeMethod(isolate, app, "ws", AppWs);
+    SetPrototypeMethod(isolate, app, "publish", AppPublish);
+    SetPrototypeMethod(isolate, app, "numSubscribers", AppNumSubscribers);
     SetPrototypeMethod(isolate, app, "listen", AppListen);
     SetPrototypeMethod(isolate, app, "close", AppClose);
     context->appConstructor.Reset(
@@ -959,6 +1459,7 @@ void InitializeModule(
             contextData->apps.clear();
             contextData->responseTemplate.Reset();
             contextData->requestTemplate.Reset();
+            contextData->socketTemplate.Reset();
             contextData->appConstructor.Reset();
             uWS::Loop::get()->free();
             delete contextData;

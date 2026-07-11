@@ -20,6 +20,7 @@ COPY . .
 RUN npm run build:native
 RUN npm test
 RUN npm run test:v8-http
+RUN npm run test:v8-ws
 
 FROM scratch AS prebuild
 

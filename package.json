@@ -31,7 +31,8 @@
     "clean": "node-gyp clean",
     "prepublishOnly": "npm run check:release",
     "test": "node test/smoke.js",
-    "test:v8-http": "node test/v8-http-smoke.js"
+    "test:v8-http": "node test/v8-http-smoke.js",
+    "test:v8-ws": "node test/v8-ws-smoke.js"
   },
   "devDependencies": {
     "@swarmmachina/standards": "^1.0.4",
