@@ -16,6 +16,11 @@ using HttpResponse = uWS::HttpResponse<false>;
 struct HttpResponseState {
     HttpResponse *response = nullptr;
     bool valid = false;
+    bool asynchronous = false;
+    bool abortedHandlerInstalled = false;
+    std::unique_ptr<Napi::FunctionReference> dataHandler;
+    std::unique_ptr<Napi::FunctionReference> abortedHandler;
+    Napi::ObjectReference object;
 };
 
 struct HttpRequestState {
@@ -46,12 +51,15 @@ struct MessageView {
 
 Napi::FunctionReference appConstructor;
 
+Napi::ArrayBuffer CopyToArrayBuffer(Napi::Env env, std::string_view value);
+
 void ThrowTypeError(Napi::Env env, const char *message) {
     Napi::TypeError::New(env, message).ThrowAsJavaScriptException();
 }
 
 HttpResponseState *GetValidHttpResponseState(const Napi::CallbackInfo &info) {
-    auto *state = static_cast<HttpResponseState *>(info.Data());
+    auto *holder = static_cast<std::shared_ptr<HttpResponseState> *>(info.Data());
+    HttpResponseState *state = holder ? holder->get() : nullptr;
 
     if (!state || !state->valid || !state->response) {
         Napi::Error::New(info.Env(), "HTTP response is no longer valid")
@@ -60,6 +68,43 @@ HttpResponseState *GetValidHttpResponseState(const Napi::CallbackInfo &info) {
     }
 
     return state;
+}
+
+std::unique_ptr<Napi::FunctionReference> CreateFunctionReference(const Napi::Value &value) {
+    return std::make_unique<Napi::FunctionReference>(
+        Napi::Persistent(value.As<Napi::Function>()));
+}
+
+void InvalidateHttpResponseState(const std::shared_ptr<HttpResponseState> &state) {
+    state->response = nullptr;
+    state->valid = false;
+    state->asynchronous = false;
+    state->dataHandler.reset();
+    state->abortedHandler.reset();
+    state->object.Reset();
+}
+
+void EnsureHttpAbortedHandler(
+    const std::shared_ptr<HttpResponseState> &state,
+    napi_env env) {
+    if (state->abortedHandlerInstalled) {
+        return;
+    }
+
+    state->abortedHandlerInstalled = true;
+    state->response->onAborted([state, env]() {
+        Napi::Env callbackEnv(env);
+        Napi::HandleScope scope(callbackEnv);
+
+        if (state->abortedHandler) {
+            Napi::Function handler = state->abortedHandler->Value();
+            InvalidateHttpResponseState(state);
+            handler.Call({});
+            return;
+        }
+
+        InvalidateHttpResponseState(state);
+    });
 }
 
 bool IsHttpTokenCharacter(unsigned char character) {
@@ -253,6 +298,73 @@ Napi::Value ResponseWriteHeader(const Napi::CallbackInfo &info) {
     return info.This();
 }
 
+Napi::Value ResponseOnData(const Napi::CallbackInfo &info) {
+    HttpResponseState *rawState = GetValidHttpResponseState(info);
+
+    if (!rawState) {
+        return info.Env().Undefined();
+    }
+
+    if (info.Length() != 1 || !info[0].IsFunction()) {
+        ThrowTypeError(info.Env(), "res.onData(handler) expects a function");
+        return info.Env().Undefined();
+    }
+
+    if (rawState->dataHandler) {
+        Napi::Error::New(info.Env(), "res.onData() handler is already registered")
+            .ThrowAsJavaScriptException();
+        return info.Env().Undefined();
+    }
+
+    auto *holder = static_cast<std::shared_ptr<HttpResponseState> *>(info.Data());
+    std::shared_ptr<HttpResponseState> state = *holder;
+    napi_env env = info.Env();
+
+    state->dataHandler = CreateFunctionReference(info[0]);
+    state->asynchronous = true;
+    EnsureHttpAbortedHandler(state, env);
+    state->response->onData([state, env](std::string_view chunk, bool isLast) {
+        if (!state->valid || !state->dataHandler) {
+            return;
+        }
+
+        Napi::Env callbackEnv(env);
+        Napi::HandleScope scope(callbackEnv);
+        Napi::Function handler = state->dataHandler->Value();
+        handler.Call(
+            {CopyToArrayBuffer(callbackEnv, chunk), Napi::Boolean::New(callbackEnv, isLast)});
+    });
+
+    return info.This();
+}
+
+Napi::Value ResponseOnAborted(const Napi::CallbackInfo &info) {
+    HttpResponseState *rawState = GetValidHttpResponseState(info);
+
+    if (!rawState) {
+        return info.Env().Undefined();
+    }
+
+    if (info.Length() != 1 || !info[0].IsFunction()) {
+        ThrowTypeError(info.Env(), "res.onAborted(handler) expects a function");
+        return info.Env().Undefined();
+    }
+
+    if (rawState->abortedHandler) {
+        Napi::Error::New(info.Env(), "res.onAborted() handler is already registered")
+            .ThrowAsJavaScriptException();
+        return info.Env().Undefined();
+    }
+
+    auto *holder = static_cast<std::shared_ptr<HttpResponseState> *>(info.Data());
+    std::shared_ptr<HttpResponseState> state = *holder;
+
+    state->abortedHandler = CreateFunctionReference(info[0]);
+    state->asynchronous = true;
+    EnsureHttpAbortedHandler(state, info.Env());
+    return info.This();
+}
+
 Napi::Value ResponseEnd(const Napi::CallbackInfo &info) {
     Napi::Env env = info.Env();
     HttpResponseState *state = GetValidHttpResponseState(info);
@@ -272,26 +384,38 @@ Napi::Value ResponseEnd(const Napi::CallbackInfo &info) {
         body = info[0].As<Napi::String>().Utf8Value();
     }
 
+    auto *holder = static_cast<std::shared_ptr<HttpResponseState> *>(info.Data());
+    std::shared_ptr<HttpResponseState> sharedState = *holder;
+
     state->response->end(body);
-    state->response = nullptr;
-    state->valid = false;
+    InvalidateHttpResponseState(sharedState);
     return info.This();
 }
 
-Napi::Object CreateResponseObject(Napi::Env env, HttpResponse *response, HttpResponseState **stateOut) {
-    auto *state = new HttpResponseState{response, true};
+Napi::Object CreateResponseObject(
+    Napi::Env env,
+    HttpResponse *response,
+    std::shared_ptr<HttpResponseState> *stateOut) {
+    auto state = std::make_shared<HttpResponseState>();
+    state->response = response;
+    state->valid = true;
     Napi::Object object = Napi::Object::New(env);
-    Napi::External<HttpResponseState> external = Napi::External<HttpResponseState>::New(
+    auto *holder = new std::shared_ptr<HttpResponseState>(state);
+    Napi::External<std::shared_ptr<HttpResponseState>> external =
+        Napi::External<std::shared_ptr<HttpResponseState>>::New(
         env,
-        state,
-        [](Napi::Env, HttpResponseState *value) {
+        holder,
+        [](Napi::Env, std::shared_ptr<HttpResponseState> *value) {
             delete value;
         });
 
     object.Set(Napi::Symbol::New(env, "swm.http-response-state"), external);
-    object.Set("writeStatus", Napi::Function::New(env, ResponseWriteStatus, "writeStatus", state));
-    object.Set("writeHeader", Napi::Function::New(env, ResponseWriteHeader, "writeHeader", state));
-    object.Set("end", Napi::Function::New(env, ResponseEnd, "end", state));
+    object.Set("writeStatus", Napi::Function::New(env, ResponseWriteStatus, "writeStatus", holder));
+    object.Set("writeHeader", Napi::Function::New(env, ResponseWriteHeader, "writeHeader", holder));
+    object.Set("onData", Napi::Function::New(env, ResponseOnData, "onData", holder));
+    object.Set("onAborted", Napi::Function::New(env, ResponseOnAborted, "onAborted", holder));
+    object.Set("end", Napi::Function::New(env, ResponseEnd, "end", holder));
+    state->object = Napi::Persistent(object);
     *stateOut = state;
     return object;
 }
@@ -516,7 +640,7 @@ private:
                                 uWS::HttpRequest *request) {
             Napi::Env env(env_);
             Napi::HandleScope scope(env);
-            HttpResponseState *responseState = nullptr;
+            std::shared_ptr<HttpResponseState> responseState;
             HttpRequestState *requestState = nullptr;
             Napi::Object responseObject = CreateResponseObject(env, response, &responseState);
             Napi::Object requestObject = CreateRequestObject(env, request, &requestState);
@@ -526,10 +650,10 @@ private:
             requestState->request = nullptr;
             requestState->valid = false;
 
-            if (responseState->valid && responseState->response) {
+            if (responseState->valid && responseState->response &&
+                !responseState->asynchronous) {
                 responseState->response->close();
-                responseState->response = nullptr;
-                responseState->valid = false;
+                InvalidateHttpResponseState(responseState);
             }
         };
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createConnection } from 'node:net'
 
 import { createApp, version } from '../lib/index.js'
 import { resolvePrebuildTarget } from '../lib/load-native.js'
@@ -15,8 +16,15 @@ const app = createApp()
 
 let completedResponse
 let completedRequest
+let completedBodyResponse
+let abortedResponse
 let closedSocket
 let closeCount = 0
+let abortCount = 0
+let resolveAborted
+const aborted = new Promise((resolve) => {
+  resolveAborted = resolve
+})
 
 app.get('/', (res) => {
   completedResponse = res
@@ -55,6 +63,39 @@ assert.equal(app.del('/method/delete', methodHandler), app)
 assert.equal(app.options('/method/options', methodHandler), app)
 assert.equal(app.head('/method/head', methodHandler), app)
 assert.equal(app.any('/method/any', methodHandler), app)
+
+app.post('/body', (res) => {
+  const chunks = []
+  completedBodyResponse = res
+
+  assert.equal(
+    res.onAborted(() => {
+      assert.fail('completed body request must not abort')
+    }),
+    res
+  )
+  assert.equal(
+    res.onData((chunk, isLast) => {
+      assert.ok(chunk instanceof ArrayBuffer)
+      chunks.push(Buffer.from(chunk))
+
+      if (isLast) {
+        res.writeHeader('content-type', 'application/octet-stream').end(Buffer.concat(chunks).toString('hex'))
+      }
+    }),
+    res
+  )
+})
+
+app.post('/abort', (res) => {
+  abortedResponse = res
+  res.onData(() => {})
+  res.onAborted(() => {
+    abortCount++
+    assert.throws(() => res.end('late'), /HTTP response is no longer valid/)
+    resolveAborted()
+  })
+})
 
 app.ws('/ws', {
   open(ws) {
@@ -132,6 +173,23 @@ async function runSelfTest() {
     assert.equal(await methodResponse.text(), expectedBody)
   }
 
+  const requestBody = Uint8Array.from({ length: 128 * 1024 }, (_, index) => index % 251)
+  const bodyResponse = await fetch(`http://127.0.0.1:${port}/body`, {
+    method: 'POST',
+    body: requestBody,
+    signal: AbortSignal.timeout(5_000)
+  })
+
+  assert.equal(bodyResponse.status, 200)
+  assert.equal(bodyResponse.headers.get('content-type'), 'application/octet-stream')
+  assert.equal(await bodyResponse.text(), Buffer.from(requestBody).toString('hex'))
+  assert.throws(() => completedBodyResponse.end('late'), /HTTP response is no longer valid/)
+
+  await abortRequest()
+  await withTimeout(aborted, 5_000, 'HTTP abort callback timed out')
+  assert.equal(abortCount, 1)
+  assert.throws(() => abortedResponse.onData(() => {}), /HTTP response is no longer valid/)
+
   const client = new WebSocket(`ws://127.0.0.1:${port}/ws`)
   client.binaryType = 'arraybuffer'
   const greeting = nextMessage(client)
@@ -171,4 +229,33 @@ async function runSelfTest() {
   assert.throws(() => closedSocket.send('late'), /WebSocket is no longer valid/)
 
   console.log(`smoke ok: ${version()}, HTTP + WebSocket on ${port}`)
+}
+
+function abortRequest() {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: '127.0.0.1', port }, () => {
+      socket.write(`POST /abort HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nContent-Length: 1048576\r\n\r\npartial`)
+      setImmediate(() => {
+        socket.destroy()
+        resolve()
+      })
+    })
+
+    socket.once('error', reject)
+  })
+}
+
+async function withTimeout(promise, milliseconds, message) {
+  let timer
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), milliseconds)
+      })
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
 }

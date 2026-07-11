@@ -61,13 +61,20 @@ process.on('SIGTERM', () => {
 })
 ```
 
-HTTP handlers are synchronous in v0.1. A response wrapper becomes invalid when
-its route callback returns. A WebSocket wrapper becomes invalid before its
+HTTP route handlers run synchronously. A response remains valid after its route
+callback only when `onData` or `onAborted` has been registered; otherwise an
+unfinished response is closed. A WebSocket wrapper becomes invalid before its
 `close` callback runs.
 
 HTTP responses support `writeStatus(status)`, `writeHeader(name, value)`, and
 `end(body)`. These methods return the response for chaining. Status and header
 values containing control characters are rejected.
+
+Request bodies are exposed as copied `ArrayBuffer` chunks with
+`res.onData((chunk, isLast) => {})`. The binding does not aggregate chunks, so
+the application remains responsible for enforcing its total body-size limit.
+Use `res.onAborted(handler)` to release per-request application state when the
+client disconnects. An aborted response is invalid before the handler runs.
 
 HTTP requests support `getMethod()`, `getUrl()`, and `getHeader(name)`. Request
 wrappers are valid only while their route callback is running. Returned strings
