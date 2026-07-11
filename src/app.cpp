@@ -25,6 +25,12 @@ struct HttpResponseState {
     Napi::ObjectReference object;
 };
 
+struct HttpResponseHolder {
+    HttpResponseState synchronousState;
+    HttpResponseState *state = &synchronousState;
+    std::shared_ptr<HttpResponseState> asynchronousState;
+};
+
 struct HttpRequestState {
     uWS::HttpRequest *request = nullptr;
     bool valid = false;
@@ -60,8 +66,8 @@ void ThrowTypeError(Napi::Env env, const char *message) {
 }
 
 HttpResponseState *GetValidHttpResponseState(const Napi::CallbackInfo &info) {
-    auto *holder = static_cast<std::shared_ptr<HttpResponseState> *>(info.Data());
-    HttpResponseState *state = holder ? holder->get() : nullptr;
+    auto *holder = static_cast<HttpResponseHolder *>(info.Data());
+    HttpResponseState *state = holder ? holder->state : nullptr;
 
     if (!state || !state->valid || !state->response) {
         Napi::Error::New(info.Env(), "HTTP response is no longer valid")
@@ -77,7 +83,7 @@ std::unique_ptr<Napi::FunctionReference> CreateFunctionReference(const Napi::Val
         Napi::Persistent(value.As<Napi::Function>()));
 }
 
-void InvalidateHttpResponseState(const std::shared_ptr<HttpResponseState> &state) {
+void InvalidateHttpResponseState(HttpResponseState *state) {
     state->response = nullptr;
     state->valid = false;
     state->asynchronous = false;
@@ -100,13 +106,28 @@ void EnsureHttpAbortedHandler(
 
         if (state->abortedHandler) {
             Napi::Function handler = state->abortedHandler->Value();
-            InvalidateHttpResponseState(state);
+            InvalidateHttpResponseState(state.get());
             handler.Call({});
             return;
         }
 
-        InvalidateHttpResponseState(state);
+        InvalidateHttpResponseState(state.get());
     });
+}
+
+std::shared_ptr<HttpResponseState> PromoteHttpResponseState(
+    HttpResponseHolder *holder,
+    const Napi::Object &object) {
+    if (!holder->asynchronousState) {
+        auto state = std::make_shared<HttpResponseState>();
+        state->response = holder->state->response;
+        state->valid = holder->state->valid;
+        state->object = Napi::Persistent(object);
+        holder->asynchronousState = state;
+        holder->state = state.get();
+    }
+
+    return holder->asynchronousState;
 }
 
 bool IsHttpTokenCharacter(unsigned char character) {
@@ -373,8 +394,10 @@ Napi::Value ResponseOnData(const Napi::CallbackInfo &info) {
         return info.Env().Undefined();
     }
 
-    auto *holder = static_cast<std::shared_ptr<HttpResponseState> *>(info.Data());
-    std::shared_ptr<HttpResponseState> state = *holder;
+    auto *holder = static_cast<HttpResponseHolder *>(info.Data());
+    std::shared_ptr<HttpResponseState> state = PromoteHttpResponseState(
+        holder,
+        info.This().As<Napi::Object>());
     napi_env env = info.Env();
 
     state->dataHandler = CreateFunctionReference(info[0]);
@@ -413,8 +436,10 @@ Napi::Value ResponseOnAborted(const Napi::CallbackInfo &info) {
         return info.Env().Undefined();
     }
 
-    auto *holder = static_cast<std::shared_ptr<HttpResponseState> *>(info.Data());
-    std::shared_ptr<HttpResponseState> state = *holder;
+    auto *holder = static_cast<HttpResponseHolder *>(info.Data());
+    std::shared_ptr<HttpResponseState> state = PromoteHttpResponseState(
+        holder,
+        info.This().As<Napi::Object>());
 
     state->abortedHandler = CreateFunctionReference(info[0]);
     state->asynchronous = true;
@@ -441,28 +466,23 @@ Napi::Value ResponseEnd(const Napi::CallbackInfo &info) {
         body = info[0].As<Napi::String>().Utf8Value();
     }
 
-    auto *holder = static_cast<std::shared_ptr<HttpResponseState> *>(info.Data());
-    std::shared_ptr<HttpResponseState> sharedState = *holder;
-
     state->response->end(body);
-    InvalidateHttpResponseState(sharedState);
+    InvalidateHttpResponseState(state);
     return info.This();
 }
 
 Napi::Object CreateResponseObject(
     Napi::Env env,
     HttpResponse *response,
-    std::shared_ptr<HttpResponseState> *stateOut) {
-    auto state = std::make_shared<HttpResponseState>();
-    state->response = response;
-    state->valid = true;
+    HttpResponseHolder **stateOut) {
+    auto *holder = new HttpResponseHolder;
+    holder->state->response = response;
+    holder->state->valid = true;
     Napi::Object object = Napi::Object::New(env);
-    auto *holder = new std::shared_ptr<HttpResponseState>(state);
-    Napi::External<std::shared_ptr<HttpResponseState>> external =
-        Napi::External<std::shared_ptr<HttpResponseState>>::New(
+    Napi::External<HttpResponseHolder> external = Napi::External<HttpResponseHolder>::New(
         env,
         holder,
-        [](Napi::Env, std::shared_ptr<HttpResponseState> *value) {
+        [](Napi::Env, HttpResponseHolder *value) {
             delete value;
         });
 
@@ -472,8 +492,7 @@ Napi::Object CreateResponseObject(
     object.Set("onData", Napi::Function::New(env, ResponseOnData, "onData", holder));
     object.Set("onAborted", Napi::Function::New(env, ResponseOnAborted, "onAborted", holder));
     object.Set("end", Napi::Function::New(env, ResponseEnd, "end", holder));
-    state->object = Napi::Persistent(object);
-    *stateOut = state;
+    *stateOut = holder;
     return object;
 }
 
@@ -814,15 +833,17 @@ private:
                                 uWS::HttpRequest *request) {
             Napi::Env env(env_);
             Napi::HandleScope scope(env);
-            std::shared_ptr<HttpResponseState> responseState;
+            HttpResponseHolder *responseHolder = nullptr;
             HttpRequestState *requestState = nullptr;
-            Napi::Object responseObject = CreateResponseObject(env, response, &responseState);
+            Napi::Object responseObject = CreateResponseObject(env, response, &responseHolder);
             Napi::Object requestObject = CreateRequestObject(env, request, &requestState);
 
             handler->Call({responseObject, requestObject});
 
             requestState->request = nullptr;
             requestState->valid = false;
+
+            HttpResponseState *responseState = responseHolder->state;
 
             if (responseState->valid && responseState->response &&
                 !responseState->asynchronous) {
