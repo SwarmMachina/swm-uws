@@ -30,7 +30,8 @@
     "check:release": "node scripts/check-release-prebuilds.js",
     "clean": "node-gyp clean",
     "prepublishOnly": "npm run check:release",
-    "test": "node test/smoke.js"
+    "test": "node test/smoke.js",
+    "test:v8-http": "node test/v8-http-smoke.js"
   },
   "devDependencies": {
     "@swarmmachina/standards": "^1.0.4",

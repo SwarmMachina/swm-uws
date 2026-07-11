@@ -19,6 +19,7 @@ RUN npm ci
 COPY . .
 RUN npm run build:native
 RUN npm test
+RUN npm run test:v8-http
 
 FROM scratch AS prebuild
 
