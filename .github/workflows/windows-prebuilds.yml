@@ -59,8 +59,24 @@ jobs:
         shell: bash
         run: |
           rm -rf prebuilds/linux-x64-glibc
+
+          node_image="node:${{ matrix.node }}-bookworm"
+          for attempt in 1 2 3; do
+            if docker pull "$node_image"; then
+              break
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "Failed to pull $node_image after $attempt attempts" >&2
+              exit 1
+            fi
+
+            sleep "$((attempt * 5))"
+          done
+
           docker build \
             --platform linux/amd64 \
+            --pull=false \
             --build-arg NODE_VERSION=${{ matrix.node }} \
             --target prebuild \
             --output type=local,dest=prebuilds \
