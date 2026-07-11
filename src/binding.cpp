@@ -1354,7 +1354,7 @@ void CreateApp(const FunctionCallbackInfo<Value> &args) {
 void Version(const FunctionCallbackInfo<Value> &args) {
     args.GetReturnValue().Set(NewString(
         args.GetIsolate(),
-        "0.1.0+uWebSockets-v20.67.0"));
+        SWM_UWS_VERSION "+uWebSockets-v20.67.0"));
 }
 
 void CloseListenSocket(const FunctionCallbackInfo<Value> &args) {

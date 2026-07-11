@@ -17,13 +17,13 @@ used by `swm-core`.
 TLS and permessage-deflate are disabled. Terminate TLS at an ingress or reverse
 proxy.
 
-Alpine Linux is not supported in v0.1.
+Alpine Linux is not supported in v0.2.
 
 Alpine uses musl libc, while the first prebuild target is glibc. A separate
 `linux-x64-musl` binary and CI job will be required later. Use
 `node:22-bookworm-slim` or `node:24-bookworm-slim` for now.
 
-Windows ARM64 is not supported in v0.1.
+Windows ARM64 is not supported in v0.2.
 
 ## API
 
