@@ -3,7 +3,7 @@
     {
       "target_name": "swm_uws",
       "sources": [
-        "src/v8_http.cpp",
+        "src/binding.cpp",
         "vendor/uSockets/src/bsd.c",
         "vendor/uSockets/src/context.c",
         "vendor/uSockets/src/loop.c",

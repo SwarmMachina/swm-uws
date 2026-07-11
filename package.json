@@ -36,7 +36,6 @@
   },
   "devDependencies": {
     "@swarmmachina/standards": "^1.0.4",
-    "node-addon-api": "^8.0.0",
     "node-gyp": "^11.0.0"
   }
 }
