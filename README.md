@@ -196,16 +196,18 @@ The resulting file is copied to:
 prebuilds/win32-x64/node-v${process.versions.modules}.node
 ```
 
-The `Prebuilds` workflow builds Node.js 22 and 24 separately on native Linux
-and Windows x64 runners, runs the same HTTP/WebSocket smoke test, and uploads:
+The `Prebuilds` workflow builds Node.js 22 and 24 separately. Linux x64
+prebuilds are compiled and smoke-tested inside the corresponding Bookworm
+container; Windows and macOS prebuilds use native runners. The workflow uploads:
 
-- the two `linux-x64-glibc` and two `win32-x64` prebuilds;
-- a combined npm release-candidate tarball containing Linux and Windows files.
+- two `linux-x64-glibc`, two `win32-x64`, and four macOS prebuilds;
+- a combined npm release-candidate tarball containing all supported platforms.
 
-The workflow installs the packed release candidate and smoke-tests it on both
-operating systems with Node.js 22 and 24. The `prepublishOnly` guard verifies
-that all four ABI files exist and that the Linux files are ELF while the
-Windows files are PE binaries.
+The Linux jobs reject binaries requiring newer symbols than Bookworm provides
+(`GLIBCXX_3.4.30` and `GLIBC_2.36`). The packed release candidate is installed
+and smoke-tested in `node:22-bookworm-slim` and `node:24-bookworm-slim`, as well
+as on native Windows and macOS runners. The `prepublishOnly` guard verifies that
+all eight ABI files exist and have the expected platform format.
 
 ## Docker smoke
 

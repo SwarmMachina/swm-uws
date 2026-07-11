@@ -40,6 +40,7 @@ jobs:
     runs-on:
       group: swm-ci
       labels: swm-linux
+    timeout-minutes: 30
     needs: quality
     strategy:
       fail-fast: false
@@ -54,35 +55,47 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
-
-      - name: Install build dependencies
-        run: npm ci
-
-      - name: Build native addon
-        run: npm run build:native
-
-      - name: Run HTTP and WebSocket smoke test
-        run: npm test
-
-      - name: Verify runtime-only installation
+      - name: Build and smoke-test native addon on Bookworm
+        shell: bash
         run: |
-          rm -rf build node_modules
-          npm ci --omit=dev
-          test ! -d node_modules/@swarmmachina/standards
-          test ! -d node_modules/node-addon-api
-          test ! -d node_modules/node-gyp
-          npm test
+          rm -rf prebuilds/linux-x64-glibc
+          docker build \
+            --platform linux/amd64 \
+            --build-arg NODE_VERSION=${{ matrix.node }} \
+            --target prebuild \
+            --output type=local,dest=prebuilds \
+            .
 
       - name: Verify prebuild
+        shell: bash
         run: |
           path="prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node"
           test -f "$path"
           file "$path" | grep -q 'ELF 64-bit'
           sha256sum "$path"
+
+      - name: Verify Bookworm ABI ceilings
+        shell: bash
+        run: |
+          path="prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node"
+
+          check_ceiling() {
+            prefix="$1"
+            ceiling="$2"
+            required="$(strings "$path" | grep -oE "${prefix}_[0-9]+(\.[0-9]+)+" | sort -Vu | tail -1)"
+            test -n "$required"
+
+            highest="$(printf '%s\n%s\n' "$required" "$ceiling" | sort -Vu | tail -1)"
+            if [ "$highest" != "$ceiling" ]; then
+              echo "$path requires $required, above the Bookworm ceiling $ceiling" >&2
+              exit 1
+            fi
+
+            echo "$path requires at most $required (Bookworm ceiling: $ceiling)"
+          }
+
+          check_ceiling GLIBCXX GLIBCXX_3.4.30
+          check_ceiling GLIBC GLIBC_2.36
 
       - name: Upload ABI prebuild
         uses: actions/upload-artifact@v4
@@ -331,6 +344,7 @@ jobs:
     runs-on:
       group: swm-ci
       labels: ${{ matrix.runner }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -353,6 +367,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Node.js
+        if: runner.os == 'Windows'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -363,18 +378,25 @@ jobs:
           name: swm-uws-release-candidate
           path: dist
 
-      - name: Install and smoke-test packed package on Linux
+      - name: Install and smoke-test packed package on Bookworm
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          tgz="$(find "$GITHUB_WORKSPACE/dist" -name '*.tgz' -type f -print -quit)"
-          test -n "$tgz"
-          mkdir consumer
-          cp test/installed-smoke.js consumer/smoke.mjs
-          cd consumer
-          npm init -y
-          npm install "$tgz" --omit=dev
-          node smoke.mjs
+          docker run --rm \
+            --platform linux/amd64 \
+            --memory 1g \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly" \
+            node:${{ matrix.node }}-bookworm-slim \
+            sh -euc '
+              tgz="$(find /workspace/dist -name "*.tgz" -type f -print -quit)"
+              test -n "$tgz"
+              mkdir /tmp/consumer
+              cp /workspace/test/installed-smoke.js /tmp/consumer/smoke.mjs
+              cd /tmp/consumer
+              npm init -y >/dev/null
+              npm install "$tgz" --omit=dev --ignore-scripts --no-audit --no-fund
+              node smoke.mjs
+            '
 
       - name: Install and smoke-test packed package on Windows
         if: runner.os == 'Windows'
