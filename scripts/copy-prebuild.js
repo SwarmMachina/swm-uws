@@ -6,7 +6,9 @@ const root = fileURLToPath(new URL('..', import.meta.url))
 const source = join(root, 'build', 'Release', 'swm_uws.node')
 const targetDirectories = new Map([
   ['linux/x64', 'linux-x64-glibc'],
-  ['win32/x64', 'win32-x64']
+  ['win32/x64', 'win32-x64'],
+  ['darwin/arm64', 'darwin-arm64'],
+  ['darwin/x64', 'darwin-x64']
 ])
 const targetDirectory = targetDirectories.get(`${process.platform}/${process.arch}`)
 

@@ -23,6 +23,26 @@ const expected = [
     path: 'prebuilds/win32-x64/node-v137.node',
     magic: Buffer.from([0x4d, 0x5a]),
     format: 'PE'
+  },
+  {
+    path: 'prebuilds/darwin-arm64/node-v127.node',
+    magic: Buffer.from([0xcf, 0xfa, 0xed, 0xfe]),
+    format: 'Mach-O'
+  },
+  {
+    path: 'prebuilds/darwin-arm64/node-v137.node',
+    magic: Buffer.from([0xcf, 0xfa, 0xed, 0xfe]),
+    format: 'Mach-O'
+  },
+  {
+    path: 'prebuilds/darwin-x64/node-v127.node',
+    magic: Buffer.from([0xcf, 0xfa, 0xed, 0xfe]),
+    format: 'Mach-O'
+  },
+  {
+    path: 'prebuilds/darwin-x64/node-v137.node',
+    magic: Buffer.from([0xcf, 0xfa, 0xed, 0xfe]),
+    format: 'Mach-O'
   }
 ]
 

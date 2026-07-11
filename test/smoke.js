@@ -7,6 +7,8 @@ import { resolvePrebuildTarget } from '../lib/load-native.js'
 assert.equal(version(), '0.2.0+uWebSockets-v20.67.0')
 assert.equal(resolvePrebuildTarget('linux', 'x64'), 'linux-x64-glibc')
 assert.equal(resolvePrebuildTarget('win32', 'x64'), 'win32-x64')
+assert.equal(resolvePrebuildTarget('darwin', 'arm64'), 'darwin-arm64')
+assert.equal(resolvePrebuildTarget('darwin', 'x64'), 'darwin-x64')
 assert.equal(resolvePrebuildTarget('win32', 'arm64'), null)
 
 const serveOnly = process.argv.includes('--serve')
