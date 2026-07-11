@@ -99,6 +99,9 @@ jobs:
     runs-on:
       group: swm-ci
       labels: swm-win
+    defaults:
+      run:
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
     needs: quality
     strategy:
       fail-fast: false
@@ -129,7 +132,6 @@ jobs:
         run: npm test
 
       - name: Verify runtime-only installation
-        shell: powershell
         run: |
           Remove-Item -Recurse -Force build, node_modules
           npm ci --omit=dev
@@ -145,7 +147,6 @@ jobs:
           npm test
 
       - name: Verify prebuild
-        shell: powershell
         run: |
           $path = "prebuilds/win32-x64/node-v${{ matrix.abi }}.node"
           if (-not (Test-Path $path)) {
