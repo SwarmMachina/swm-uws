@@ -283,7 +283,7 @@ jobs:
 
       - name: Install and smoke-test packed package on Windows
         if: runner.os == 'Windows'
-        shell: powershell
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         run: |
           $tgz = Get-ChildItem "$env:GITHUB_WORKSPACE\dist" -Filter '*.tgz' -File | Select-Object -First 1
           if (-not $tgz) {
