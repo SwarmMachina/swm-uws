@@ -20,8 +20,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify release tag belongs to master
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Verify workflow commit belongs to master
         run: git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/master
 
       - name: Set up Node.js
