@@ -4,8 +4,12 @@
   "description": "High-performance raw V8 binding for pinned uWebSockets and uSockets sources",
   "type": "module",
   "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
   "exports": {
-    ".": "./lib/index.js"
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    }
   },
   "files": [
     "LICENSES/",
