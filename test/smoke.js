@@ -317,25 +317,18 @@ async function runSelfTest() {
   assert.equal(drainCloseEvent.code, 1000)
   assert.equal(drainCloseEvent.reason, 'drained')
 
+  const forcedClose = nextClose(client)
   assert.equal(app.close(), app)
   assert.equal(app.close(), app)
   assert.throws(() => app.listen(host, port, () => {}), /app\.listen\(\) cannot be called after app\.close\(\)/)
-
-  const echoAfterClose = nextMessage(client)
-  client.send('still connected')
-  assert.equal(await echoAfterClose, 'still connected')
-
-  const gracefulClose = nextClose(client)
-  client.send('server-end')
-  const gracefulCloseEvent = await gracefulClose
-  assert.equal(gracefulCloseEvent.code, 4001)
-  assert.equal(gracefulCloseEvent.reason, 'server done')
+  const forcedCloseEvent = await forcedClose
+  assert.equal(forcedCloseEvent.code, 1006)
 
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(closeCount, 2)
   assert.deepEqual(socketCloses, [
     { code: 1006, reason: '' },
-    { code: 4001, reason: 'server done' }
+    { code: 1006, reason: '' }
   ])
   assert.throws(() => closedSocket.send('late'), /WebSocket is no longer valid/)
 

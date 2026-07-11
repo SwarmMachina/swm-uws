@@ -3,11 +3,11 @@ import { createRequire } from 'node:module'
 import { createConnection } from 'node:net'
 
 const require = createRequire(import.meta.url)
-const { App, createApp, us_listen_socket_close, version } = require('../build/Release/swm_uws_v8_http.node')
+const { App, createApp, us_listen_socket_close, version } = require('../build/Release/swm_uws.node')
 const port = 40_000 + (process.pid % 10_000)
 const app = App()
 
-assert.equal(version(), 'v8-http-prototype')
+assert.equal(version(), '0.1.0+uWebSockets-v20.67.0')
 assert.equal(typeof createApp, 'function')
 
 let completedResponse

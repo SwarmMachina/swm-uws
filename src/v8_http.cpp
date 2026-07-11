@@ -735,21 +735,63 @@ void SocketSend(const FunctionCallbackInfo<Value> &args) {
         compress)));
 }
 
+bool IsValidWebSocketCloseCode(int code) {
+    if (code == 0) return true;
+    if (code < 1000 || code > 4999) return false;
+    return code != 1004 && code != 1005 && code != 1006 && code != 1015;
+}
+
 void SocketEnd(const FunctionCallbackInfo<Value> &args) {
     SocketState *state = GetSocketState(args);
     if (!state) return;
-    if (args.Length() > 2 || (args.Length() > 0 && !args[0]->IsNumber()) ||
-        (args.Length() > 1 && !args[1]->IsString())) {
-        ThrowTypeError(args.GetIsolate(), "ws.end(code, reason) received invalid arguments");
+    if (args.Length() > 2 ||
+        (args.Length() > 0 && !args[0]->IsUndefined() && !args[0]->IsNumber()) ||
+        (args.Length() > 1 && !args[1]->IsUndefined() && !args[1]->IsString())) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.end([code[, reason]]) expects a number and a string");
         return;
     }
-    const int code = args.Length() > 0
-        ? args[0]->Int32Value(args.GetIsolate()->GetCurrentContext()).FromMaybe(1000)
-        : 1000;
+    int code = 0;
+    if (args.Length() > 0 && args[0]->IsNumber()) {
+        const double numericCode = args[0]
+                                       ->NumberValue(args.GetIsolate()->GetCurrentContext())
+                                       .FromMaybe(-1);
+        if (!std::isfinite(numericCode) || std::floor(numericCode) != numericCode) {
+            ThrowTypeError(args.GetIsolate(), "ws.end() code must be an integer");
+            return;
+        }
+        if (numericCode < 0 || numericCode > 4999) {
+            ThrowTypeError(
+                args.GetIsolate(),
+                "ws.end() code must be 0 or a valid WebSocket close code");
+            return;
+        }
+        code = static_cast<int>(numericCode);
+    }
+    if (!IsValidWebSocketCloseCode(code)) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.end() code must be 0 or a valid WebSocket close code");
+        return;
+    }
     Local<Value> reasonValue = String::Empty(args.GetIsolate());
     if (args.Length() > 1) reasonValue = args[1];
     NativeBytes reason(args.GetIsolate(), reasonValue);
+    if (code == 0 && !reason.View().empty()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.end() reason requires a non-zero close code");
+        return;
+    }
+    if (reason.View().length() > 123) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.end() reason must be at most 123 UTF-8 bytes");
+        return;
+    }
     state->socket->end(code, reason.View());
+    args.GetReturnValue().Set(args.This());
 }
 
 void SocketClose(const FunctionCallbackInfo<Value> &args) {
@@ -760,6 +802,7 @@ void SocketClose(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     state->socket->close();
+    args.GetReturnValue().Set(args.This());
 }
 
 void SocketGetBufferedAmount(const FunctionCallbackInfo<Value> &args) {
@@ -931,7 +974,9 @@ bool ReadUnsignedOption(
     const double number = value->NumberValue(isolate->GetCurrentContext()).FromMaybe(-1);
     if (!std::isfinite(number) || std::floor(number) != number || number < minimum ||
         number > maximum) {
-        std::string message = "WebSocket " + std::string(name) + " has an invalid value";
+        std::string message = "WebSocket " + std::string(name) +
+            " must be an integer between " + std::to_string(minimum) + " and " +
+            std::to_string(maximum);
         ThrowTypeError(isolate, message.c_str());
         return false;
     }
@@ -964,8 +1009,7 @@ Global<Function> *StoreOptionalHandler(
     Local<Value> value = GetProperty(isolate, options, name);
     if (value->IsUndefined()) return nullptr;
     if (!value->IsFunction()) {
-        std::string message = "WebSocket " + std::string(name) + " handler must be a function";
-        ThrowTypeError(isolate, message.c_str());
+        ThrowTypeError(isolate, "WebSocket handlers must be functions");
         *valid = false;
         return nullptr;
     }
@@ -1060,10 +1104,15 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
 
     bool handlersValid = true;
     Global<Function> *upgrade = StoreOptionalHandler(state, isolate, options, "upgrade", &handlersValid);
+    if (!handlersValid) return;
     Global<Function> *open = StoreOptionalHandler(state, isolate, options, "open", &handlersValid);
+    if (!handlersValid) return;
     Global<Function> *message = StoreOptionalHandler(state, isolate, options, "message", &handlersValid);
+    if (!handlersValid) return;
     Global<Function> *drain = StoreOptionalHandler(state, isolate, options, "drain", &handlersValid);
+    if (!handlersValid) return;
     Global<Function> *subscription = StoreOptionalHandler(state, isolate, options, "subscription", &handlersValid);
+    if (!handlersValid) return;
     Global<Function> *close = StoreOptionalHandler(state, isolate, options, "close", &handlersValid);
     if (!handlersValid) return;
 
@@ -1303,7 +1352,9 @@ void CreateApp(const FunctionCallbackInfo<Value> &args) {
 }
 
 void Version(const FunctionCallbackInfo<Value> &args) {
-    args.GetReturnValue().Set(NewString(args.GetIsolate(), "v8-http-prototype"));
+    args.GetReturnValue().Set(NewString(
+        args.GetIsolate(),
+        "0.1.0+uWebSockets-v20.67.0"));
 }
 
 void CloseListenSocket(const FunctionCallbackInfo<Value> &args) {

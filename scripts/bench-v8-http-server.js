@@ -2,7 +2,7 @@ import { createRequire } from 'node:module'
 import { performance } from 'node:perf_hooks'
 
 const require = createRequire(import.meta.url)
-const native = require('../build/Release/swm_uws_v8_http.node')
+const native = require('../build/Release/swm_uws.node')
 const port = Number(process.env.PORT || 30124)
 const app = native.createApp()
 let startedElu

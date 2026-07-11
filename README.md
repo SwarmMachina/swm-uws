@@ -1,7 +1,8 @@
 # @swarmmachina/swm-uws
 
-Small, controlled Node-API binding for pinned uWebSockets and uSockets sources.
-It intentionally exposes only the API required by the v0.1 smoke test.
+High-performance raw V8 binding for pinned uWebSockets and uSockets sources.
+Its public surface is intentionally aligned with the HTTP and WebSocket APIs
+used by `swm-core`.
 
 ## Supported runtime
 
@@ -27,11 +28,11 @@ Windows ARM64 is not supported in v0.1.
 ## API
 
 ```js
-import { createApp, version } from '@swarmmachina/swm-uws'
+import { App, us_listen_socket_close, version } from '@swarmmachina/swm-uws'
 
 console.log(version())
 
-const app = createApp()
+const app = App()
 
 app.get('/', (res, req) => {
   console.log(req.getMethod(), req.getUrl(), req.getHeader('user-agent'))
@@ -51,12 +52,14 @@ app.ws('/ws', {
   }
 })
 
-app.listen('0.0.0.0', 3000, (ok) => {
-  if (!ok) process.exit(1)
+let listenSocket
+app.listen(3000, (socket) => {
+  if (!socket) process.exit(1)
+  listenSocket = socket
 })
 
 process.on('SIGTERM', () => {
-  // Stop accepting new connections. Existing WebSockets may finish normally.
+  us_listen_socket_close(listenSocket)
   app.close()
 })
 ```
@@ -66,37 +69,43 @@ callback only when `onData` or `onAborted` has been registered; otherwise an
 unfinished response is closed. A WebSocket wrapper becomes invalid before its
 `close` callback runs.
 
-WebSockets support `send(message[, isBinary])`, immediate `close()`, graceful
-`end(code, reason)`, and `getBufferedAmount()`. Close reasons are limited to 123
-UTF-8 bytes and invalid or reserved close codes are rejected.
+WebSockets support `send`, `close`, `end`, `getBufferedAmount`, `getUserData`,
+`subscribe`, and `unsubscribe`. Apps support `publish` and `numSubscribers`.
+Close reasons are limited to 123 UTF-8 bytes and invalid or reserved close
+codes are rejected.
 
 `app.ws(path, behavior)` accepts `maxPayloadLength` (default 16 KiB),
-`idleTimeout` (default 120 seconds; either 0 or 8–960), `maxBackpressure`
-(default 64 KiB), and `closeOnBackpressureLimit` (default false). The optional
-`drain(ws)` callback reports writable progress after backpressure.
+`idleTimeout` (default 120 seconds; either 0 or 8–960), `maxBackpressure`,
+`maxLifetime`, `closeOnBackpressureLimit`, `resetIdleTimeoutOnSend`, and
+`sendPingsAutomatically`. Supported callbacks are `upgrade`, `open`, `message`,
+`drain`, `subscription`, and `close`.
 
-HTTP responses support `writeStatus(status)`, `writeHeader(name, value)`, and
-`end(body)`. These methods return the response for chaining. Status and header
-values containing control characters are rejected.
+HTTP responses support `writeStatus`, `writeHeader`, `cork`, `write`, `tryEnd`,
+`onWritable`, `getWriteOffset`, `getRemoteAddressAsText`, `upgrade`, and `end`.
+Status and header values containing control characters are rejected.
 
-Request bodies are exposed as copied `ArrayBuffer` chunks with
-`res.onData((chunk, isLast) => {})`. The binding does not aggregate chunks, so
-the application remains responsible for enforcing its total body-size limit.
-Use `res.onAborted(handler)` to release per-request application state when the
-client disconnects. An aborted response is invalid before the handler runs.
+Request bodies are exposed as zero-copy external `ArrayBuffer` chunks with
+`res.onData((chunk, isLast) => {})`. Each chunk is valid only during its callback
+and is detached immediately afterwards. Copy it inside the callback if it must
+be retained, for example `Buffer.from(new Uint8Array(chunk))`. The binding does
+not aggregate chunks; the application remains responsible for enforcing its
+total body-size limit. An aborted response is invalid before its `onAborted`
+handler runs.
 
-HTTP requests support `getMethod()`, `getUrl()`, and `getHeader(name)`. Request
-wrappers are valid only while their route callback is running. Returned strings
-are safe to retain.
+HTTP requests support `getMethod`, `getUrl`, `getHeader`, `getQuery`,
+`getParameter`, and `forEach`. Request wrappers are valid only while their route
+or upgrade callback is running. Returned strings are safe to retain.
 
 Routes can be registered with `get`, `post`, `put`, `patch`, `del`, `options`,
 `head`, and `any`. Every registration method returns the app for chaining.
 
-`app.close()` is idempotent. It closes the listening socket immediately and
-allows active WebSockets to finish before releasing the native app. A closed
-app cannot listen again.
+`app.close()` is idempotent and closes the HTTP and WebSocket contexts,
+including active WebSockets. Use `us_listen_socket_close(socket)` first when
+only accepting new connections must stop while active work drains. A closed app
+cannot listen again.
 
-No other uWebSockets.js API is implemented.
+`createApp()` remains an alias of `App()` for compatibility. APIs outside the
+documented `swm-core` surface are not implemented.
 
 ## Development build
 

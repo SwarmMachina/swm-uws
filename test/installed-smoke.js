@@ -1,19 +1,21 @@
 import assert from 'node:assert/strict'
 
-import { createApp, version } from '@swarmmachina/swm-uws'
+import { App, us_listen_socket_close, version } from '@swarmmachina/swm-uws'
 
 assert.equal(version(), '0.1.0+uWebSockets-v20.67.0')
 
 const port = 30_000 + (process.pid % 10_000)
-const app = createApp()
+const app = App()
 
 app.get('/', (res) => {
   res.end('ok')
 })
 
+let listenSocket
 await new Promise((resolve, reject) => {
-  app.listen('127.0.0.1', port, (ok) => {
-    if (ok) {
+  app.listen(port, (socket) => {
+    if (socket) {
+      listenSocket = socket
       resolve()
       return
     }
@@ -28,5 +30,6 @@ const response = await fetch(`http://127.0.0.1:${port}/`, {
 
 assert.equal(response.status, 200)
 assert.equal(await response.text(), 'ok')
+us_listen_socket_close(listenSocket)
 assert.equal(app.close(), app)
 console.log(`installed package smoke ok: ${version()}`)

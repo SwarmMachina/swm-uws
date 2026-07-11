@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { App, us_listen_socket_close } = require('../build/Release/swm_uws_v8_http.node')
+const { App, us_listen_socket_close } = require('../build/Release/swm_uws.node')
 const port = 40_000 + (process.pid % 10_000)
 const app = App()
 

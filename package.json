@@ -1,7 +1,7 @@
 {
   "name": "@swarmmachina/swm-uws",
   "version": "0.1.0",
-  "description": "Minimal Node-API binding for pinned uWebSockets and uSockets sources",
+  "description": "High-performance raw V8 binding for pinned uWebSockets and uSockets sources",
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
