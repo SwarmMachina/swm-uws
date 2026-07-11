@@ -160,12 +160,85 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  macos:
+    name: macOS ${{ matrix.arch }} / Node.js ${{ matrix.node }}
+    runs-on: ${{ matrix.runner }}
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: 22
+            abi: 127
+            arch: arm64
+            binary_arch: arm64
+            runner: macos-15
+          - node: 24
+            abi: 137
+            arch: arm64
+            binary_arch: arm64
+            runner: macos-15
+          - node: 22
+            abi: 127
+            arch: x64
+            binary_arch: x86_64
+            runner: macos-15-intel
+          - node: 24
+            abi: 137
+            arch: x64
+            binary_arch: x86_64
+            runner: macos-15-intel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          architecture: ${{ matrix.arch }}
+
+      - name: Install build dependencies
+        run: npm ci
+
+      - name: Build native addon
+        run: npm run build:native
+
+      - name: Run HTTP and WebSocket smoke test
+        run: npm test
+
+      - name: Verify runtime-only installation
+        run: |
+          rm -rf build node_modules
+          npm ci --omit=dev
+          test ! -d node_modules/@swarmmachina/standards
+          test ! -d node_modules/node-gyp
+          npm test
+
+      - name: Verify prebuild
+        run: |
+          path="prebuilds/darwin-${{ matrix.arch }}/node-v${{ matrix.abi }}.node"
+          test -f "$path"
+          file "$path" | grep -q 'Mach-O 64-bit'
+          test "$(lipo -archs "$path")" = "${{ matrix.binary_arch }}"
+          shasum -a 256 "$path"
+
+      - name: Upload ABI prebuild
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-node-v${{ matrix.abi }}
+          path: prebuilds/darwin-${{ matrix.arch }}/node-v${{ matrix.abi }}.node
+          if-no-files-found: error
+          retention-days: 14
+
   package:
     name: Assemble npm package
     runs-on: ubuntu-24.04
     needs:
       - linux
       - windows
+      - macos
 
     steps:
       - name: Checkout
@@ -200,6 +273,30 @@ jobs:
         with:
           name: windows-x64-node-v137
           path: prebuilds/win32-x64
+
+      - name: Download macOS arm64 Node.js 22 prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64-node-v127
+          path: prebuilds/darwin-arm64
+
+      - name: Download macOS arm64 Node.js 24 prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64-node-v137
+          path: prebuilds/darwin-arm64
+
+      - name: Download macOS x64 Node.js 22 prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-x64-node-v127
+          path: prebuilds/darwin-x64
+
+      - name: Download macOS x64 Node.js 24 prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-x64-node-v137
+          path: prebuilds/darwin-x64
 
       - name: Install dependencies
         run: npm ci
@@ -294,10 +391,61 @@ jobs:
           npm.cmd install $tgz.FullName --omit=dev
           node smoke.mjs
 
+  package-smoke-macos:
+    name: Package smoke / macOS ${{ matrix.arch }} / Node.js ${{ matrix.node }}
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: 22
+            arch: arm64
+            runner: macos-15
+          - node: 24
+            arch: arm64
+            runner: macos-15
+          - node: 22
+            arch: x64
+            runner: macos-15-intel
+          - node: 24
+            arch: x64
+            runner: macos-15-intel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          architecture: ${{ matrix.arch }}
+
+      - name: Download npm package
+        uses: actions/download-artifact@v4
+        with:
+          name: swm-uws-release-candidate
+          path: dist
+
+      - name: Install and smoke-test packed package
+        shell: bash
+        run: |
+          tgz="$(find "$GITHUB_WORKSPACE/dist" -name '*.tgz' -type f -print -quit)"
+          test -n "$tgz"
+          mkdir consumer
+          cp test/installed-smoke.js consumer/smoke.mjs
+          cd consumer
+          npm init -y
+          npm install "$tgz" --omit=dev
+          node smoke.mjs
+
   publish:
     name: Publish npm package
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: package-smoke
+    needs:
+      - package-smoke
+      - package-smoke-macos
     runs-on: ubuntu-24.04
 
     steps:
