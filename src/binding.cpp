@@ -3,6 +3,7 @@
 #include <v8.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -161,6 +162,10 @@ Local<Value> CallJsValue(
 class NativeBytes {
 public:
     NativeBytes(Isolate *isolate, Local<Value> value, bool allowUndefined = false) {
+        if (arenaDepth_++ == 0) {
+            arenaOffset_ = 0;
+        }
+
         if (allowUndefined && value->IsUndefined()) {
             return;
         }
@@ -169,20 +174,20 @@ public:
             Local<String> string = value.As<String>();
 #if V8_MAJOR_VERSION >= 13
             const size_t length = string->Utf8LengthV2(isolate);
-            owned_.resize(length);
-            string->WriteUtf8V2(isolate, owned_.data(), length);
+            char *data = Allocate(length);
+            string->WriteUtf8V2(isolate, data, length);
 #else
             const int length = string->Utf8Length(isolate);
-            owned_.resize(length);
+            char *data = Allocate(static_cast<std::size_t>(length));
             string->WriteUtf8(
                 isolate,
-                owned_.data(),
+                data,
                 length,
                 nullptr,
                 String::NO_NULL_TERMINATION);
 #endif
-            data_ = owned_.data();
-            length_ = owned_.length();
+            data_ = data;
+            length_ = static_cast<std::size_t>(length);
             return;
         }
 
@@ -205,6 +210,13 @@ public:
         valid_ = false;
     }
 
+    ~NativeBytes() {
+        arenaDepth_--;
+    }
+
+    NativeBytes(const NativeBytes &) = delete;
+    NativeBytes &operator=(const NativeBytes &) = delete;
+
     bool IsValid() const {
         return valid_;
     }
@@ -214,7 +226,29 @@ public:
     }
 
 private:
-    std::string owned_;
+    static constexpr std::size_t ArenaSize = 128 * 1024;
+    static constexpr std::size_t ArenaAlignment = 8;
+    inline static thread_local std::array<char, ArenaSize> arena_{};
+    inline static thread_local std::size_t arenaOffset_ = 0;
+    inline static thread_local std::size_t arenaDepth_ = 0;
+
+    char *Allocate(std::size_t length) {
+        const std::size_t remaining = arena_.size() - arenaOffset_;
+        if (length <= remaining) {
+            const std::size_t alignedLength =
+                (length + ArenaAlignment - 1) & ~(ArenaAlignment - 1);
+            if (alignedLength <= remaining) {
+                char *data = arena_.data() + arenaOffset_;
+                arenaOffset_ += alignedLength;
+                return data;
+            }
+        }
+
+        fallback_.resize(length);
+        return fallback_.data();
+    }
+
+    std::string fallback_;
     const char *data_ = nullptr;
     std::size_t length_ = 0;
     bool valid_ = true;
@@ -399,7 +433,13 @@ void ResponseCork(const FunctionCallbackInfo<Value> &args) {
     Isolate *isolate = args.GetIsolate();
     Local<Function> handler = args[0].As<Function>();
     HttpResponse *updated = response->cork([isolate, handler]() {
-        CallJs(isolate, handler, 0, nullptr);
+        handler
+            ->Call(
+                isolate->GetCurrentContext(),
+                isolate->GetCurrentContext()->Global(),
+                0,
+                nullptr)
+            .IsEmpty();
     });
     if (GetInternalPointer(args.This())) SetInternalPointer(args.This(), updated);
     args.GetReturnValue().Set(args.This());
@@ -696,7 +736,15 @@ void RequestForEach(const FunctionCallbackInfo<Value> &args) {
     Local<Function> handler = args[0].As<Function>();
     for (const auto &[name, value] : *request) {
         Local<Value> argv[] = {NewString(isolate, name), NewString(isolate, value)};
-        if (!CallJs(isolate, handler, 2, argv)) return;
+        if (handler
+                ->Call(
+                    isolate->GetCurrentContext(),
+                    isolate->GetCurrentContext()->Global(),
+                    2,
+                    argv)
+                .IsEmpty()) {
+            return;
+        }
     }
 }
 
