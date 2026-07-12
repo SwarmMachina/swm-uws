@@ -21,20 +21,21 @@ used by `swm-core`.
 TLS and permessage-deflate are disabled. Terminate TLS at an ingress or reverse
 proxy.
 
-Alpine Linux is not supported in v0.3.
+Alpine Linux is not supported in v0.4.
 
 Alpine uses musl libc, while the first prebuild target is glibc. A separate
 `linux-x64-musl` binary and CI job will be required later. Use
 `node:22-bookworm-slim` or `node:24-bookworm-slim` for now.
 
-Windows ARM64 is not supported in v0.3.
+Windows ARM64 is not supported in v0.4.
 
 ## API
 
 ```js
-import { App, us_listen_socket_close, version } from '@swarmmachina/swm-uws'
+import { App, capabilities, us_listen_socket_close, version } from '@swarmmachina/swm-uws'
 
 console.log(version())
+console.log(capabilities())
 
 const app = App()
 
@@ -86,19 +87,23 @@ codes are rejected.
 
 HTTP responses support `writeStatus`, `writeHeader`, `cork`, `write`, `tryEnd`,
 `onWritable`, `getWriteOffset`, `getRemoteAddressAsText`, `upgrade`, and `end`.
-Status and header values containing control characters are rejected.
+The optional fast-path methods `endBatch`, `beginWrite`, and `collectBody` are
+advertised by `capabilities()`. Status and header values containing control
+characters are rejected, including through `endBatch`.
 
 Request bodies are exposed as zero-copy external `ArrayBuffer` chunks with
 `res.onData((chunk, isLast) => {})`. Each chunk is valid only during its callback
 and is detached immediately afterwards. Copy it inside the callback if it must
-be retained, for example `Buffer.from(new Uint8Array(chunk))`. The binding does
-not aggregate chunks; the application remains responsible for enforcing its
-total body-size limit. An aborted response is invalid before its `onAborted`
-handler runs.
+be retained, for example `Buffer.from(new Uint8Array(chunk))`.
+`collectBody(maxSize, callback)` provides bounded native aggregation and calls
+back with an owned `ArrayBuffer`, or `null` when the limit is exceeded. An
+aborted response is invalid before its `onAborted` handler runs.
 
 HTTP requests support `getMethod`, `getUrl`, `getHeader`, `getQuery`,
-`getParameter`, and `forEach`. Request wrappers are valid only while their route
-or upgrade callback is running. Returned strings are safe to retain.
+`getParameter`, and `forEach`. `snapshot(paramCount)` captures method, URL,
+query, headers, and route parameters in one native call for asynchronous
+handlers. Request wrappers are valid only while their route or upgrade callback
+is running. Returned strings are safe to retain.
 
 Routes can be registered with `get`, `post`, `put`, `patch`, `del`, `options`,
 `head`, and `any`. Every registration method returns the app for chaining.
@@ -231,3 +236,16 @@ Build @swarmmachina/swm-uws for this target first.
 ```
 
 Vendored source provenance is recorded in `vendor/VERSIONS.md`.
+
+## Updating upstream dependencies
+
+Refresh both vendored gitlinks from an exact uWebSockets.js release tag, reapply
+local patches, and regenerate the SHA-256 manifest:
+
+```bash
+npm run deps:update:vendor -- v20.69.0
+npm run deps:check:vendor
+```
+
+The updater accepts only `v20.x.0` tags and records every resolved commit in
+`vendor/VERSIONS.md`. Always rebuild and run the test suite after an update.

@@ -1,0 +1,47 @@
+diff --git a/src/HttpResponseData.h b/src/HttpResponseData.h
+--- a/src/HttpResponseData.h
++++ b/src/HttpResponseData.h
+@@ -97,5 +97,7 @@ private:
+         HTTP_WRITE_CALLED = 2, // used
+         HTTP_END_CALLED = 4, // used
+         HTTP_RESPONSE_PENDING = 8, // used
+-        HTTP_CONNECTION_CLOSE = 16 // used
++        HTTP_CONNECTION_CLOSE = 16, // used
++        /* SWM patch: beginWrite already emitted the header/body separator. */
++        HTTP_CHUNKED_READY = 32
+     };
+diff --git a/src/HttpResponse.h b/src/HttpResponse.h
+--- a/src/HttpResponse.h
++++ b/src/HttpResponse.h
+@@ -123,3 +123,7 @@ private:
+             if (data.length()) {
+-                Super::write("\r\n", 2);
++                if (httpResponseData->state & HttpResponseData<SSL>::HTTP_CHUNKED_READY) {
++                    httpResponseData->state &= ~HttpResponseData<SSL>::HTTP_CHUNKED_READY;
++                } else {
++                    Super::write("\r\n", 2);
++                }
+                 writeUnsignedHex((unsigned int) data.length());
+@@ -132,3 +136,8 @@ private:
+             /* Terminating 0 chunk */
+-            Super::write("\r\n0\r\n\r\n", 7);
++            if (httpResponseData->state & HttpResponseData<SSL>::HTTP_CHUNKED_READY) {
++                httpResponseData->state &= ~HttpResponseData<SSL>::HTTP_CHUNKED_READY;
++                Super::write("0\r\n\r\n", 5);
++            } else {
++                Super::write("\r\n0\r\n\r\n", 7);
++            }
+ 
+@@ -444,3 +454,4 @@ public:
+             /* Start of the body */
+             Super::write("\r\n", 2);
++            httpResponseData->state |= HttpResponseData<SSL>::HTTP_CHUNKED_READY;
+         }
+@@ -490,2 +501,6 @@ public:
+-        Super::write("\r\n", 2);
++        if (httpResponseData->state & HttpResponseData<SSL>::HTTP_CHUNKED_READY) {
++            httpResponseData->state &= ~HttpResponseData<SSL>::HTTP_CHUNKED_READY;
++        } else {
++            Super::write("\r\n", 2);
++        }
+         writeUnsignedHex((unsigned int) data.length());

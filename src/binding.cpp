@@ -29,6 +29,7 @@ using v8::HandleScope;
 using v8::Isolate;
 using v8::Local;
 using v8::NewStringType;
+using v8::Null;
 using v8::Number;
 using v8::Object;
 using v8::String;
@@ -380,6 +381,82 @@ void ResponseEnd(const FunctionCallbackInfo<Value> &args) {
     args.GetReturnValue().Set(args.This());
 }
 
+void ResponseEndBatch(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if ((args.Length() != 2 && args.Length() != 3) || !args[0]->IsString() ||
+        !args[1]->IsArray()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "res.endBatch(status, headerLines, body?) expects a status string and a flat header array");
+        return;
+    }
+
+    Isolate *isolate = args.GetIsolate();
+    Local<Context> context = isolate->GetCurrentContext();
+    NativeBytes status(isolate, args[0]);
+    if (!IsValidStatus(status.View())) {
+        ThrowTypeError(
+            isolate,
+            "res.endBatch(status, headerLines, body?) expects a valid status");
+        return;
+    }
+
+    Local<Array> lines = args[1].As<Array>();
+    if ((lines->Length() & 1U) != 0) {
+        ThrowTypeError(isolate, "res.endBatch() headerLines must contain name/value pairs");
+        return;
+    }
+
+    std::vector<std::pair<std::string, std::string>> headers;
+    headers.reserve(lines->Length() / 2);
+    for (uint32_t index = 0; index < lines->Length(); index += 2) {
+        Local<Value> nameValue;
+        Local<Value> headerValue;
+        if (!lines->Get(context, index).ToLocal(&nameValue) ||
+            !lines->Get(context, index + 1).ToLocal(&headerValue)) {
+            return;
+        }
+        if (!nameValue->IsString() || !headerValue->IsString()) {
+            ThrowTypeError(isolate, "res.endBatch() headerLines entries must be strings");
+            return;
+        }
+
+        NativeBytes name(isolate, nameValue);
+        NativeBytes value(isolate, headerValue);
+        if (!IsValidHeaderName(name.View()) ||
+            ContainsInvalidHeaderValueCharacter(value.View())) {
+            ThrowTypeError(isolate, "res.endBatch() received an invalid header");
+            return;
+        }
+        headers.emplace_back(name.View(), value.View());
+    }
+
+    Local<Value> bodyValue = v8::Undefined(isolate);
+    if (args.Length() == 3) bodyValue = args[2];
+    NativeBytes body(isolate, bodyValue, true);
+    if (!body.IsValid()) {
+        ThrowTypeError(isolate, "res.endBatch() body expects a string or buffer");
+        return;
+    }
+
+    auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
+    std::shared_ptr<AsyncResponseState> asyncState = async
+        ? async->shared_from_this()
+        : std::shared_ptr<AsyncResponseState>();
+    response->cork([response, &status, &headers, &body]() {
+        response->writeStatus(status.View());
+        for (const auto &[name, value] : headers) {
+            response->writeHeader(name, value);
+        }
+        response->end(body.View());
+    });
+
+    if (asyncState) InvalidateAsyncResponse(asyncState);
+    else InvalidateResponseObject(args.This());
+    args.GetReturnValue().Set(args.This());
+}
+
 void ResponseWriteStatus(const FunctionCallbackInfo<Value> &args) {
     HttpResponse *response = GetResponse(args);
     if (!response) return;
@@ -442,6 +519,17 @@ void ResponseCork(const FunctionCallbackInfo<Value> &args) {
             .IsEmpty();
     });
     if (GetInternalPointer(args.This())) SetInternalPointer(args.This(), updated);
+    args.GetReturnValue().Set(args.This());
+}
+
+void ResponseBeginWrite(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "res.beginWrite() does not accept arguments");
+        return;
+    }
+    response->beginWrite();
     args.GetReturnValue().Set(args.This());
 }
 
@@ -624,6 +712,114 @@ void ResponseOnData(const FunctionCallbackInfo<Value> &args) {
     args.GetReturnValue().Set(args.This());
 }
 
+void ResponseCollectBody(const FunctionCallbackInfo<Value> &args) {
+    if (!GetResponse(args)) return;
+    if (args.Length() != 2 || !args[0]->IsNumber() || !args[1]->IsFunction()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "res.collectBody(maxSize, handler) expects a size and a function");
+        return;
+    }
+
+    Isolate *isolate = args.GetIsolate();
+    const double maxSizeNumber = args[0]->NumberValue(isolate->GetCurrentContext())
+                                     .FromMaybe(-1);
+    constexpr double MaxCollectBodySize = 1024.0 * 1024.0 * 1024.0;
+    if (!std::isfinite(maxSizeNumber) || maxSizeNumber < 0 ||
+        maxSizeNumber > MaxCollectBodySize || std::floor(maxSizeNumber) != maxSizeNumber) {
+        ThrowTypeError(
+            isolate,
+            "res.collectBody(maxSize, handler) maxSize must be an integer between 0 and 1 GiB");
+        return;
+    }
+
+    std::shared_ptr<AsyncResponseState> state = PromoteResponse(args);
+    if (state->dataHandlerRegistered) {
+        ThrowError(args.GetIsolate(), "res.collectBody() body handler is already registered");
+        return;
+    }
+    state->dataHandlerRegistered = true;
+    state->dataHandler.Reset(isolate, args[1].As<Function>());
+
+    struct Collection {
+        std::vector<char> bytes;
+        bool completed = false;
+    };
+    auto collection = std::make_shared<Collection>();
+    const std::size_t maxSize = static_cast<std::size_t>(maxSizeNumber);
+
+    state->response->onDataV2(
+        [state, collection, maxSize](std::string_view chunk, uint64_t maxRemainingBodyLength) {
+            if (!state->valid || state->dataHandler.IsEmpty() || collection->completed) {
+                return;
+            }
+
+            Isolate *callbackIsolate = state->isolate;
+            HandleScope scope(callbackIsolate);
+            if (chunk.size() > maxSize - collection->bytes.size()) {
+                collection->completed = true;
+                Local<Value> argv[] = {Null(callbackIsolate)};
+                CallJs(callbackIsolate, state->dataHandler.Get(callbackIsolate), 1, argv);
+                state->dataHandler.Reset();
+                return;
+            }
+
+            if (collection->bytes.empty() &&
+                maxRemainingBodyLength <= maxSize - chunk.size()) {
+                collection->bytes.reserve(
+                    chunk.size() + static_cast<std::size_t>(maxRemainingBodyLength));
+            }
+            collection->bytes.insert(
+                collection->bytes.end(),
+                chunk.begin(),
+                chunk.end());
+            if (maxRemainingBodyLength != 0) return;
+
+            collection->completed = true;
+            auto *owned = new std::vector<char>(std::move(collection->bytes));
+            if (owned->empty()) {
+                delete owned;
+                Local<ArrayBuffer> body = ArrayBuffer::New(callbackIsolate, 0);
+                Local<Value> argv[] = {body};
+                CallJs(callbackIsolate, state->dataHandler.Get(callbackIsolate), 1, argv);
+                state->dataHandler.Reset();
+                return;
+            }
+            std::unique_ptr<v8::BackingStore> backing = ArrayBuffer::NewBackingStore(
+                owned->data(),
+                owned->size(),
+                [](void *, size_t, void *deleterData) {
+                    delete static_cast<std::vector<char> *>(deleterData);
+                },
+                owned);
+            Local<ArrayBuffer> body = ArrayBuffer::New(callbackIsolate, std::move(backing));
+            Local<Value> argv[] = {body};
+            CallJs(callbackIsolate, state->dataHandler.Get(callbackIsolate), 1, argv);
+            state->dataHandler.Reset();
+        });
+    args.GetReturnValue().Set(args.This());
+}
+
+void ResponsePause(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "res.pause() does not accept arguments");
+        return;
+    }
+    response->pause();
+}
+
+void ResponseResume(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "res.resume() does not accept arguments");
+        return;
+    }
+    response->resume();
+}
+
 void ResponseOnAborted(const FunctionCallbackInfo<Value> &args) {
     if (!GetResponse(args)) return;
     if (args.Length() != 1 || !args[0]->IsFunction()) {
@@ -746,6 +942,84 @@ void RequestForEach(const FunctionCallbackInfo<Value> &args) {
             return;
         }
     }
+}
+
+void RequestSnapshot(const FunctionCallbackInfo<Value> &args) {
+    uWS::HttpRequest *request = GetRequest(args);
+    if (!request) return;
+    if (args.Length() > 1 || (args.Length() == 1 && !args[0]->IsNumber())) {
+        ThrowTypeError(args.GetIsolate(), "req.snapshot(paramCount?) expects an optional number");
+        return;
+    }
+
+    unsigned int paramCount = 0;
+    if (args.Length() == 1) {
+        const double count = args[0]->NumberValue(args.GetIsolate()->GetCurrentContext())
+                                 .FromMaybe(-1);
+        if (!std::isfinite(count) || count < 0 || count > 65535 ||
+            std::floor(count) != count) {
+            ThrowTypeError(args.GetIsolate(), "req.snapshot() paramCount must be a valid integer");
+            return;
+        }
+        paramCount = static_cast<unsigned int>(count);
+    }
+
+    Isolate *isolate = args.GetIsolate();
+    Local<Context> context = isolate->GetCurrentContext();
+    Local<Object> snapshot = Object::New(isolate);
+    Local<Object> headers = Object::New(isolate);
+    if (!headers->SetPrototype(context, Null(isolate)).FromMaybe(false)) return;
+
+    for (const auto &[name, value] : *request) {
+        if (!headers
+                 ->CreateDataProperty(
+                     context,
+                     NewString(isolate, name),
+                     NewString(isolate, value))
+                 .FromMaybe(false)) {
+            return;
+        }
+    }
+
+    Local<Array> params = Array::New(isolate, static_cast<int>(paramCount));
+    for (unsigned int index = 0; index < paramCount; index++) {
+        std::string_view value = request->getParameter(static_cast<unsigned short>(index));
+        if (value.data() &&
+            !params
+                 ->Set(context, index, NewString(isolate, value))
+                 .FromMaybe(false)) {
+            return;
+        }
+    }
+
+    if (!snapshot
+             ->CreateDataProperty(
+                 context,
+                 NewString(isolate, "method"),
+                 NewString(isolate, request->getMethod()))
+             .FromMaybe(false) ||
+        !snapshot
+             ->CreateDataProperty(
+                 context,
+                 NewString(isolate, "url"),
+                 NewString(isolate, request->getUrl()))
+             .FromMaybe(false) ||
+        !snapshot
+             ->CreateDataProperty(
+                 context,
+                 NewString(isolate, "query"),
+                 NewString(isolate, request->getQuery()))
+             .FromMaybe(false) ||
+        !snapshot
+             ->CreateDataProperty(context, NewString(isolate, "headers"), headers)
+             .FromMaybe(false) ||
+        !snapshot
+             ->CreateDataProperty(context, NewString(isolate, "params"), params)
+             .FromMaybe(false)) {
+        return;
+    }
+
+    args.GetReturnValue().Set(snapshot);
 }
 
 SocketState *GetSocketState(const FunctionCallbackInfo<Value> &args) {
@@ -1402,7 +1676,29 @@ void CreateApp(const FunctionCallbackInfo<Value> &args) {
 void Version(const FunctionCallbackInfo<Value> &args) {
     args.GetReturnValue().Set(NewString(
         args.GetIsolate(),
-        SWM_UWS_VERSION "+uWebSockets-v20.67.0"));
+        SWM_UWS_VERSION "+uWebSockets-" SWM_UWS_UPSTREAM_VERSION));
+}
+
+void Capabilities(const FunctionCallbackInfo<Value> &args) {
+    Isolate *isolate = args.GetIsolate();
+    Local<Context> context = isolate->GetCurrentContext();
+    Local<Object> result = Object::New(isolate);
+    const char *names[] = {
+        "beginWrite",
+        "collectBody",
+        "requestSnapshot",
+        "responseBatch",
+        "requestPause",
+    };
+    for (const char *name : names) {
+        result
+            ->CreateDataProperty(
+                context,
+                NewString(isolate, name),
+                Boolean::New(isolate, true))
+            .ToChecked();
+    }
+    args.GetReturnValue().Set(result);
 }
 
 void CloseListenSocket(const FunctionCallbackInfo<Value> &args) {
@@ -1441,9 +1737,11 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     Local<FunctionTemplate> response = FunctionTemplate::New(isolate);
     response->InstanceTemplate()->SetInternalFieldCount(2);
     SetPrototypeMethod(isolate, response, "end", ResponseEnd);
+    SetPrototypeMethod(isolate, response, "endBatch", ResponseEndBatch);
     SetPrototypeMethod(isolate, response, "writeStatus", ResponseWriteStatus);
     SetPrototypeMethod(isolate, response, "writeHeader", ResponseWriteHeader);
     SetPrototypeMethod(isolate, response, "cork", ResponseCork);
+    SetPrototypeMethod(isolate, response, "beginWrite", ResponseBeginWrite);
     SetPrototypeMethod(isolate, response, "write", ResponseWrite);
     SetPrototypeMethod(isolate, response, "tryEnd", ResponseTryEnd);
     SetPrototypeMethod(isolate, response, "onWritable", ResponseOnWritable);
@@ -1455,6 +1753,9 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
         ResponseGetRemoteAddressAsText);
     SetPrototypeMethod(isolate, response, "upgrade", ResponseUpgrade);
     SetPrototypeMethod(isolate, response, "onData", ResponseOnData);
+    SetPrototypeMethod(isolate, response, "collectBody", ResponseCollectBody);
+    SetPrototypeMethod(isolate, response, "pause", ResponsePause);
+    SetPrototypeMethod(isolate, response, "resume", ResponseResume);
     SetPrototypeMethod(isolate, response, "onAborted", ResponseOnAborted);
     context->responseTemplate.Reset(
         isolate,
@@ -1471,6 +1772,7 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     SetPrototypeMethod(isolate, request, "getQuery", RequestGetQuery);
     SetPrototypeMethod(isolate, request, "getParameter", RequestGetParameter);
     SetPrototypeMethod(isolate, request, "forEach", RequestForEach);
+    SetPrototypeMethod(isolate, request, "snapshot", RequestSnapshot);
     context->requestTemplate.Reset(
         isolate,
         request->GetFunction(isolate->GetCurrentContext())
@@ -1527,6 +1829,14 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
             isolate->GetCurrentContext(),
             NewString(isolate, "version"),
             FunctionTemplate::New(isolate, Version)
+                ->GetFunction(isolate->GetCurrentContext())
+                .ToLocalChecked())
+        .ToChecked();
+    exports
+        ->Set(
+            isolate->GetCurrentContext(),
+            NewString(isolate, "capabilities"),
+            FunctionTemplate::New(isolate, Capabilities)
                 ->GetFunction(isolate->GetCurrentContext())
                 .ToLocalChecked())
         .ToChecked();

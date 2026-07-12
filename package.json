@@ -1,7 +1,10 @@
 {
   "name": "@swarmmachina/swm-uws",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "High-performance raw V8 binding for pinned uWebSockets and uSockets sources",
+  "upstream": {
+    "uWebSocketsJs": "v20.69.0"
+  },
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -31,6 +34,8 @@
     "build:native": "node-gyp rebuild && node scripts/copy-prebuild.js",
     "build:prebuilds": "npm run build:prebuilds:linux",
     "build:prebuilds:linux": "node scripts/build-linux-prebuilds.js",
+    "deps:update:vendor": "node scripts/update-vendor.js",
+    "deps:check:vendor": "node scripts/check-vendor.js",
     "check:release": "node scripts/check-release-prebuilds.js",
     "clean": "node-gyp clean",
     "prepublishOnly": "npm run check:release",

@@ -1,6 +1,7 @@
 {
   "variables": {
-    "swm_uws_version%": "<!(node -p \"require('./package.json').version\")"
+    "swm_uws_version%": "<!(node -p \"require('./package.json').version\")",
+    "swm_uws_upstream_version%": "<!(node -p \"require('./package.json').upstream.uWebSocketsJs\")"
   },
   "targets": [
     {
@@ -22,7 +23,8 @@
         "LIBUS_USE_LIBUV=1",
         "LIBUS_NO_SSL=1",
         "UWS_NO_ZLIB=1",
-        "SWM_UWS_VERSION=\"<(swm_uws_version)\""
+        "SWM_UWS_VERSION=\"<(swm_uws_version)\"",
+        "SWM_UWS_UPSTREAM_VERSION=\"<(swm_uws_upstream_version)\""
       ],
       "cflags_cc": [
         "-std=c++20",

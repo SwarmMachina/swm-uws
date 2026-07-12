@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict'
 import { createConnection } from 'node:net'
 
-import { createApp, version } from '../lib/index.js'
+import { capabilities, createApp, version } from '../lib/index.js'
 import { resolvePrebuildTarget } from '../lib/load-native.js'
 
-assert.equal(version(), '0.3.1+uWebSockets-v20.67.0')
+assert.equal(version(), '0.4.0+uWebSockets-v20.69.0')
+assert.deepEqual(capabilities(), {
+  beginWrite: true,
+  collectBody: true,
+  requestSnapshot: true,
+  responseBatch: true,
+  requestPause: true
+})
 assert.equal(resolvePrebuildTarget('linux', 'x64'), 'linux-x64-glibc')
 assert.equal(resolvePrebuildTarget('win32', 'x64'), 'win32-x64')
 assert.equal(resolvePrebuildTarget('darwin', 'arm64'), 'darwin-arm64')
@@ -100,6 +107,46 @@ app.post('/body', (res) => {
     }),
     res
   )
+})
+
+app.get('/batch', (res, req) => {
+  const snapshot = req.snapshot()
+  assert.equal(snapshot.method, 'get')
+  assert.equal(snapshot.url, '/batch')
+  assert.equal(snapshot.query, 'mode=fast')
+  assert.equal(snapshot.headers['x-snapshot-test'], 'yes')
+  assert.equal(Object.getPrototypeOf(snapshot.headers), null)
+  assert.throws(() => res.endBatch('200 OK', ['bad header', 'value'], 'bad'), /invalid header/)
+  assert.equal(
+    res.endBatch('201 Created', ['content-type', 'application/json', 'x-batch', 'yes'], '{"batch":true}'),
+    res
+  )
+})
+
+app.post('/collect', (res) => {
+  res.onAborted(() => assert.fail('collected request must not abort'))
+  res.collectBody(256 * 1024, (body) => {
+    assert.ok(body instanceof ArrayBuffer)
+    res.endBatch('200 OK', ['content-type', 'application/octet-stream'], Buffer.from(body).toString('hex'))
+  })
+})
+
+app.post('/collect-overflow', (res) => {
+  res.onAborted(() => assert.fail('overflow request must not abort'))
+  res.collectBody(4, (body) => {
+    assert.equal(body, null)
+    res.endBatch('413 Payload Too Large', [], 'too large')
+  })
+})
+
+app.get('/stream-begin', (res) => {
+  res.onAborted(() => assert.fail('stream request must not abort'))
+  res.cork(() => {
+    res.writeStatus('200 OK')
+    res.writeHeader('content-type', 'text/plain')
+    res.beginWrite()
+  })
+  setImmediate(() => res.end('streamed'))
 })
 
 app.post('/abort', (res) => {
@@ -236,6 +283,14 @@ async function runSelfTest() {
   assert.deepEqual(await metadataResponse.json(), { ok: false })
   assert.throws(() => completedRequest.getUrl(), /HTTP request is no longer valid/)
 
+  const batchResponse = await fetch(`http://127.0.0.1:${port}/batch?mode=fast`, {
+    headers: { 'x-snapshot-test': 'yes' },
+    signal: AbortSignal.timeout(5_000)
+  })
+  assert.equal(batchResponse.status, 201)
+  assert.equal(batchResponse.headers.get('x-batch'), 'yes')
+  assert.deepEqual(await batchResponse.json(), { batch: true })
+
   for (const [method, path, expectedBody] of [
     ['POST', '/method/post', 'post'],
     ['PUT', '/method/put', 'put'],
@@ -266,6 +321,29 @@ async function runSelfTest() {
   assert.equal(bodyResponse.headers.get('content-type'), 'application/octet-stream')
   assert.equal(await bodyResponse.text(), Buffer.from(requestBody).toString('hex'))
   assert.throws(() => completedBodyResponse.end('late'), /HTTP response is no longer valid/)
+
+  const collectedResponse = await fetch(`http://127.0.0.1:${port}/collect`, {
+    method: 'POST',
+    body: requestBody,
+    signal: AbortSignal.timeout(5_000)
+  })
+  assert.equal(collectedResponse.status, 200)
+  assert.equal(await collectedResponse.text(), Buffer.from(requestBody).toString('hex'))
+
+  const overflowResponse = await fetch(`http://127.0.0.1:${port}/collect-overflow`, {
+    method: 'POST',
+    body: 'overflow',
+    signal: AbortSignal.timeout(5_000)
+  })
+  assert.equal(overflowResponse.status, 413)
+  assert.equal(await overflowResponse.text(), 'too large')
+
+  const streamResponse = await fetch(`http://127.0.0.1:${port}/stream-begin`, {
+    signal: AbortSignal.timeout(5_000)
+  })
+  assert.equal(streamResponse.status, 200)
+  assert.equal(streamResponse.headers.get('transfer-encoding'), 'chunked')
+  assert.equal(await streamResponse.text(), 'streamed')
 
   await abortRequest()
   await withTimeout(aborted, 5_000, 'HTTP abort callback timed out')
