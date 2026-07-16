@@ -24,6 +24,8 @@ const host = serveOnly ? '0.0.0.0' : '127.0.0.1'
 const app = createApp()
 
 let completedResponse
+let emptyResponse
+let asyncResponse
 let completedRequest
 let completedBodyResponse
 let abortedResponse
@@ -51,6 +53,27 @@ const aborted = new Promise((resolve) => {
 app.get('/', (res) => {
   completedResponse = res
   res.end('ok')
+})
+
+app.get('/empty', (res) => {
+  emptyResponse = res
+  assert.equal(res.end(), res)
+})
+
+const cachedHeaderName = 'x-swm-cached'
+const cachedHeaderValue = 'validated'
+
+app.get('/cached-headers', (res) => {
+  assert.equal(res.writeHeader(cachedHeaderName, cachedHeaderValue), res)
+  assert.throws(() => res.writeHeader(cachedHeaderName, 'value\r\nX-Injected: yes'), /control characters/)
+  assert.throws(() => res.writeHeader('invalid name', cachedHeaderValue), /valid HTTP header name/)
+  res.end('cached')
+})
+
+app.get('/async-end', (res) => {
+  asyncResponse = res
+  res.onAborted(() => assert.fail('completed async response must not abort'))
+  setImmediate(() => res.end('async'))
 })
 
 app.get('/metadata', (res, req) => {
@@ -271,6 +294,27 @@ async function runSelfTest() {
   assert.equal(response.status, 200)
   assert.equal(await response.text(), 'ok')
   assert.throws(() => completedResponse.end('late'), /HTTP response is no longer valid/)
+
+  const emptyBodyResponse = await fetch(`http://127.0.0.1:${port}/empty`, {
+    signal: AbortSignal.timeout(5_000)
+  })
+  assert.equal(emptyBodyResponse.status, 200)
+  assert.equal(await emptyBodyResponse.text(), '')
+  assert.throws(() => emptyResponse.end(), /HTTP response is no longer valid/)
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const cachedHeaderResponse = await fetch(`http://127.0.0.1:${port}/cached-headers`, {
+      signal: AbortSignal.timeout(5_000)
+    })
+    assert.equal(cachedHeaderResponse.headers.get(cachedHeaderName), cachedHeaderValue)
+    assert.equal(await cachedHeaderResponse.text(), 'cached')
+  }
+
+  const deferredResponse = await fetch(`http://127.0.0.1:${port}/async-end`, {
+    signal: AbortSignal.timeout(5_000)
+  })
+  assert.equal(await deferredResponse.text(), 'async')
+  assert.throws(() => asyncResponse.end('late'), /HTTP response is no longer valid/)
 
   const metadataResponse = await fetch(`http://127.0.0.1:${port}/metadata`, {
     headers: { 'x-request-test': 'request-metadata' },

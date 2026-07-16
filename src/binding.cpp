@@ -50,6 +50,18 @@ enum class HttpMethod {
 
 struct PerContextData;
 
+struct ValidatedStringCache {
+    bool Matches(Isolate *isolate, Local<String> value) const {
+        return !key.IsEmpty() && key.Get(isolate)->StrictEquals(value);
+    }
+
+    void Store(Isolate *isolate, Local<String> value) {
+        key.Reset(isolate, value);
+    }
+
+    Global<String> key;
+};
+
 struct AppState {
     std::unique_ptr<uWS::App> app;
     PerContextData *context = nullptr;
@@ -65,6 +77,8 @@ struct PerContextData {
     Global<Object> requestTemplate;
     Global<Object> socketTemplate;
     Global<Function> appConstructor;
+    ValidatedStringCache responseHeaderNameValidation;
+    ValidatedStringCache responseHeaderValueValidation;
     std::vector<std::unique_ptr<AppState>> apps;
 };
 
@@ -316,13 +330,13 @@ HttpResponse *GetResponse(const FunctionCallbackInfo<Value> &args) {
 
 void InvalidateResponseObject(Local<Object> object) {
     SetInternalPointer(object, nullptr, 0);
-    SetInternalPointer(object, nullptr, 1);
 }
 
 void InvalidateAsyncResponse(const std::shared_ptr<AsyncResponseState> &state) {
     if (!state->valid) return;
     Local<Object> object = state->object.Get(state->isolate);
     InvalidateResponseObject(object);
+    SetInternalPointer(object, nullptr, 1);
     state->response = nullptr;
     state->valid = false;
     state->dataHandler.Reset();
@@ -360,23 +374,19 @@ void ResponseEnd(const FunctionCallbackInfo<Value> &args) {
     HttpResponse *response = GetResponse(args);
     if (!response) return;
 
-    Local<Value> bodyValue = v8::Undefined(args.GetIsolate());
-    if (args.Length()) bodyValue = args[0];
-    NativeBytes body(args.GetIsolate(), bodyValue, true);
+    NativeBytes body(args.GetIsolate(), args[0], true);
     if (!body.IsValid()) {
         ThrowTypeError(args.GetIsolate(), "res.end(body) expects a string or buffer");
         return;
     }
     auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
-    std::shared_ptr<AsyncResponseState> asyncState = async
-        ? async->shared_from_this()
-        : std::shared_ptr<AsyncResponseState>();
-    response->end(body.View());
-
-    if (asyncState) {
+    if (async) {
+        std::shared_ptr<AsyncResponseState> asyncState = async->shared_from_this();
+        response->end(body.View());
         InvalidateAsyncResponse(asyncState);
     } else {
         InvalidateResponseObject(args.This());
+        response->end(body.View());
     }
     args.GetReturnValue().Set(args.This());
 }
@@ -484,17 +494,26 @@ void ResponseWriteHeader(const FunctionCallbackInfo<Value> &args) {
     }
     NativeBytes name(args.GetIsolate(), args[0]);
     NativeBytes value(args.GetIsolate(), args[1]);
-    if (!IsValidHeaderName(name.View())) {
-        ThrowTypeError(
-            args.GetIsolate(),
-            "res.writeHeader(name, value) expects a valid HTTP header name");
-        return;
+    auto *context = static_cast<PerContextData *>(args.Data().As<External>()->Value());
+    Local<String> nameString = args[0].As<String>();
+    Local<String> valueString = args[1].As<String>();
+    if (!context->responseHeaderNameValidation.Matches(args.GetIsolate(), nameString)) {
+        if (!IsValidHeaderName(name.View())) {
+            ThrowTypeError(
+                args.GetIsolate(),
+                "res.writeHeader(name, value) expects a valid HTTP header name");
+            return;
+        }
+        context->responseHeaderNameValidation.Store(args.GetIsolate(), nameString);
     }
-    if (ContainsInvalidHeaderValueCharacter(value.View())) {
-        ThrowTypeError(
-            args.GetIsolate(),
-            "res.writeHeader(name, value) does not allow control characters in value");
-        return;
+    if (!context->responseHeaderValueValidation.Matches(args.GetIsolate(), valueString)) {
+        if (ContainsInvalidHeaderValueCharacter(value.View())) {
+            ThrowTypeError(
+                args.GetIsolate(),
+                "res.writeHeader(name, value) does not allow control characters in value");
+            return;
+        }
+        context->responseHeaderValueValidation.Store(args.GetIsolate(), valueString);
     }
     response->writeHeader(name.View(), value.View());
     args.GetReturnValue().Set(args.This());
@@ -1203,7 +1222,6 @@ void RegisterHttpRoute(
         Local<Object> responseObject = context->responseTemplate.Get(callbackIsolate)->Clone();
         Local<Object> requestObject = context->requestTemplate.Get(callbackIsolate)->Clone();
         SetInternalPointer(responseObject, response, 0);
-        SetInternalPointer(responseObject, nullptr, 1);
         SetInternalPointer(requestObject, request);
         Local<Value> argv[] = {responseObject, requestObject};
         CallJs(callbackIsolate, handlerPointer->Get(callbackIsolate), 2, argv);
@@ -1449,7 +1467,6 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
             Local<Object> responseObject = context->responseTemplate.Get(callbackIsolate)->Clone();
             Local<Object> requestObject = context->requestTemplate.Get(callbackIsolate)->Clone();
             SetInternalPointer(responseObject, response, 0);
-            SetInternalPointer(responseObject, nullptr, 1);
             SetInternalPointer(requestObject, request);
             Local<Value> argv[] = {
                 responseObject,
@@ -1722,11 +1739,12 @@ void SetPrototypeMethod(
     Isolate *isolate,
     Local<FunctionTemplate> target,
     const char *name,
-    v8::FunctionCallback callback) {
+    v8::FunctionCallback callback,
+    Local<Value> data = Local<Value>()) {
     target->PrototypeTemplate()->Set(
         isolate,
         name,
-        FunctionTemplate::New(isolate, callback));
+        FunctionTemplate::New(isolate, callback, data));
 }
 
 PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
@@ -1739,7 +1757,12 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     SetPrototypeMethod(isolate, response, "end", ResponseEnd);
     SetPrototypeMethod(isolate, response, "endBatch", ResponseEndBatch);
     SetPrototypeMethod(isolate, response, "writeStatus", ResponseWriteStatus);
-    SetPrototypeMethod(isolate, response, "writeHeader", ResponseWriteHeader);
+    SetPrototypeMethod(
+        isolate,
+        response,
+        "writeHeader",
+        ResponseWriteHeader,
+        contextExternal);
     SetPrototypeMethod(isolate, response, "cork", ResponseCork);
     SetPrototypeMethod(isolate, response, "beginWrite", ResponseBeginWrite);
     SetPrototypeMethod(isolate, response, "write", ResponseWrite);
@@ -1757,12 +1780,13 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     SetPrototypeMethod(isolate, response, "pause", ResponsePause);
     SetPrototypeMethod(isolate, response, "resume", ResponseResume);
     SetPrototypeMethod(isolate, response, "onAborted", ResponseOnAborted);
-    context->responseTemplate.Reset(
-        isolate,
-        response->GetFunction(isolate->GetCurrentContext())
-            .ToLocalChecked()
-            ->NewInstance(isolate->GetCurrentContext())
-            .ToLocalChecked());
+    Local<Object> responseTemplate = response->GetFunction(isolate->GetCurrentContext())
+                                         .ToLocalChecked()
+                                         ->NewInstance(isolate->GetCurrentContext())
+                                         .ToLocalChecked();
+    SetInternalPointer(responseTemplate, nullptr, 0);
+    SetInternalPointer(responseTemplate, nullptr, 1);
+    context->responseTemplate.Reset(isolate, responseTemplate);
 
     Local<FunctionTemplate> request = FunctionTemplate::New(isolate);
     request->InstanceTemplate()->SetInternalFieldCount(1);
