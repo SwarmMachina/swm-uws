@@ -1,0 +1,76 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Format, lint, and vendor integrity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check shared standards
+        run: npm run check
+
+      - name: Verify vendored sources
+        run: npm run deps:check:vendor
+
+  native:
+    name: Native smoke / Node.js ${{ matrix.node }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 22
+          - 24
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build native addon
+        run: npm run build:native
+
+      - name: Run package smoke
+        run: npm test
+
+      - name: Run raw V8 HTTP smoke
+        run: npm run test:v8-http
+
+      - name: Run raw V8 WebSocket smoke
+        run: npm run test:v8-ws

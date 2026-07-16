@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks'
 
 const connections = Number(process.env.CONNECTIONS || 50)
+const depth = Number(process.env.DEPTH || 1)
 const durationMs = Number(process.env.DURATION_MS || 10_000)
 const payload = new Uint8Array(Number(process.env.PAYLOAD_BYTES || 256))
 const port = Number(process.env.PORT || 30123)
@@ -22,7 +23,7 @@ const allClosed = new Promise((resolve) => {
 
 for (let index = 0; index < connections; index++) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`)
-  const state = { socket, sentAt: 0 }
+  const state = { socket, pending: [] }
   sockets.push(state)
 
   socket.addEventListener('open', () => {
@@ -32,11 +33,12 @@ for (let index = 0; index < connections; index++) {
 
   socket.addEventListener('message', () => {
     const now = performance.now()
-    latencies.push(now - state.sentAt)
+    const sentAt = state.pending.shift()
+    if (sentAt !== undefined) latencies.push(now - sentAt)
     messages++
 
     if (now < deadline) {
-      state.sentAt = now
+      state.pending.push(now)
       socket.send(payload)
     } else {
       socket.close(1000, 'done')
@@ -58,8 +60,10 @@ const started = performance.now()
 const deadline = started + durationMs
 
 for (const state of sockets) {
-  state.sentAt = started
-  state.socket.send(payload)
+  for (let index = 0; index < depth; index++) {
+    state.pending.push(started)
+    state.socket.send(payload)
+  }
 }
 
 const stopTimer = setTimeout(() => {
@@ -78,6 +82,7 @@ const percentile = (value) => latencies[Math.min(latencies.length - 1, Math.floo
 console.log(
   JSON.stringify({
     connections,
+    depth,
     durationMs,
     payloadBytes: payload.byteLength,
     messages,

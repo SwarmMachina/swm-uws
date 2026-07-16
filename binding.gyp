@@ -36,6 +36,24 @@
       },
       "conditions": [
         [
+          "OS=='linux'",
+          {
+            "cflags": [
+              "-flto"
+            ],
+            "cflags_cc": [
+              "-flto"
+            ],
+            "ldflags": [
+              "-flto",
+              "-O3",
+              "-static-libstdc++",
+              "-static-libgcc",
+              "-s"
+            ]
+          }
+        ],
+        [
           "OS=='win'",
           {
             "defines": [

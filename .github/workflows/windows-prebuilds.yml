@@ -13,6 +13,7 @@ jobs:
   quality:
     name: Code quality
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -35,6 +36,9 @@ jobs:
       - name: Check shared standards
         run: npm run check
 
+      - name: Verify vendored sources
+        run: npm run deps:check:vendor
+
   linux:
     name: Linux x64 / Node.js ${{ matrix.node }}
     runs-on:
@@ -54,6 +58,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Require native x86-64 PGO host
+        shell: bash
+        run: |
+          arch="$(uname -m)"
+          if [ "$arch" != "x86_64" ]; then
+            echo "Linux PGO training must run natively on x86-64, got $arch" >&2
+            exit 1
+          fi
 
       - name: Build and smoke-test native addon on Bookworm
         shell: bash
@@ -110,7 +123,17 @@ jobs:
             echo "$path requires at most $required (Bookworm ceiling: $ceiling)"
           }
 
-          check_ceiling GLIBCXX GLIBCXX_3.4.30
+          glibcxx_required="$(strings "$path" | grep -oE 'GLIBCXX_[0-9]+(\.[0-9]+)+' | sort -Vu | tail -1 || true)"
+          if [ -n "$glibcxx_required" ]; then
+            check_ceiling GLIBCXX GLIBCXX_3.4.30
+          else
+            dynamic_dependencies="$(ldd "$path")"
+            if grep -qE 'libstdc\+\+|libgcc_s' <<<"$dynamic_dependencies"; then
+              echo "$path has dynamic C++ runtime dependencies without GLIBCXX markers" >&2
+              exit 1
+            fi
+            echo "$path statically links the C++ runtime"
+          fi
           check_ceiling GLIBC GLIBC_2.36
 
       - name: Upload ABI prebuild
@@ -126,6 +149,7 @@ jobs:
     runs-on:
       group: swm-ci
       labels: swm-win
+    timeout-minutes: 30
     defaults:
       run:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
@@ -154,8 +178,14 @@ jobs:
       - name: Build native addon
         run: npm run build:native
 
-      - name: Run HTTP and WebSocket smoke test
+      - name: Run package smoke test
         run: npm test
+
+      - name: Run raw V8 HTTP smoke test
+        run: npm run test:v8-http
+
+      - name: Run raw V8 WebSocket smoke test
+        run: npm run test:v8-ws
 
       - name: Verify runtime-only installation
         run: |
@@ -192,6 +222,7 @@ jobs:
   macos:
     name: macOS ${{ matrix.arch }} / Node.js ${{ matrix.node }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     needs: quality
     strategy:
       fail-fast: false
@@ -234,8 +265,14 @@ jobs:
       - name: Build native addon
         run: npm run build:native
 
-      - name: Run HTTP and WebSocket smoke test
+      - name: Run package smoke test
         run: npm test
+
+      - name: Run raw V8 HTTP smoke test
+        run: npm run test:v8-http
+
+      - name: Run raw V8 WebSocket smoke test
+        run: npm run test:v8-ws
 
       - name: Verify runtime-only installation
         run: |
@@ -264,6 +301,7 @@ jobs:
   package:
     name: Assemble npm package
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     needs:
       - linux
       - windows
@@ -433,6 +471,7 @@ jobs:
     name: Package smoke / macOS ${{ matrix.arch }} / Node.js ${{ matrix.node }}
     needs: package
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -485,6 +524,7 @@ jobs:
       - package-smoke
       - package-smoke-macos
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
