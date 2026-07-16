@@ -4,7 +4,7 @@ import { createConnection } from 'node:net'
 import { capabilities, createApp, version } from '../lib/index.js'
 import { resolvePrebuildTarget } from '../lib/load-native.js'
 
-assert.equal(version(), '0.4.0+uWebSockets-v20.69.0')
+assert.equal(version(), '0.4.1+uWebSockets-v20.69.0')
 assert.deepEqual(capabilities(), {
   beginWrite: true,
   collectBody: true,

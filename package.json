@@ -1,6 +1,6 @@
 {
   "name": "@swarmmachina/swm-uws",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "High-performance raw V8 binding for pinned uWebSockets and uSockets sources",
   "upstream": {
     "uWebSocketsJs": "v20.69.0"
