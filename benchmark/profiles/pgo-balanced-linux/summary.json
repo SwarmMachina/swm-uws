@@ -1,0 +1,70 @@
+{
+  "environment": {
+    "package": "@swarmmachina/swm-uws 0.4.0",
+    "upstream": "uWebSockets.js 20.69.0",
+    "upstreamCommit": "dddd8ffd1b2c28a66022160923ca92f064cdacb4",
+    "node": "22.22.3",
+    "abi": 127,
+    "os": "Linux 6.17 x86-64",
+    "cpu": "Intel Xeon E5-2680 v4",
+    "logicalCpus": 28,
+    "ramGiB": 62
+  },
+  "build": {
+    "profile": "balanced",
+    "compiler": "Clang 18",
+    "lto": true,
+    "march": null,
+    "mtune": null,
+    "sha256": "38a003e4670c2e57e9524345e1b0eedd95aa20e0b67346e1856dcae91eaf7ae9",
+    "sizeBytes": 1677912,
+    "stripped": true,
+    "dynamicDependencies": ["libm.so.6", "libc.so.6", "ld-linux-x86-64.so.2"]
+  },
+  "parameters": {
+    "runs": 6,
+    "order": "balanced AB/BA",
+    "connections": 100,
+    "pipelining": 10,
+    "warmupSeconds": 2,
+    "durationSeconds": 5,
+    "serverCpu": 2,
+    "clientCpus": "3-6",
+    "clientWorkers": 4
+  },
+  "results": {
+    "swmRequestsPerSecondMedian": 493458,
+    "uwsRequestsPerSecondMedian": 430937,
+    "pairedDeltaMedianPct": 15.196772753336518,
+    "pairedDeltaIqrPct": [13.68944926758648, 15.974424528609415],
+    "positivePairedRounds": 6,
+    "swmLatencyMsMedian": {
+      "p95": 3.6790120000005118,
+      "p97_5": 3.797764000000825,
+      "p99": 3.999181000000135
+    },
+    "uwsLatencyMsMedian": {
+      "p95": 4.203364000000022,
+      "p97_5": 4.362618000000111,
+      "p99": 4.49790800000028
+    },
+    "errors": 0
+  },
+  "hardwareStat": {
+    "requests": 2465190,
+    "requestsPerSecond": 493038,
+    "latencyMs": {
+      "p95": 3.687843000000157,
+      "p97_5": 3.829751000000215,
+      "p99": 4.014844000000039
+    },
+    "perRequest": {
+      "cycles": 5511.03376210353,
+      "instructions": 8774.873843395439,
+      "branches": 1761.1120489698562,
+      "branchMisses": 8.477960725136805,
+      "cacheReferences": 68.99295551255685,
+      "cacheMisses": 0.05057216685123662
+    }
+  }
+}

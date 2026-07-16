@@ -1,59 +1,36 @@
 # @swarmmachina/swm-uws
 
-High-performance raw V8 binding for pinned uWebSockets and uSockets sources.
-Its public surface is intentionally aligned with the HTTP and WebSocket APIs
-used by `swm-core`.
+Raw V8 binding for the HTTP and WebSocket APIs used by `swm-core`. Sources are
+pinned to uWebSockets.js 20.69.0 and vendored in this repository.
 
-## Supported runtime
+## Runtime
 
 - Node.js 22 and 24
-- Linux x64 with glibc:
-  - Debian Bookworm-based Node.js images
-  - `node:22-bookworm-slim` and `node:24-bookworm-slim`
-- Windows x64:
-  - native prebuilds produced on the `windows-2022` GitHub Actions runner
-  - no Visual Studio, Python, or node-gyp required at runtime
-- macOS 15:
-  - Apple Silicon arm64 prebuilds produced on `macos-15`
-  - Intel x64 prebuilds produced on `macos-15-intel`
-  - no Xcode or node-gyp required at runtime
+- Linux x64 with glibc
+- Windows x64
+- macOS arm64 and x64
 
-TLS and permessage-deflate are disabled. Terminate TLS at an ingress or reverse
-proxy.
+Alpine/musl and Windows ARM64 are not supported. TLS and permessage-deflate are
+disabled; terminate TLS before the application.
 
-Alpine Linux is not supported in v0.4.
+## Usage
 
-Alpine uses musl libc, while the first prebuild target is glibc. A separate
-`linux-x64-musl` binary and CI job will be required later. Use
-`node:22-bookworm-slim` or `node:24-bookworm-slim` for now.
-
-Windows ARM64 is not supported in v0.4.
-
-## API
+```sh
+npm install @swarmmachina/swm-uws
+```
 
 ```js
-import { App, capabilities, us_listen_socket_close, version } from '@swarmmachina/swm-uws'
-
-console.log(version())
-console.log(capabilities())
+import { App, us_listen_socket_close } from '@swarmmachina/swm-uws'
 
 const app = App()
 
-app.get('/', (res, req) => {
-  console.log(req.getMethod(), req.getUrl(), req.getHeader('user-agent'))
-
-  res.writeStatus('200 OK').writeHeader('content-type', 'application/json').end('{"ok":true}')
+app.get('/', (res) => {
+  res.writeHeader('content-type', 'application/json').end('{"ok":true}')
 })
 
 app.ws('/ws', {
-  open(ws) {
-    ws.send('open')
-  },
   message(ws, message, isBinary) {
     ws.send(message, isBinary)
-  },
-  close(ws, code, reason) {
-    // The socket is already invalid here.
   }
 })
 
@@ -69,183 +46,84 @@ process.on('SIGTERM', () => {
 })
 ```
 
-HTTP route handlers run synchronously. A response remains valid after its route
-callback only when `onData` or `onAborted` has been registered; otherwise an
-unfinished response is closed. A WebSocket wrapper becomes invalid before its
-`close` callback runs.
+The complete surface is declared in [`lib/index.d.ts`](lib/index.d.ts).
 
-WebSockets support `send`, `close`, `end`, `getBufferedAmount`, `getUserData`,
-`subscribe`, and `unsubscribe`. Apps support `publish` and `numSubscribers`.
-Close reasons are limited to 123 UTF-8 bytes and invalid or reserved close
-codes are rejected.
+## Lifetime and ownership
 
-`app.ws(path, behavior)` accepts `maxPayloadLength` (default 16 KiB),
-`idleTimeout` (default 120 seconds; either 0 or 8–960), `maxBackpressure`,
-`maxLifetime`, `closeOnBackpressureLimit`, `resetIdleTimeoutOnSend`, and
-`sendPingsAutomatically`. Supported callbacks are `upgrade`, `open`, `message`,
-`drain`, `subscription`, and `close`.
+- Request wrappers are valid only inside route and upgrade callbacks. Use
+  `req.snapshot(paramCount)` before asynchronous work.
+- Responses remain valid after a route callback only when `onData`,
+  `onWritable`, `collectBody`, or `onAborted` is registered.
+- `onData` chunks are zero-copy `ArrayBuffer`s detached after the callback.
+  Copy a chunk if it must be retained.
+- `collectBody(maxSize, callback)` returns an owned `ArrayBuffer`, or `null`
+  when the limit is exceeded.
+- Response and WebSocket wrappers are invalid inside their `onAborted` and
+  `close` callbacks respectively.
+- `app.close()` is idempotent and closes active HTTP and WebSocket contexts.
 
-HTTP responses support `writeStatus`, `writeHeader`, `cork`, `write`, `tryEnd`,
-`onWritable`, `getWriteOffset`, `getRemoteAddressAsText`, `upgrade`, and `end`.
-The optional fast-path methods `endBatch`, `beginWrite`, and `collectBody` are
-advertised by `capabilities()`. Status and header values containing control
-characters are rejected, including through `endBatch`.
+`capabilities()` reports optional fast paths such as `endBatch`, `beginWrite`,
+and `collectBody`.
 
-Request bodies are exposed as zero-copy external `ArrayBuffer` chunks with
-`res.onData((chunk, isLast) => {})`. Each chunk is valid only during its callback
-and is detached immediately afterwards. Copy it inside the callback if it must
-be retained, for example `Buffer.from(new Uint8Array(chunk))`.
-`collectBody(maxSize, callback)` provides bounded native aggregation and calls
-back with an owned `ArrayBuffer`, or `null` when the limit is exceeded. An
-aborted response is invalid before its `onAborted` handler runs.
+## Development
 
-HTTP requests support `getMethod`, `getUrl`, `getHeader`, `getQuery`,
-`getParameter`, and `forEach`. `snapshot(paramCount)` captures method, URL,
-query, headers, and route parameters in one native call for asynchronous
-handlers. Request wrappers are valid only while their route or upgrade callback
-is running. Returned strings are safe to retain.
-
-Routes can be registered with `get`, `post`, `put`, `patch`, `del`, `options`,
-`head`, and `any`. Every registration method returns the app for chaining.
-
-`app.close()` is idempotent and closes the HTTP and WebSocket contexts,
-including active WebSockets. Use `us_listen_socket_close(socket)` first when
-only accepting new connections must stop while active work drains. A closed app
-cannot listen again.
-
-`createApp()` remains an alias of `App()` for compatibility. APIs outside the
-documented `swm-core` surface are not implemented.
-
-## Development build
-
-Install the C/C++ toolchain and run:
-
-```bash
+```sh
 npm ci
 npm run build:native
 npm test
+npm run test:v8-http
+npm run test:v8-ws
 ```
 
-On supported targets, `build:native` copies the binary to the matching ABI path:
+Vendored source revisions and hashes are recorded in the source repository at
+[`vendor/VERSIONS.md`](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/VERSIONS.md).
 
-```text
-prebuilds/linux-x64-glibc/node-v${process.versions.modules}.node
-prebuilds/win32-x64/node-v${process.versions.modules}.node
-prebuilds/darwin-arm64/node-v${process.versions.modules}.node
-prebuilds/darwin-x64/node-v${process.versions.modules}.node
+## Linux release build
+
+Release prebuilds use portable generic x86-64 Clang 18 PGO+LTO without
+`-march` or `-mtune`:
+
+```sh
+npm run build:native:pgo
 ```
 
-On unsupported development platforms the loader uses `build/Release/swm_uws.node`.
-Package installation itself uses an explicit no-op install script and never
-compiles native code.
+Required tools: `clang-18`, `libclang-rt-18-dev`, and `llvm-profdata-18`.
+The default balanced profile trains raw GET, POST body collection, and
+WebSocket depths 1 and 16. Use `SWM_PGO_PROFILE=synthetic` for GET-only
+training.
 
-To rebuild both supported Linux prebuilds with Docker:
+Build both Linux Node ABI prebuilds with Docker:
 
-```bash
+```sh
 npm run build:prebuilds
 ```
 
-The script always targets `linux/amd64`, including on ARM64 development hosts.
+Release CI runs PGO only on native x86-64 hosts and builds ABI 127 and 137
+separately.
 
-## Performance baseline
+## Profiling
 
-Build the native module, start the instrumented server, and warm it before each
-measurement:
+The bundled Linux profiler records throughput, latency, ELU, memory, hardware
+counters, and native stacks:
 
-```bash
-npm run build:native
-npm run bench:server
+```sh
+npm run profile:http-raw:linux -- /tmp/http-raw-swm
 ```
 
-HTTP baseline parameters are 50 connections, 10 seconds, and pipelining 1:
+Defaults: c100, p10, 2-second warmup, 5-second measurement. Set
+`FLAMEGRAPH_DIR` to generate `flamegraph.svg`, or
+`SWM_PROFILE_SKIP_PERF=1` when hardware counters are unavailable.
 
-```bash
-curl -sS http://127.0.0.1:30123/reset
-npm exec --yes autocannon -- -c 50 -d 10 -p 1 -j http://127.0.0.1:30123/
-curl -sS http://127.0.0.1:30123/metrics
-```
+The portable balanced build measured +15.20% paired median raw GET throughput
+over the pinned upstream binary. See the
+[`Linux PGO report`](https://github.com/SwarmMachina/swm-uws/blob/master/benchmark/profiles/pgo-balanced-linux/report.md).
 
-The WebSocket echo baseline uses 50 connections, 256-byte messages, 10 seconds,
-and one in-flight message per connection:
+In a source checkout, regenerate and verify the report with
+`npm run bench:report` and `npm run bench:report:check`.
 
-```bash
-curl -sS http://127.0.0.1:30123/reset
-CONNECTIONS=50 DURATION_MS=10000 PAYLOAD_BYTES=256 npm run bench:ws
-curl -sS http://127.0.0.1:30123/metrics
-```
+## Updating upstream
 
-Benchmark numbers are machine-specific. Compare changes on the same idle host
-using identical parameters and report throughput, p95/p99, ELU, and memory.
-
-## Windows build
-
-Windows builds are native MSVC/node-gyp builds; they are not cross-compiled
-from Linux or macOS. A development machine needs:
-
-- 64-bit Windows
-- Visual Studio 2022 Build Tools with the Desktop development with C++ workload
-- Python 3
-- Node.js 22 or 24
-
-Run in PowerShell or a Visual Studio developer shell:
-
-```powershell
-npm ci
-npm run build:native
-npm test
-```
-
-The resulting file is copied to:
-
-```text
-prebuilds/win32-x64/node-v${process.versions.modules}.node
-```
-
-The `Prebuilds` workflow builds Node.js 22 and 24 separately. Linux x64
-prebuilds are compiled and smoke-tested inside the corresponding Bookworm
-container; Windows and macOS prebuilds use native runners. The workflow uploads:
-
-- two `linux-x64-glibc`, two `win32-x64`, and four macOS prebuilds;
-- a combined npm release-candidate tarball containing all supported platforms.
-
-The Linux jobs reject binaries requiring newer symbols than Bookworm provides
-(`GLIBCXX_3.4.30` and `GLIBC_2.36`). The packed release candidate is installed
-and smoke-tested in `node:22-bookworm-slim` and `node:24-bookworm-slim`, as well
-as on native Windows and macOS runners. The `prepublishOnly` guard verifies that
-all eight ABI files exist and have the expected platform format.
-
-## Docker smoke
-
-```bash
-docker build --platform linux/amd64 --build-arg NODE_VERSION=24 -t swm-uws-node24 .
-docker run --rm -p 3000:3000 swm-uws-node24
-curl http://127.0.0.1:3000/
-```
-
-Use `NODE_VERSION=22` for the Node.js 22 runtime matrix entry. The runtime stage
-contains no Python, compiler, make, or node-gyp installation.
-
-## Native loader failures
-
-If a matching binary and local development build are both absent, import fails
-at startup with the detected platform, architecture, and Node module ABI:
-
-```text
-No native binary for linux/x64/node-vXXX.
-Build @swarmmachina/swm-uws for this target first.
-```
-
-Vendored source provenance is recorded in `vendor/VERSIONS.md`.
-
-## Updating upstream dependencies
-
-Refresh both vendored gitlinks from an exact uWebSockets.js release tag, reapply
-local patches, and regenerate the SHA-256 manifest:
-
-```bash
+```sh
 npm run deps:update:vendor -- v20.69.0
 npm run deps:check:vendor
 ```
-
-The updater accepts only `v20.x.0` tags and records every resolved commit in
-`vendor/VERSIONS.md`. Always rebuild and run the test suite after an update.

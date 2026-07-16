@@ -1,0 +1,8 @@
+[
+  { "round": 1, "order": "swm/uws", "swmRps": 466086, "uwsRps": 431522 },
+  { "round": 2, "order": "uws/swm", "swmRps": 491600, "uwsRps": 432406 },
+  { "round": 3, "order": "swm/uws", "swmRps": 498080, "uwsRps": 429474 },
+  { "round": 4, "order": "uws/swm", "swmRps": 499464, "uwsRps": 433194 },
+  { "round": 5, "order": "swm/uws", "swmRps": 495316, "uwsRps": 430352 },
+  { "round": 6, "order": "uws/swm", "swmRps": 490354, "uwsRps": 409516 }
+]

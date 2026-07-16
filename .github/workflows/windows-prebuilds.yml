@@ -39,6 +39,9 @@ jobs:
       - name: Verify vendored sources
         run: npm run deps:check:vendor
 
+      - name: Verify generated benchmark report
+        run: npm run bench:report:check
+
   linux:
     name: Linux x64 / Node.js ${{ matrix.node }}
     runs-on:

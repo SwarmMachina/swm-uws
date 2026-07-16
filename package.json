@@ -25,10 +25,12 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": "22.x || 24.x"
   },
   "scripts": {
     "bench:server": "node scripts/bench-server.js",
+    "bench:report": "node scripts/generate-pgo-report.js",
+    "bench:report:check": "node scripts/generate-pgo-report.js --check",
     "bench:v8-http-server": "node scripts/bench-v8-http-server.js",
     "bench:ws": "node scripts/bench-ws.js",
     "profile:http-raw:linux": "bash scripts/profile-http-raw-linux.sh",
@@ -50,6 +52,7 @@
   },
   "devDependencies": {
     "@swarmmachina/standards": "^1.0.4",
-    "node-gyp": "^11.0.0"
+    "node-gyp": "^11.0.0",
+    "prettier": "^3.9.5"
   }
 }
