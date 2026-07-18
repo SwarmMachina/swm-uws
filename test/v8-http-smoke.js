@@ -16,6 +16,7 @@ let asyncResponse
 let completedRequest
 let completedBodyResponse
 let abortedResponse
+let remoteAddressResponse
 let detachedChunk
 let abortCount = 0
 let resolveAborted
@@ -73,14 +74,17 @@ app.get('/metadata', (res, req) => {
 })
 
 app.get('/query/:id', (res, req) => {
+  remoteAddressResponse = res
   assert.equal(req.getParameter(0), '42')
   assert.equal(req.getQuery(), 'key=value&empty=')
   assert.equal(req.getQuery('key'), 'value')
   assert.equal(req.getQuery('empty'), '')
   assert.equal(req.getQuery('missing'), undefined)
   const address = res.getRemoteAddressAsText()
+  const addressText = Buffer.from(address).toString('utf8')
   assert.ok(address instanceof ArrayBuffer)
-  assert.ok(Buffer.from(address).toString('utf8').length > 0)
+  assert.ok(addressText === '127.0.0.1' || addressText === '0000:0000:0000:0000:0000:ffff:7f00:0001')
+  assert.throws(() => res.getRemoteAddressAsText('unexpected'), /does not accept arguments/)
   assert.equal(
     res.cork(() => {
       res.writeStatus('200 OK')
@@ -190,6 +194,7 @@ assert.throws(() => completedRequest.getUrl(), /HTTP request is no longer valid/
 const queryResponse = await fetch(`http://127.0.0.1:${port}/query/42?key=value&empty=`)
 assert.equal(queryResponse.status, 200)
 assert.deepEqual(new Uint8Array(await queryResponse.arrayBuffer()), Uint8Array.from([1, 2, 3]))
+assert.throws(() => remoteAddressResponse.getRemoteAddressAsText(), /HTTP response is no longer valid/)
 
 const streamResponse = await fetch(`http://127.0.0.1:${port}/stream`)
 assert.equal(await streamResponse.text(), 'abc')

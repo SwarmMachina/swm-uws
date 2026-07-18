@@ -1,7 +1,7 @@
 {
   "name": "@swarmmachina/swm-uws",
   "version": "0.4.1",
-  "description": "High-performance raw V8 binding for pinned uWebSockets and uSockets sources",
+  "description": "High-performance, drop-in non-TLS uWebSockets.js binding for Node.js 22 and 24",
   "upstream": {
     "uWebSocketsJs": "v20.69.0"
   },
@@ -46,7 +46,7 @@
     "check:release": "node scripts/check-release-prebuilds.js",
     "clean": "node-gyp clean",
     "prepublishOnly": "npm run check:release",
-    "test": "node test/smoke.js",
+    "test": "node --test test/import-compatibility.test.js && node test/smoke.js",
     "test:v8-http": "node test/v8-http-smoke.js",
     "test:v8-ws": "node test/v8-ws-smoke.js"
   },

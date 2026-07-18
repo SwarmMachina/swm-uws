@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,6 +19,7 @@ using v8::ArrayBuffer;
 using v8::ArrayBufferView;
 using v8::Array;
 using v8::Boolean;
+using v8::BigInt;
 using v8::Context;
 using v8::Exception;
 using v8::External;
@@ -32,6 +34,7 @@ using v8::NewStringType;
 using v8::Null;
 using v8::Number;
 using v8::Object;
+using v8::SharedArrayBuffer;
 using v8::String;
 using v8::Value;
 
@@ -45,6 +48,8 @@ enum class HttpMethod {
     Delete,
     Options,
     Head,
+    Connect,
+    Trace,
     Any,
 };
 
@@ -65,7 +70,7 @@ struct ValidatedStringCache {
 struct AppState {
     std::unique_ptr<uWS::App> app;
     PerContextData *context = nullptr;
-    us_listen_socket_t *listenSocket = nullptr;
+    std::vector<us_listen_socket_t *> listenSockets;
     bool closed = false;
     bool hasWebSockets = false;
     std::vector<std::unique_ptr<Global<Function>>> handlers;
@@ -131,6 +136,16 @@ Local<String> NewString(Isolate *isolate, std::string_view value) {
     return String::NewFromUtf8(
                isolate,
                value.data(),
+               NewStringType::kNormal,
+               static_cast<int>(value.length()))
+        .ToLocalChecked();
+}
+
+Local<String> NewOneByteString(Isolate *isolate, std::string_view value) {
+    if (value.empty()) return String::Empty(isolate);
+    return String::NewFromOneByte(
+               isolate,
+               reinterpret_cast<const uint8_t *>(value.data()),
                NewStringType::kNormal,
                static_cast<int>(value.length()))
         .ToLocalChecked();
@@ -217,6 +232,14 @@ public:
         if (value->IsArrayBuffer()) {
             std::shared_ptr<v8::BackingStore> backing =
                 value.As<ArrayBuffer>()->GetBackingStore();
+            data_ = static_cast<const char *>(backing->Data());
+            length_ = backing->ByteLength();
+            return;
+        }
+
+        if (value->IsSharedArrayBuffer()) {
+            std::shared_ptr<v8::BackingStore> backing =
+                value.As<SharedArrayBuffer>()->GetBackingStore();
             data_ = static_cast<const char *>(backing->Data());
             length_ = backing->ByteLength();
             return;
@@ -374,19 +397,84 @@ void ResponseEnd(const FunctionCallbackInfo<Value> &args) {
     HttpResponse *response = GetResponse(args);
     if (!response) return;
 
+    if (args.Length() > 2) {
+        ThrowTypeError(args.GetIsolate(), "res.end(body?, closeConnection?) received too many arguments");
+        return;
+    }
+
     NativeBytes body(args.GetIsolate(), args[0], true);
     if (!body.IsValid()) {
         ThrowTypeError(args.GetIsolate(), "res.end(body) expects a string or buffer");
         return;
     }
+    const bool closeConnection = args.Length() > 1 &&
+        args[1]->BooleanValue(args.GetIsolate());
     auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
     if (async) {
         std::shared_ptr<AsyncResponseState> asyncState = async->shared_from_this();
-        response->end(body.View());
+        response->end(body.View(), closeConnection);
         InvalidateAsyncResponse(asyncState);
     } else {
         InvalidateResponseObject(args.This());
-        response->end(body.View());
+        response->end(body.View(), closeConnection);
+    }
+    args.GetReturnValue().Set(args.This());
+}
+
+void ResponseEndWithoutBody(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() > 2 ||
+        (args.Length() > 0 && !args[0]->IsUndefined() && !args[0]->IsNumber())) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "res.endWithoutBody(reportedContentLength?, closeConnection?) received invalid arguments");
+        return;
+    }
+
+    std::optional<std::size_t> reportedContentLength;
+    if (args.Length() > 0 && !args[0]->IsUndefined()) {
+        const double length = args[0]
+                                  ->NumberValue(args.GetIsolate()->GetCurrentContext())
+                                  .FromMaybe(-1);
+        if (!std::isfinite(length) || length < 0 ||
+            length > 9007199254740991.0 || std::floor(length) != length) {
+            ThrowTypeError(
+                args.GetIsolate(),
+                "res.endWithoutBody() content length must be a non-negative safe integer");
+            return;
+        }
+        reportedContentLength = static_cast<std::size_t>(length);
+    }
+    const bool closeConnection = args.Length() > 1 &&
+        args[1]->BooleanValue(args.GetIsolate());
+    auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
+    std::shared_ptr<AsyncResponseState> asyncState = async
+        ? async->shared_from_this()
+        : std::shared_ptr<AsyncResponseState>();
+    if (asyncState) InvalidateAsyncResponse(asyncState);
+    else InvalidateResponseObject(args.This());
+    response->endWithoutBody(reportedContentLength, closeConnection);
+    args.GetReturnValue().Set(args.This());
+}
+
+void ResponseClose(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "res.close() does not accept arguments");
+        return;
+    }
+    auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
+    std::shared_ptr<AsyncResponseState> asyncState = async
+        ? async->shared_from_this()
+        : std::shared_ptr<AsyncResponseState>();
+    if (asyncState) {
+        response->close();
+        if (asyncState->valid) InvalidateAsyncResponse(asyncState);
+    } else {
+        InvalidateResponseObject(args.This());
+        response->close();
     }
     args.GetReturnValue().Set(args.This());
 }
@@ -470,11 +558,17 @@ void ResponseEndBatch(const FunctionCallbackInfo<Value> &args) {
 void ResponseWriteStatus(const FunctionCallbackInfo<Value> &args) {
     HttpResponse *response = GetResponse(args);
     if (!response) return;
-    if (args.Length() != 1 || !args[0]->IsString()) {
-        ThrowTypeError(args.GetIsolate(), "res.writeStatus(status) expects a string");
+    if (args.Length() != 1) {
+        ThrowTypeError(args.GetIsolate(), "res.writeStatus(status) expects a string or buffer");
         return;
     }
     NativeBytes status(args.GetIsolate(), args[0]);
+    if (!status.IsValid()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "res.writeStatus(status) expects a string or buffer");
+        return;
+    }
     if (!IsValidStatus(status.View())) {
         ThrowTypeError(
             args.GetIsolate(),
@@ -488,32 +582,54 @@ void ResponseWriteStatus(const FunctionCallbackInfo<Value> &args) {
 void ResponseWriteHeader(const FunctionCallbackInfo<Value> &args) {
     HttpResponse *response = GetResponse(args);
     if (!response) return;
-    if (args.Length() != 2 || !args[0]->IsString() || !args[1]->IsString()) {
-        ThrowTypeError(args.GetIsolate(), "res.writeHeader(name, value) expects two strings");
+    if (args.Length() != 2) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "res.writeHeader(name, value) expects strings or buffers");
         return;
     }
     NativeBytes name(args.GetIsolate(), args[0]);
     NativeBytes value(args.GetIsolate(), args[1]);
+    if (!name.IsValid() || !value.IsValid()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "res.writeHeader(name, value) expects strings or buffers");
+        return;
+    }
     auto *context = static_cast<PerContextData *>(args.Data().As<External>()->Value());
-    Local<String> nameString = args[0].As<String>();
-    Local<String> valueString = args[1].As<String>();
-    if (!context->responseHeaderNameValidation.Matches(args.GetIsolate(), nameString)) {
+    const bool cachedName = args[0]->IsString() &&
+        context->responseHeaderNameValidation.Matches(
+            args.GetIsolate(),
+            args[0].As<String>());
+    if (!cachedName) {
         if (!IsValidHeaderName(name.View())) {
             ThrowTypeError(
                 args.GetIsolate(),
                 "res.writeHeader(name, value) expects a valid HTTP header name");
             return;
         }
-        context->responseHeaderNameValidation.Store(args.GetIsolate(), nameString);
+        if (args[0]->IsString()) {
+            context->responseHeaderNameValidation.Store(
+                args.GetIsolate(),
+                args[0].As<String>());
+        }
     }
-    if (!context->responseHeaderValueValidation.Matches(args.GetIsolate(), valueString)) {
+    const bool cachedValue = args[1]->IsString() &&
+        context->responseHeaderValueValidation.Matches(
+            args.GetIsolate(),
+            args[1].As<String>());
+    if (!cachedValue) {
         if (ContainsInvalidHeaderValueCharacter(value.View())) {
             ThrowTypeError(
                 args.GetIsolate(),
                 "res.writeHeader(name, value) does not allow control characters in value");
             return;
         }
-        context->responseHeaderValueValidation.Store(args.GetIsolate(), valueString);
+        if (args[1]->IsString()) {
+            context->responseHeaderValueValidation.Store(
+                args.GetIsolate(),
+                args[1].As<String>());
+        }
     }
     response->writeHeader(name.View(), value.View());
     args.GetReturnValue().Set(args.This());
@@ -669,11 +785,71 @@ void ResponseGetRemoteAddressAsText(const FunctionCallbackInfo<Value> &args) {
         CopyToArrayBuffer(args.GetIsolate(), response->getRemoteAddressAsText()));
 }
 
+void ResponseGetRemoteAddress(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "res.getRemoteAddress() does not accept arguments");
+        return;
+    }
+    args.GetReturnValue().Set(
+        CopyToArrayBuffer(args.GetIsolate(), response->getRemoteAddress()));
+}
+
+void ResponseGetRemotePort(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "res.getRemotePort() does not accept arguments");
+        return;
+    }
+    args.GetReturnValue().Set(Number::New(args.GetIsolate(), response->getRemotePort()));
+}
+
+void ResponseGetProxiedRemoteAddress(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "res.getProxiedRemoteAddress() does not accept arguments");
+        return;
+    }
+    args.GetReturnValue().Set(
+        CopyToArrayBuffer(args.GetIsolate(), response->getProxiedRemoteAddress()));
+}
+
+void ResponseGetProxiedRemoteAddressAsText(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "res.getProxiedRemoteAddressAsText() does not accept arguments");
+        return;
+    }
+    args.GetReturnValue().Set(CopyToArrayBuffer(
+        args.GetIsolate(),
+        response->getProxiedRemoteAddressAsText()));
+}
+
+void ResponseGetProxiedRemotePort(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "res.getProxiedRemotePort() does not accept arguments");
+        return;
+    }
+    args.GetReturnValue().Set(
+        Number::New(args.GetIsolate(), response->getProxiedRemotePort()));
+}
+
 void ResponseUpgrade(const FunctionCallbackInfo<Value> &args) {
     HttpResponse *response = GetResponse(args);
     if (!response) return;
-    if (args.Length() != 5 || !args[1]->IsString() || !args[2]->IsString() ||
-        !args[3]->IsString() || !args[4]->IsExternal()) {
+    if (args.Length() != 5 || !args[4]->IsExternal()) {
         ThrowTypeError(
             args.GetIsolate(),
             "res.upgrade(userData, key, protocol, extensions, context) received invalid arguments");
@@ -683,6 +859,12 @@ void ResponseUpgrade(const FunctionCallbackInfo<Value> &args) {
     NativeBytes key(isolate, args[1]);
     NativeBytes protocol(isolate, args[2]);
     NativeBytes extensions(isolate, args[3]);
+    if (!key.IsValid() || !protocol.IsValid() || !extensions.IsValid()) {
+        ThrowTypeError(
+            isolate,
+            "res.upgrade() key, protocol and extensions expect strings or buffers");
+        return;
+    }
     auto *socketState = new SocketState;
     socketState->isolate = isolate;
     socketState->userData.Reset(isolate, args[0]);
@@ -728,6 +910,35 @@ void ResponseOnData(const FunctionCallbackInfo<Value> &args) {
         CallJs(isolate, state->dataHandler.Get(isolate), 2, argv);
         buffer->Detach(Local<Value>()).FromMaybe(false);
     });
+    args.GetReturnValue().Set(args.This());
+}
+
+void ResponseOnDataV2(const FunctionCallbackInfo<Value> &args) {
+    if (!GetResponse(args)) return;
+    if (args.Length() != 1 || !args[0]->IsFunction()) {
+        ThrowTypeError(args.GetIsolate(), "res.onDataV2(handler) expects a function");
+        return;
+    }
+
+    std::shared_ptr<AsyncResponseState> state = PromoteResponse(args);
+    if (state->dataHandlerRegistered) {
+        ThrowError(args.GetIsolate(), "res.onDataV2() body handler is already registered");
+        return;
+    }
+    state->dataHandlerRegistered = true;
+    state->dataHandler.Reset(args.GetIsolate(), args[0].As<Function>());
+    state->response->onDataV2(
+        [state](std::string_view chunk, uint64_t maxRemainingBodyLength) {
+            if (!state->valid || state->dataHandler.IsEmpty()) return;
+            Isolate *isolate = state->isolate;
+            HandleScope scope(isolate);
+            Local<ArrayBuffer> buffer = ExternalArrayBuffer(isolate, chunk);
+            Local<Value> argv[] = {
+                buffer,
+                BigInt::NewFromUnsigned(isolate, maxRemainingBodyLength)};
+            CallJs(isolate, state->dataHandler.Get(isolate), 2, argv);
+            buffer->Detach(Local<Value>()).FromMaybe(false);
+        });
     args.GetReturnValue().Set(args.This());
 }
 
@@ -827,6 +1038,7 @@ void ResponsePause(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     response->pause();
+    args.GetReturnValue().Set(args.This());
 }
 
 void ResponseResume(const FunctionCallbackInfo<Value> &args) {
@@ -837,6 +1049,7 @@ void ResponseResume(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     response->resume();
+    args.GetReturnValue().Set(args.This());
 }
 
 void ResponseOnAborted(const FunctionCallbackInfo<Value> &args) {
@@ -872,6 +1085,19 @@ void RequestGetMethod(const FunctionCallbackInfo<Value> &args) {
     args.GetReturnValue().Set(NewString(args.GetIsolate(), request->getMethod()));
 }
 
+void RequestGetCaseSensitiveMethod(const FunctionCallbackInfo<Value> &args) {
+    uWS::HttpRequest *request = GetRequest(args);
+    if (!request) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "req.getCaseSensitiveMethod() does not accept arguments");
+        return;
+    }
+    args.GetReturnValue().Set(
+        NewString(args.GetIsolate(), request->getCaseSensitiveMethod()));
+}
+
 void RequestGetUrl(const FunctionCallbackInfo<Value> &args) {
     uWS::HttpRequest *request = GetRequest(args);
     if (!request) return;
@@ -885,12 +1111,12 @@ void RequestGetUrl(const FunctionCallbackInfo<Value> &args) {
 void RequestGetHeader(const FunctionCallbackInfo<Value> &args) {
     uWS::HttpRequest *request = GetRequest(args);
     if (!request) return;
-    if (args.Length() != 1 || !args[0]->IsString()) {
-        ThrowTypeError(args.GetIsolate(), "req.getHeader(name) expects a string");
+    if (args.Length() != 1) {
+        ThrowTypeError(args.GetIsolate(), "req.getHeader(name) expects a string or buffer");
         return;
     }
     NativeBytes nativeName(args.GetIsolate(), args[0]);
-    if (!IsValidHeaderName(nativeName.View())) {
+    if (!nativeName.IsValid() || !IsValidHeaderName(nativeName.View())) {
         ThrowTypeError(
             args.GetIsolate(),
             "req.getHeader(name) expects a valid HTTP header name");
@@ -902,7 +1128,8 @@ void RequestGetHeader(const FunctionCallbackInfo<Value> &args) {
             ? static_cast<char>(character + ('a' - 'A'))
             : static_cast<char>(character);
     });
-    args.GetReturnValue().Set(NewString(args.GetIsolate(), request->getHeader(name)));
+    args.GetReturnValue().Set(
+        NewOneByteString(args.GetIsolate(), request->getHeader(name)));
 }
 
 void RequestGetQuery(const FunctionCallbackInfo<Value> &args) {
@@ -912,11 +1139,15 @@ void RequestGetQuery(const FunctionCallbackInfo<Value> &args) {
         args.GetReturnValue().Set(NewString(args.GetIsolate(), request->getQuery()));
         return;
     }
-    if (args.Length() != 1 || !args[0]->IsString()) {
-        ThrowTypeError(args.GetIsolate(), "req.getQuery(key) expects a string");
+    if (args.Length() != 1) {
+        ThrowTypeError(args.GetIsolate(), "req.getQuery(key) expects a string or buffer");
         return;
     }
     NativeBytes key(args.GetIsolate(), args[0]);
+    if (!key.IsValid()) {
+        ThrowTypeError(args.GetIsolate(), "req.getQuery(key) expects a string or buffer");
+        return;
+    }
     std::string_view value = request->getQuery(key.View());
     if (value.data()) args.GetReturnValue().Set(NewString(args.GetIsolate(), value));
 }
@@ -924,8 +1155,20 @@ void RequestGetQuery(const FunctionCallbackInfo<Value> &args) {
 void RequestGetParameter(const FunctionCallbackInfo<Value> &args) {
     uWS::HttpRequest *request = GetRequest(args);
     if (!request) return;
-    if (args.Length() != 1 || !args[0]->IsNumber()) {
-        ThrowTypeError(args.GetIsolate(), "req.getParameter(index) expects a number");
+    if (args.Length() != 1) {
+        ThrowTypeError(args.GetIsolate(), "req.getParameter(indexOrName) expects a number or string");
+        return;
+    }
+    if (!args[0]->IsNumber()) {
+        NativeBytes name(args.GetIsolate(), args[0]);
+        if (!name.IsValid()) {
+            ThrowTypeError(
+                args.GetIsolate(),
+                "req.getParameter(indexOrName) expects a number, string, or buffer");
+            return;
+        }
+        std::string_view value = request->getParameter(name.View());
+        if (value.data()) args.GetReturnValue().Set(NewString(args.GetIsolate(), value));
         return;
     }
     const double indexNumber = args[0]->NumberValue(args.GetIsolate()->GetCurrentContext())
@@ -938,6 +1181,17 @@ void RequestGetParameter(const FunctionCallbackInfo<Value> &args) {
     std::string_view value = request->getParameter(
         static_cast<unsigned short>(indexNumber));
     if (value.data()) args.GetReturnValue().Set(NewString(args.GetIsolate(), value));
+}
+
+void RequestSetYield(const FunctionCallbackInfo<Value> &args) {
+    uWS::HttpRequest *request = GetRequest(args);
+    if (!request) return;
+    if (args.Length() != 1) {
+        ThrowTypeError(args.GetIsolate(), "req.setYield(value) expects one argument");
+        return;
+    }
+    request->setYield(args[0]->BooleanValue(args.GetIsolate()));
+    args.GetReturnValue().Set(args.This());
 }
 
 void RequestForEach(const FunctionCallbackInfo<Value> &args) {
@@ -1066,14 +1320,224 @@ void SocketSend(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(args.GetIsolate(), "ws.send(message) expects a string or buffer");
         return;
     }
-    const bool isBinary = args.Length() > 1
-        ? args[1]->BooleanValue(args.GetIsolate())
-        : !args[0]->IsString();
+    const bool isBinary = args.Length() > 1 &&
+        args[1]->BooleanValue(args.GetIsolate());
     const bool compress = args.Length() > 2 && args[2]->BooleanValue(args.GetIsolate());
     args.GetReturnValue().Set(static_cast<int>(state->socket->send(
         message.View(),
         isBinary ? uWS::OpCode::BINARY : uWS::OpCode::TEXT,
         compress)));
+}
+
+void SocketSendFirstFragment(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() < 1 || args.Length() > 3 ||
+        (args.Length() > 1 && !args[1]->IsBoolean()) ||
+        (args.Length() > 2 && !args[2]->IsBoolean())) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.sendFirstFragment(message, isBinary?, compress?) received invalid arguments");
+        return;
+    }
+    NativeBytes message(args.GetIsolate(), args[0]);
+    if (!message.IsValid()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.sendFirstFragment(message) expects a string or buffer");
+        return;
+    }
+    const bool isBinary = args.Length() > 1 &&
+        args[1]->BooleanValue(args.GetIsolate());
+    const bool compress = args.Length() > 2 &&
+        args[2]->BooleanValue(args.GetIsolate());
+    args.GetReturnValue().Set(static_cast<int>(state->socket->sendFirstFragment(
+        message.View(),
+        isBinary ? uWS::OpCode::BINARY : uWS::OpCode::TEXT,
+        compress)));
+}
+
+void SocketSendFragment(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() < 1 || args.Length() > 2 ||
+        (args.Length() > 1 && !args[1]->IsBoolean())) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.sendFragment(message, compress?) received invalid arguments");
+        return;
+    }
+    NativeBytes message(args.GetIsolate(), args[0]);
+    if (!message.IsValid()) {
+        ThrowTypeError(args.GetIsolate(), "ws.sendFragment(message) expects a string or buffer");
+        return;
+    }
+    const bool compress = args.Length() > 1 &&
+        args[1]->BooleanValue(args.GetIsolate());
+    args.GetReturnValue().Set(static_cast<int>(
+        state->socket->sendFragment(message.View(), compress)));
+}
+
+void SocketSendLastFragment(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() < 1 || args.Length() > 2 ||
+        (args.Length() > 1 && !args[1]->IsBoolean())) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.sendLastFragment(message, compress?) received invalid arguments");
+        return;
+    }
+    NativeBytes message(args.GetIsolate(), args[0]);
+    if (!message.IsValid()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.sendLastFragment(message) expects a string or buffer");
+        return;
+    }
+    const bool compress = args.Length() > 1 &&
+        args[1]->BooleanValue(args.GetIsolate());
+    args.GetReturnValue().Set(static_cast<int>(
+        state->socket->sendLastFragment(message.View(), compress)));
+}
+
+void SocketPing(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() > 1) {
+        ThrowTypeError(args.GetIsolate(), "ws.ping(message?) received too many arguments");
+        return;
+    }
+    NativeBytes message(args.GetIsolate(), args[0], true);
+    if (!message.IsValid()) {
+        ThrowTypeError(args.GetIsolate(), "ws.ping(message?) expects a string or buffer");
+        return;
+    }
+    args.GetReturnValue().Set(static_cast<int>(
+        state->socket->send(message.View(), uWS::OpCode::PING)));
+}
+
+void SocketPublish(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() < 2 || args.Length() > 4 ||
+        (args.Length() > 2 && !args[2]->IsBoolean()) ||
+        (args.Length() > 3 && !args[3]->IsBoolean())) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.publish(topic, message, isBinary?, compress?) received invalid arguments");
+        return;
+    }
+    NativeBytes topic(args.GetIsolate(), args[0]);
+    NativeBytes message(args.GetIsolate(), args[1]);
+    if (!topic.IsValid() || !message.IsValid()) {
+        ThrowTypeError(args.GetIsolate(), "ws.publish() message expects a string or buffer");
+        return;
+    }
+    const bool isBinary = args.Length() > 2 &&
+        args[2]->BooleanValue(args.GetIsolate());
+    const bool compress = args.Length() > 3 &&
+        args[3]->BooleanValue(args.GetIsolate());
+    args.GetReturnValue().Set(Boolean::New(
+        args.GetIsolate(),
+        state->socket->publish(
+            topic.View(),
+            message.View(),
+            isBinary ? uWS::OpCode::BINARY : uWS::OpCode::TEXT,
+            compress)));
+}
+
+void SocketCork(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 1 || !args[0]->IsFunction()) {
+        ThrowTypeError(args.GetIsolate(), "ws.cork(handler) expects a function");
+        return;
+    }
+    Isolate *isolate = args.GetIsolate();
+    Local<Function> handler = args[0].As<Function>();
+    state->socket->cork([isolate, handler]() {
+        handler
+            ->Call(
+                isolate->GetCurrentContext(),
+                isolate->GetCurrentContext()->Global(),
+                0,
+                nullptr)
+            .IsEmpty();
+    });
+    args.GetReturnValue().Set(args.This());
+}
+
+void SocketIsSubscribed(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 1) {
+        ThrowTypeError(args.GetIsolate(), "ws.isSubscribed(topic) expects a string or buffer");
+        return;
+    }
+    NativeBytes topic(args.GetIsolate(), args[0]);
+    if (!topic.IsValid()) {
+        ThrowTypeError(args.GetIsolate(), "ws.isSubscribed(topic) expects a string or buffer");
+        return;
+    }
+    args.GetReturnValue().Set(Boolean::New(
+        args.GetIsolate(),
+        state->socket->isSubscribed(topic.View())));
+}
+
+void SocketGetTopics(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "ws.getTopics() does not accept arguments");
+        return;
+    }
+    Isolate *isolate = args.GetIsolate();
+    Local<Array> topics = Array::New(isolate);
+    state->socket->iterateTopics([isolate, topics](std::string_view topic) {
+        topics
+            ->Set(
+                isolate->GetCurrentContext(),
+                topics->Length(),
+                NewString(isolate, topic))
+            .ToChecked();
+    });
+    args.GetReturnValue().Set(topics);
+}
+
+void SocketGetRemoteAddress(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "ws.getRemoteAddress() does not accept arguments");
+        return;
+    }
+    args.GetReturnValue().Set(
+        CopyToArrayBuffer(args.GetIsolate(), state->socket->getRemoteAddress()));
+}
+
+void SocketGetRemoteAddressAsText(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.getRemoteAddressAsText() does not accept arguments");
+        return;
+    }
+    args.GetReturnValue().Set(
+        CopyToArrayBuffer(args.GetIsolate(), state->socket->getRemoteAddressAsText()));
+}
+
+void SocketGetRemotePort(const FunctionCallbackInfo<Value> &args) {
+    SocketState *state = GetSocketState(args);
+    if (!state) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "ws.getRemotePort() does not accept arguments");
+        return;
+    }
+    args.GetReturnValue().Set(
+        Number::New(args.GetIsolate(), state->socket->getRemotePort()));
 }
 
 bool IsValidWebSocketCloseCode(int code) {
@@ -1086,8 +1550,7 @@ void SocketEnd(const FunctionCallbackInfo<Value> &args) {
     SocketState *state = GetSocketState(args);
     if (!state) return;
     if (args.Length() > 2 ||
-        (args.Length() > 0 && !args[0]->IsUndefined() && !args[0]->IsNumber()) ||
-        (args.Length() > 1 && !args[1]->IsUndefined() && !args[1]->IsString())) {
+        (args.Length() > 0 && !args[0]->IsUndefined() && !args[0]->IsNumber())) {
         ThrowTypeError(
             args.GetIsolate(),
             "ws.end([code[, reason]]) expects a number and a string");
@@ -1119,6 +1582,12 @@ void SocketEnd(const FunctionCallbackInfo<Value> &args) {
     Local<Value> reasonValue = String::Empty(args.GetIsolate());
     if (args.Length() > 1) reasonValue = args[1];
     NativeBytes reason(args.GetIsolate(), reasonValue);
+    if (!reason.IsValid()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "ws.end([code[, reason]]) reason expects a string or buffer");
+        return;
+    }
     if (code == 0 && !reason.View().empty()) {
         ThrowTypeError(
             args.GetIsolate(),
@@ -1131,8 +1600,10 @@ void SocketEnd(const FunctionCallbackInfo<Value> &args) {
             "ws.end() reason must be at most 123 UTF-8 bytes");
         return;
     }
-    state->socket->end(code, reason.View());
-    args.GetReturnValue().Set(args.This());
+    NativeWebSocket *socket = state->socket;
+    SetInternalPointer(args.This(), nullptr);
+    state->socket = nullptr;
+    socket->end(code, reason.View());
 }
 
 void SocketClose(const FunctionCallbackInfo<Value> &args) {
@@ -1142,8 +1613,10 @@ void SocketClose(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(args.GetIsolate(), "ws.close() does not accept arguments");
         return;
     }
-    state->socket->close();
-    args.GetReturnValue().Set(args.This());
+    NativeWebSocket *socket = state->socket;
+    SetInternalPointer(args.This(), nullptr);
+    state->socket = nullptr;
+    socket->close();
 }
 
 void SocketGetBufferedAmount(const FunctionCallbackInfo<Value> &args) {
@@ -1165,19 +1638,21 @@ void SocketGetUserData(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(args.GetIsolate(), "ws.getUserData() does not accept arguments");
         return;
     }
-    if (!state->userData.IsEmpty()) {
-        args.GetReturnValue().Set(state->userData.Get(args.GetIsolate()));
-    }
+    args.GetReturnValue().Set(args.This());
 }
 
 void SocketSubscribe(const FunctionCallbackInfo<Value> &args) {
     SocketState *state = GetSocketState(args);
     if (!state) return;
-    if (args.Length() != 1 || !args[0]->IsString()) {
-        ThrowTypeError(args.GetIsolate(), "ws.subscribe(topic) expects a string");
+    if (args.Length() != 1) {
+        ThrowTypeError(args.GetIsolate(), "ws.subscribe(topic) expects a string or buffer");
         return;
     }
     NativeBytes topic(args.GetIsolate(), args[0]);
+    if (!topic.IsValid()) {
+        ThrowTypeError(args.GetIsolate(), "ws.subscribe(topic) expects a string or buffer");
+        return;
+    }
     args.GetReturnValue().Set(Boolean::New(
         args.GetIsolate(),
         state->socket->subscribe(topic.View())));
@@ -1186,11 +1661,15 @@ void SocketSubscribe(const FunctionCallbackInfo<Value> &args) {
 void SocketUnsubscribe(const FunctionCallbackInfo<Value> &args) {
     SocketState *state = GetSocketState(args);
     if (!state) return;
-    if (args.Length() != 1 || !args[0]->IsString()) {
-        ThrowTypeError(args.GetIsolate(), "ws.unsubscribe(topic) expects a string");
+    if (args.Length() != 1) {
+        ThrowTypeError(args.GetIsolate(), "ws.unsubscribe(topic) expects a string or buffer");
         return;
     }
     NativeBytes topic(args.GetIsolate(), args[0]);
+    if (!topic.IsValid()) {
+        ThrowTypeError(args.GetIsolate(), "ws.unsubscribe(topic) expects a string or buffer");
+        return;
+    }
     args.GetReturnValue().Set(Boolean::New(
         args.GetIsolate(),
         state->socket->unsubscribe(topic.View())));
@@ -1202,7 +1681,7 @@ void RegisterHttpRoute(
     const char *methodName) {
     Isolate *isolate = args.GetIsolate();
     auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    if (!state || args.Length() != 2 || !args[0]->IsString() || !args[1]->IsFunction()) {
+    if (!state || args.Length() != 2 || !args[1]->IsFunction()) {
         std::string message = "app." + std::string(methodName) +
             "(path, handler) expects a string and a function";
         ThrowTypeError(isolate, message.c_str());
@@ -1210,6 +1689,10 @@ void RegisterHttpRoute(
     }
 
     NativeBytes path(isolate, args[0]);
+    if (!path.IsValid()) {
+        ThrowTypeError(isolate, "app route path expects a string or buffer");
+        return;
+    }
     auto handler = std::make_unique<Global<Function>>(isolate, args[1].As<Function>());
     Global<Function> *handlerPointer = handler.get();
     state->handlers.push_back(std::move(handler));
@@ -1260,6 +1743,12 @@ void RegisterHttpRoute(
         case HttpMethod::Head:
             state->app->head(pathString, std::move(routeHandler));
             break;
+        case HttpMethod::Connect:
+            state->app->connect(pathString, std::move(routeHandler));
+            break;
+        case HttpMethod::Trace:
+            state->app->trace(pathString, std::move(routeHandler));
+            break;
         case HttpMethod::Any:
             state->app->any(pathString, std::move(routeHandler));
             break;
@@ -1287,6 +1776,12 @@ void AppOptions(const FunctionCallbackInfo<Value> &args) {
 }
 void AppHead(const FunctionCallbackInfo<Value> &args) {
     RegisterHttpRoute(args, HttpMethod::Head, "head");
+}
+void AppConnect(const FunctionCallbackInfo<Value> &args) {
+    RegisterHttpRoute(args, HttpMethod::Connect, "connect");
+}
+void AppTrace(const FunctionCallbackInfo<Value> &args) {
+    RegisterHttpRoute(args, HttpMethod::Trace, "trace");
 }
 void AppAny(const FunctionCallbackInfo<Value> &args) {
     RegisterHttpRoute(args, HttpMethod::Any, "any");
@@ -1372,6 +1867,31 @@ Local<Object> EnsureSocketObject(
     state->socket = socket;
     if (state->object.IsEmpty()) {
         Local<Object> object = context->socketTemplate.Get(isolate)->Clone();
+        if (!state->userData.IsEmpty()) {
+            Local<Value> userData = state->userData.Get(isolate);
+            if (userData->IsObject()) {
+                Local<Object> source = userData.As<Object>();
+                Local<Context> currentContext = isolate->GetCurrentContext();
+                for (v8::PropertyFilter filter : {
+                         v8::ALL_PROPERTIES,
+                         static_cast<v8::PropertyFilter>(v8::SKIP_STRINGS)}) {
+                    Local<Array> keys;
+                    if (!source->GetOwnPropertyNames(currentContext, filter).ToLocal(&keys)) {
+                        continue;
+                    }
+                    for (uint32_t index = 0; index < keys->Length(); index++) {
+                        Local<Value> key;
+                        Local<Value> value;
+                        if (!keys->Get(currentContext, index).ToLocal(&key) ||
+                            !source->Get(currentContext, key).ToLocal(&value)) {
+                            continue;
+                        }
+                        object->Set(currentContext, key, value).ToChecked();
+                    }
+                }
+            }
+            state->userData.Reset();
+        }
         SetInternalPointer(object, state);
         state->object.Reset(isolate, object);
         return object;
@@ -1382,12 +1902,22 @@ Local<Object> EnsureSocketObject(
 void AppWs(const FunctionCallbackInfo<Value> &args) {
     Isolate *isolate = args.GetIsolate();
     auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    if (!state || args.Length() != 2 || !args[0]->IsString() || !args[1]->IsObject()) {
+    if (!state || args.Length() != 2 || !args[1]->IsObject()) {
         ThrowTypeError(isolate, "app.ws(path, behavior) expects a string and an object");
         return;
     }
     Local<Object> options = args[1].As<Object>();
     uWS::App::WebSocketBehavior<PerSocketData> behavior;
+    Local<Value> compression = GetProperty(isolate, options, "compression");
+    if (!compression->IsUndefined() &&
+        (!compression->IsNumber() ||
+         compression->Int32Value(isolate->GetCurrentContext()).FromMaybe(-1) !=
+             uWS::DISABLED)) {
+        ThrowTypeError(
+            isolate,
+            "WebSocket compression is disabled; only uWS.DISABLED is supported");
+        return;
+    }
     unsigned int idleTimeout = behavior.idleTimeout;
     unsigned int maxLifetime = behavior.maxLifetime;
     if (!ReadUnsignedOption(
@@ -1449,7 +1979,13 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
     if (!handlersValid) return;
     Global<Function> *message = StoreOptionalHandler(state, isolate, options, "message", &handlersValid);
     if (!handlersValid) return;
+    Global<Function> *dropped = StoreOptionalHandler(state, isolate, options, "dropped", &handlersValid);
+    if (!handlersValid) return;
     Global<Function> *drain = StoreOptionalHandler(state, isolate, options, "drain", &handlersValid);
+    if (!handlersValid) return;
+    Global<Function> *ping = StoreOptionalHandler(state, isolate, options, "ping", &handlersValid);
+    if (!handlersValid) return;
+    Global<Function> *pong = StoreOptionalHandler(state, isolate, options, "pong", &handlersValid);
     if (!handlersValid) return;
     Global<Function> *subscription = StoreOptionalHandler(state, isolate, options, "subscription", &handlersValid);
     if (!handlersValid) return;
@@ -1506,12 +2042,45 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
         CallJs(callbackIsolate, message->Get(callbackIsolate), 3, argv);
         buffer->Detach(Local<Value>()).FromMaybe(false);
     };
+    behavior.dropped = [context, dropped](
+                           NativeWebSocket *socket,
+                           std::string_view payload,
+                           uWS::OpCode opcode) {
+        if (!dropped) return;
+        Isolate *callbackIsolate = context->isolate;
+        HandleScope scope(callbackIsolate);
+        Local<ArrayBuffer> buffer = ExternalArrayBuffer(callbackIsolate, payload);
+        Local<Value> argv[] = {
+            EnsureSocketObject(context, socket),
+            buffer,
+            Boolean::New(callbackIsolate, opcode == uWS::OpCode::BINARY)};
+        CallJs(callbackIsolate, dropped->Get(callbackIsolate), 3, argv);
+        buffer->Detach(Local<Value>()).FromMaybe(false);
+    };
     behavior.drain = [context, drain](NativeWebSocket *socket) {
         if (!drain) return;
         Isolate *callbackIsolate = context->isolate;
         HandleScope scope(callbackIsolate);
         Local<Value> argv[] = {EnsureSocketObject(context, socket)};
         CallJs(callbackIsolate, drain->Get(callbackIsolate), 1, argv);
+    };
+    behavior.ping = [context, ping](NativeWebSocket *socket, std::string_view payload) {
+        if (!ping) return;
+        Isolate *callbackIsolate = context->isolate;
+        HandleScope scope(callbackIsolate);
+        Local<ArrayBuffer> buffer = ExternalArrayBuffer(callbackIsolate, payload);
+        Local<Value> argv[] = {EnsureSocketObject(context, socket), buffer};
+        CallJs(callbackIsolate, ping->Get(callbackIsolate), 2, argv);
+        buffer->Detach(Local<Value>()).FromMaybe(false);
+    };
+    behavior.pong = [context, pong](NativeWebSocket *socket, std::string_view payload) {
+        if (!pong) return;
+        Isolate *callbackIsolate = context->isolate;
+        HandleScope scope(callbackIsolate);
+        Local<ArrayBuffer> buffer = ExternalArrayBuffer(callbackIsolate, payload);
+        Local<Value> argv[] = {EnsureSocketObject(context, socket), buffer};
+        CallJs(callbackIsolate, pong->Get(callbackIsolate), 2, argv);
+        buffer->Detach(Local<Value>()).FromMaybe(false);
     };
     behavior.subscription = [context, subscription](
                                 NativeWebSocket *socket,
@@ -1557,6 +2126,10 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
     };
 
     NativeBytes path(isolate, args[0]);
+    if (!path.IsValid()) {
+        ThrowTypeError(isolate, "app.ws(path, behavior) path expects a string or buffer");
+        return;
+    }
     state->app->ws<PerSocketData>(std::string(path.View()), std::move(behavior));
     state->hasWebSockets = true;
     args.GetReturnValue().Set(args.This());
@@ -1564,84 +2137,99 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
 
 void AppPublish(const FunctionCallbackInfo<Value> &args) {
     auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    if (!state || args.Length() < 2 || args.Length() > 3 || !args[0]->IsString() ||
-        (args.Length() > 2 && !args[2]->IsBoolean())) {
+    if (!state || args.Length() < 2 || args.Length() > 4 ||
+        (args.Length() > 2 && !args[2]->IsBoolean()) ||
+        (args.Length() > 3 && !args[3]->IsBoolean())) {
         ThrowTypeError(
             args.GetIsolate(),
-            "app.publish(topic, message, isBinary) received invalid arguments");
+            "app.publish(topic, message, isBinary?, compress?) received invalid arguments");
         return;
     }
     NativeBytes topic(args.GetIsolate(), args[0]);
     NativeBytes message(args.GetIsolate(), args[1]);
-    if (!message.IsValid()) {
-        ThrowTypeError(args.GetIsolate(), "app.publish message expects a string or buffer");
+    if (!topic.IsValid() || !message.IsValid()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "app.publish topic and message expect strings or buffers");
         return;
     }
     if (!state->hasWebSockets) {
         args.GetReturnValue().Set(false);
         return;
     }
-    const bool isBinary = args.Length() > 2
-        ? args[2]->BooleanValue(args.GetIsolate())
-        : !args[1]->IsString();
+    const bool isBinary = args.Length() > 2 &&
+        args[2]->BooleanValue(args.GetIsolate());
+    const bool compress = args.Length() > 3 &&
+        args[3]->BooleanValue(args.GetIsolate());
     args.GetReturnValue().Set(Boolean::New(
         args.GetIsolate(),
         state->app->publish(
             topic.View(),
             message.View(),
-            isBinary ? uWS::OpCode::BINARY : uWS::OpCode::TEXT)));
+            isBinary ? uWS::OpCode::BINARY : uWS::OpCode::TEXT,
+            compress)));
 }
 
 void AppNumSubscribers(const FunctionCallbackInfo<Value> &args) {
     auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    if (!state || args.Length() != 1 || !args[0]->IsString()) {
-        ThrowTypeError(args.GetIsolate(), "app.numSubscribers(topic) expects a string");
+    if (!state || args.Length() != 1) {
+        ThrowTypeError(args.GetIsolate(), "app.numSubscribers(topic) expects a topic");
+        return;
+    }
+    NativeBytes topic(args.GetIsolate(), args[0]);
+    if (!topic.IsValid()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "app.numSubscribers(topic) expects a string or buffer");
         return;
     }
     if (!state->hasWebSockets) {
         args.GetReturnValue().Set(0);
         return;
     }
-    NativeBytes topic(args.GetIsolate(), args[0]);
     args.GetReturnValue().Set(state->app->numSubscribers(topic.View()));
 }
 
 void AppListen(const FunctionCallbackInfo<Value> &args) {
     Isolate *isolate = args.GetIsolate();
     auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    const bool portOnly = args.Length() == 2 && args[0]->IsNumber() &&
-        args[1]->IsFunction();
-    const bool withHost = args.Length() == 3 && args[0]->IsString() &&
-        args[1]->IsNumber() && args[2]->IsFunction();
-    if (!state || (!portOnly && !withHost)) {
+    const bool portOnly = args.Length() >= 2 && args.Length() <= 3 &&
+        args[0]->IsNumber() && args[args.Length() - 1]->IsFunction();
+    const bool withHost = args.Length() >= 3 && args.Length() <= 4 &&
+        !args[0]->IsNumber() && args[1]->IsNumber() &&
+        args[args.Length() - 1]->IsFunction();
+    if (!state || (!portOnly && !withHost) ||
+        (((portOnly && args.Length() == 3) || (withHost && args.Length() == 4)) &&
+         !args[args.Length() - 2]->IsNumber())) {
         ThrowTypeError(
             isolate,
-            "app.listen() expects (port, callback) or (host, port, callback)");
+            "app.listen() expects (port[, options], callback) or (host, port[, options], callback)");
         return;
     }
     if (state->closed) {
         ThrowError(isolate, "app.listen() cannot be called after app.close()");
         return;
     }
-    if (state->listenSocket) {
-        ThrowError(isolate, "app.listen() has already succeeded");
-        return;
-    }
-
     const int portIndex = withHost ? 1 : 0;
-    const int callbackIndex = withHost ? 2 : 1;
+    const int callbackIndex = args.Length() - 1;
     const int port = args[portIndex]->Int32Value(isolate->GetCurrentContext()).ToChecked();
-    if (port < 1 || port > 65535) {
-        ThrowTypeError(isolate, "app.listen() port must be between 1 and 65535");
+    if (port < 0 || port > 65535) {
+        ThrowTypeError(isolate, "app.listen() port must be between 0 and 65535");
         return;
     }
+    const bool hasOptions = callbackIndex - portIndex == 2;
+    const int options = hasOptions
+        ? args[callbackIndex - 1]
+              ->Int32Value(isolate->GetCurrentContext())
+              .FromMaybe(0)
+        : LIBUS_LISTEN_DEFAULT;
     auto callback = std::make_unique<Global<Function>>(
         isolate,
         args[callbackIndex].As<Function>());
     Global<Function> *callbackPointer = callback.get();
     state->handlers.push_back(std::move(callback));
     auto listener = [state, isolate, callbackPointer](us_listen_socket_t *socket) {
-        state->listenSocket = socket;
+        if (socket) state->listenSockets.push_back(socket);
         HandleScope scope(isolate);
         Local<Value> socketValue = v8::False(isolate);
         if (socket) socketValue = External::New(isolate, socket);
@@ -1650,10 +2238,89 @@ void AppListen(const FunctionCallbackInfo<Value> &args) {
     };
     if (withHost) {
         NativeBytes host(isolate, args[0]);
-        state->app->listen(std::string(host.View()), port, std::move(listener));
+        if (!host.IsValid()) {
+            ThrowTypeError(isolate, "app.listen() host expects a string or buffer");
+            return;
+        }
+        state->app->listen(
+            std::string(host.View()),
+            port,
+            options,
+            std::move(listener));
     } else {
-        state->app->listen(port, std::move(listener));
+        state->app->listen(port, options, std::move(listener));
     }
+    args.GetReturnValue().Set(args.This());
+}
+
+void AppListenUnix(const FunctionCallbackInfo<Value> &args) {
+    Isolate *isolate = args.GetIsolate();
+    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
+    const bool withoutOptions = args.Length() == 2 && args[0]->IsFunction();
+    const bool withOptions = args.Length() == 3 && args[0]->IsNumber() &&
+        args[1]->IsFunction();
+    if (!state || (!withoutOptions && !withOptions)) {
+        ThrowTypeError(
+            isolate,
+            "app.listen_unix() expects (callback, path) or (options, callback, path)");
+        return;
+    }
+    if (state->closed) {
+        ThrowError(isolate, "app.listen_unix() cannot be called after app.close()");
+        return;
+    }
+
+    const int callbackIndex = withOptions ? 1 : 0;
+    const int pathIndex = withOptions ? 2 : 1;
+    const int options = withOptions
+        ? args[0]->Int32Value(isolate->GetCurrentContext()).FromMaybe(0)
+        : LIBUS_LISTEN_DEFAULT;
+    NativeBytes path(isolate, args[pathIndex]);
+    if (!path.IsValid()) {
+        ThrowTypeError(isolate, "app.listen_unix() path expects a string or buffer");
+        return;
+    }
+    auto callback = std::make_unique<Global<Function>>(
+        isolate,
+        args[callbackIndex].As<Function>());
+    Global<Function> *callbackPointer = callback.get();
+    state->handlers.push_back(std::move(callback));
+    state->app->listen(
+        options,
+        [state, isolate, callbackPointer](us_listen_socket_t *socket) {
+            if (socket) state->listenSockets.push_back(socket);
+            HandleScope scope(isolate);
+            Local<Value> socketValue = v8::False(isolate);
+            if (socket) socketValue = External::New(isolate, socket);
+            Local<Value> argv[] = {socketValue};
+            CallJs(isolate, callbackPointer->Get(isolate), 1, argv);
+        },
+        std::string(path.View()));
+    args.GetReturnValue().Set(args.This());
+}
+
+void AppFilter(const FunctionCallbackInfo<Value> &args) {
+    Isolate *isolate = args.GetIsolate();
+    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
+    if (!state || args.Length() != 1 || !args[0]->IsFunction()) {
+        ThrowTypeError(isolate, "app.filter(handler) expects a function");
+        return;
+    }
+    auto handler = std::make_unique<Global<Function>>(isolate, args[0].As<Function>());
+    Global<Function> *handlerPointer = handler.get();
+    state->handlers.push_back(std::move(handler));
+    PerContextData *context = state->context;
+    state->app->filter([context, handlerPointer](HttpResponse *response, int count) {
+        Isolate *callbackIsolate = context->isolate;
+        HandleScope scope(callbackIsolate);
+        Local<Object> responseObject = context->responseTemplate.Get(callbackIsolate)->Clone();
+        SetInternalPointer(responseObject, response, 0);
+        Local<Value> argv[] = {
+            responseObject,
+            Number::New(callbackIsolate, count)};
+        CallJs(callbackIsolate, handlerPointer->Get(callbackIsolate), 2, argv);
+        if (GetInternalPointer(responseObject)) InvalidateResponseObject(responseObject);
+    });
     args.GetReturnValue().Set(args.This());
 }
 
@@ -1666,10 +2333,10 @@ void AppClose(const FunctionCallbackInfo<Value> &args) {
     }
     if (!state->closed) {
         state->closed = true;
-        if (state->listenSocket) {
-            us_listen_socket_close(0, state->listenSocket);
-            state->listenSocket = nullptr;
+        for (us_listen_socket_t *socket : state->listenSockets) {
+            us_listen_socket_close(0, socket);
         }
+        state->listenSockets.clear();
         if (state->app) state->app->close();
     }
     args.GetReturnValue().Set(args.This());
@@ -1727,12 +2394,22 @@ void CloseListenSocket(const FunctionCallbackInfo<Value> &args) {
     if (!socket) return;
     auto *context = static_cast<PerContextData *>(args.Data().As<External>()->Value());
     for (const auto &app : context->apps) {
-        if (app->listenSocket == socket) {
-            app->listenSocket = nullptr;
-            break;
-        }
+        auto &sockets = app->listenSockets;
+        sockets.erase(std::remove(sockets.begin(), sockets.end(), socket), sockets.end());
     }
     us_listen_socket_close(0, socket);
+}
+
+void SocketLocalPort(const FunctionCallbackInfo<Value> &args) {
+    if (args.Length() != 1 || !args[0]->IsExternal()) {
+        ThrowTypeError(
+            args.GetIsolate(),
+            "us_socket_local_port(socket) expects a socket or listen socket");
+        return;
+    }
+    auto *socket = static_cast<us_socket_t *>(args[0].As<External>()->Value());
+    args.GetReturnValue().Set(
+        Number::New(args.GetIsolate(), us_socket_local_port(0, socket)));
 }
 
 void SetPrototypeMethod(
@@ -1755,6 +2432,8 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     Local<FunctionTemplate> response = FunctionTemplate::New(isolate);
     response->InstanceTemplate()->SetInternalFieldCount(2);
     SetPrototypeMethod(isolate, response, "end", ResponseEnd);
+    SetPrototypeMethod(isolate, response, "endWithoutBody", ResponseEndWithoutBody);
+    SetPrototypeMethod(isolate, response, "close", ResponseClose);
     SetPrototypeMethod(isolate, response, "endBatch", ResponseEndBatch);
     SetPrototypeMethod(isolate, response, "writeStatus", ResponseWriteStatus);
     SetPrototypeMethod(
@@ -1764,6 +2443,7 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
         ResponseWriteHeader,
         contextExternal);
     SetPrototypeMethod(isolate, response, "cork", ResponseCork);
+    SetPrototypeMethod(isolate, response, "collect", ResponseCork);
     SetPrototypeMethod(isolate, response, "beginWrite", ResponseBeginWrite);
     SetPrototypeMethod(isolate, response, "write", ResponseWrite);
     SetPrototypeMethod(isolate, response, "tryEnd", ResponseTryEnd);
@@ -1772,10 +2452,32 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     SetPrototypeMethod(
         isolate,
         response,
+        "getRemoteAddress",
+        ResponseGetRemoteAddress);
+    SetPrototypeMethod(
+        isolate,
+        response,
         "getRemoteAddressAsText",
         ResponseGetRemoteAddressAsText);
+    SetPrototypeMethod(isolate, response, "getRemotePort", ResponseGetRemotePort);
+    SetPrototypeMethod(
+        isolate,
+        response,
+        "getProxiedRemoteAddress",
+        ResponseGetProxiedRemoteAddress);
+    SetPrototypeMethod(
+        isolate,
+        response,
+        "getProxiedRemoteAddressAsText",
+        ResponseGetProxiedRemoteAddressAsText);
+    SetPrototypeMethod(
+        isolate,
+        response,
+        "getProxiedRemotePort",
+        ResponseGetProxiedRemotePort);
     SetPrototypeMethod(isolate, response, "upgrade", ResponseUpgrade);
     SetPrototypeMethod(isolate, response, "onData", ResponseOnData);
+    SetPrototypeMethod(isolate, response, "onDataV2", ResponseOnDataV2);
     SetPrototypeMethod(isolate, response, "collectBody", ResponseCollectBody);
     SetPrototypeMethod(isolate, response, "pause", ResponsePause);
     SetPrototypeMethod(isolate, response, "resume", ResponseResume);
@@ -1791,10 +2493,16 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     Local<FunctionTemplate> request = FunctionTemplate::New(isolate);
     request->InstanceTemplate()->SetInternalFieldCount(1);
     SetPrototypeMethod(isolate, request, "getMethod", RequestGetMethod);
+    SetPrototypeMethod(
+        isolate,
+        request,
+        "getCaseSensitiveMethod",
+        RequestGetCaseSensitiveMethod);
     SetPrototypeMethod(isolate, request, "getUrl", RequestGetUrl);
     SetPrototypeMethod(isolate, request, "getHeader", RequestGetHeader);
     SetPrototypeMethod(isolate, request, "getQuery", RequestGetQuery);
     SetPrototypeMethod(isolate, request, "getParameter", RequestGetParameter);
+    SetPrototypeMethod(isolate, request, "setYield", RequestSetYield);
     SetPrototypeMethod(isolate, request, "forEach", RequestForEach);
     SetPrototypeMethod(isolate, request, "snapshot", RequestSnapshot);
     context->requestTemplate.Reset(
@@ -1807,12 +2515,27 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     Local<FunctionTemplate> socket = FunctionTemplate::New(isolate);
     socket->InstanceTemplate()->SetInternalFieldCount(1);
     SetPrototypeMethod(isolate, socket, "send", SocketSend);
+    SetPrototypeMethod(isolate, socket, "sendFirstFragment", SocketSendFirstFragment);
+    SetPrototypeMethod(isolate, socket, "sendFragment", SocketSendFragment);
+    SetPrototypeMethod(isolate, socket, "sendLastFragment", SocketSendLastFragment);
+    SetPrototypeMethod(isolate, socket, "ping", SocketPing);
+    SetPrototypeMethod(isolate, socket, "publish", SocketPublish);
+    SetPrototypeMethod(isolate, socket, "cork", SocketCork);
     SetPrototypeMethod(isolate, socket, "end", SocketEnd);
     SetPrototypeMethod(isolate, socket, "close", SocketClose);
     SetPrototypeMethod(isolate, socket, "getBufferedAmount", SocketGetBufferedAmount);
+    SetPrototypeMethod(isolate, socket, "getRemoteAddress", SocketGetRemoteAddress);
+    SetPrototypeMethod(
+        isolate,
+        socket,
+        "getRemoteAddressAsText",
+        SocketGetRemoteAddressAsText);
+    SetPrototypeMethod(isolate, socket, "getRemotePort", SocketGetRemotePort);
     SetPrototypeMethod(isolate, socket, "getUserData", SocketGetUserData);
     SetPrototypeMethod(isolate, socket, "subscribe", SocketSubscribe);
     SetPrototypeMethod(isolate, socket, "unsubscribe", SocketUnsubscribe);
+    SetPrototypeMethod(isolate, socket, "isSubscribed", SocketIsSubscribed);
+    SetPrototypeMethod(isolate, socket, "getTopics", SocketGetTopics);
     context->socketTemplate.Reset(
         isolate,
         socket->GetFunction(isolate->GetCurrentContext())
@@ -1829,11 +2552,15 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     SetPrototypeMethod(isolate, app, "del", AppDelete);
     SetPrototypeMethod(isolate, app, "options", AppOptions);
     SetPrototypeMethod(isolate, app, "head", AppHead);
+    SetPrototypeMethod(isolate, app, "connect", AppConnect);
+    SetPrototypeMethod(isolate, app, "trace", AppTrace);
     SetPrototypeMethod(isolate, app, "any", AppAny);
     SetPrototypeMethod(isolate, app, "ws", AppWs);
     SetPrototypeMethod(isolate, app, "publish", AppPublish);
     SetPrototypeMethod(isolate, app, "numSubscribers", AppNumSubscribers);
     SetPrototypeMethod(isolate, app, "listen", AppListen);
+    SetPrototypeMethod(isolate, app, "listen_unix", AppListenUnix);
+    SetPrototypeMethod(isolate, app, "filter", AppFilter);
     SetPrototypeMethod(isolate, app, "close", AppClose);
     context->appConstructor.Reset(
         isolate,
@@ -1871,6 +2598,26 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
             FunctionTemplate::New(isolate, CloseListenSocket, contextExternal)
                 ->GetFunction(isolate->GetCurrentContext())
                 .ToLocalChecked())
+        .ToChecked();
+    exports
+        ->Set(
+            isolate->GetCurrentContext(),
+            NewString(isolate, "us_socket_local_port"),
+            FunctionTemplate::New(isolate, SocketLocalPort)
+                ->GetFunction(isolate->GetCurrentContext())
+                .ToLocalChecked())
+        .ToChecked();
+    exports
+        ->Set(
+            isolate->GetCurrentContext(),
+            NewString(isolate, "LIBUS_LISTEN_EXCLUSIVE_PORT"),
+            Number::New(isolate, LIBUS_LISTEN_EXCLUSIVE_PORT))
+        .ToChecked();
+    exports
+        ->Set(
+            isolate->GetCurrentContext(),
+            NewString(isolate, "DISABLED"),
+            Number::New(isolate, uWS::CompressOptions::DISABLED))
         .ToChecked();
     return context;
 }

@@ -32,7 +32,8 @@ app.ws('/ws', {
   open(ws) {
     nativeSocket = ws
     openCount++
-    assert.deepEqual(ws.getUserData(), { connectionId: 'core-compatible' })
+    assert.equal(ws.getUserData(), ws)
+    assert.equal(ws.connectionId, 'core-compatible')
     assert.equal(ws.getBufferedAmount(), 0)
     assert.equal(ws.subscribe('room'), true)
     ws.send('open', false)
@@ -40,6 +41,14 @@ app.ws('/ws', {
   message(ws, message, isBinary) {
     assert.ok(message instanceof ArrayBuffer)
     detachedMessage = message
+
+    if (!isBinary && Buffer.from(message).toString() === 'unsubscribe') {
+      assert.equal(ws.unsubscribe('room'), true)
+      assert.equal(ws.unsubscribe('room'), false)
+      ws.send('unsubscribed')
+      return
+    }
+
     ws.send(message, isBinary)
   },
   subscription(_ws, topic, newCount, oldCount) {
@@ -79,6 +88,16 @@ assert.equal(detachedMessage.byteLength, 0)
 const published = nextMessage(client)
 assert.equal(app.publish('room', Uint8Array.from([1, 2, 3]), true), true)
 assert.deepEqual(new Uint8Array(await published), Uint8Array.from([1, 2, 3]))
+
+const unsubscribed = nextMessage(client)
+client.send('unsubscribe')
+assert.equal(await unsubscribed, 'unsubscribed')
+assert.deepEqual(subscriptions, [
+  ['room', 1, 0],
+  ['room', 0, 1]
+])
+assert.equal(app.numSubscribers('room'), 0)
+assert.equal(app.publish('room', 'no subscribers'), false)
 
 client.close()
 await once(client, 'close')

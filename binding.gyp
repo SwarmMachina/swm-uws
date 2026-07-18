@@ -22,6 +22,7 @@
       "defines": [
         "LIBUS_USE_LIBUV=1",
         "LIBUS_NO_SSL=1",
+        "UWS_WITH_PROXY=1",
         "UWS_NO_ZLIB=1",
         "SWM_UWS_VERSION=\"<(swm_uws_version)\"",
         "SWM_UWS_UPSTREAM_VERSION=\"<(swm_uws_upstream_version)\""
