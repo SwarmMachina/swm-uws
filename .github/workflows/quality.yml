@@ -72,6 +72,20 @@ jobs:
       - name: Run package smoke
         run: npm test
 
+      - name: Install pinned upstream reference
+        if: matrix.node == 24
+        run: |
+          npm install \
+            --prefix "$RUNNER_TEMP/uws-reference" \
+            --ignore-scripts \
+            --no-save \
+            "uwebsockets.js@github:uNetworking/uWebSockets.js#v20.69.0"
+          echo "SWM_UWS_REFERENCE=$RUNNER_TEMP/uws-reference/node_modules/uwebsockets.js/ESM_wrapper.mjs" >> "$GITHUB_ENV"
+
+      - name: Compare runtime surface with pinned upstream
+        if: matrix.node == 24
+        run: npm run test:compat:upstream
+
       - name: Run raw V8 HTTP smoke
         run: npm run test:v8-http
 

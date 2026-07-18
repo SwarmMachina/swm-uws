@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict'
+import { rmSync } from 'node:fs'
 import { createConnection } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   DISABLED,
   LIBUS_LISTEN_EXCLUSIVE_PORT,
   capabilities,
   createApp,
+  us_listen_socket_close,
   us_socket_local_port,
   version
 } from '../lib/index.js'
@@ -255,6 +259,8 @@ assert.equal(app.patch('/method/patch', methodHandler), app)
 assert.equal(app.del('/method/delete', methodHandler), app)
 assert.equal(app.options('/method/options', methodHandler), app)
 assert.equal(app.head('/method/head', methodHandler), app)
+assert.equal(app.connect('/method/connect', methodHandler), app)
+assert.equal(app.trace('/method/trace', methodHandler), app)
 assert.equal(app.any('/method/any', methodHandler), app)
 
 app.post('/body', (res) => {
@@ -588,6 +594,17 @@ async function runSelfTest() {
     assert.equal(await methodResponse.text(), expectedBody)
   }
 
+  for (const [method, path] of [
+    ['CONNECT', '/method/connect'],
+    ['TRACE', '/method/trace']
+  ]) {
+    const rawResponse = await rawHttpRequest(method, path, { host: '127.0.0.1', port })
+    assert.match(rawResponse, /^HTTP\/1\.1 200/m)
+    assert.match(rawResponse, new RegExp(`${method.toLowerCase()}$`))
+  }
+
+  if (process.platform !== 'win32') await testUnixListen()
+
   const requestBody = Uint8Array.from({ length: 128 * 1024 }, (_, index) => index % 251)
   const bodyResponse = await fetch(`http://127.0.0.1:${port}/body`, {
     method: 'POST',
@@ -737,6 +754,50 @@ function proxyRequest() {
     socket.on('end', () => resolve(Buffer.concat(chunks).toString()))
     socket.on('error', reject)
   })
+}
+
+function rawHttpRequest(method, path, connection) {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(connection)
+    const chunks = []
+    socket.setTimeout(5_000, () => socket.destroy(new Error(`${method} request timed out`)))
+    socket.on('connect', () => {
+      socket.write(`${method} ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`)
+    })
+    socket.on('data', (chunk) => chunks.push(chunk))
+    socket.on('end', () => resolve(Buffer.concat(chunks).toString()))
+    socket.on('error', reject)
+  })
+}
+
+async function testUnixListen() {
+  const unixApp = createApp()
+  const socketPath = join(tmpdir(), `swm-uws-${process.pid}.sock`)
+  let listenSocket
+
+  rmSync(socketPath, { force: true })
+  unixApp.get('/', (res) => res.end('unix'))
+
+  try {
+    await new Promise((resolve, reject) => {
+      unixApp.listen_unix((socket) => {
+        if (!socket) {
+          reject(new Error(`listen_unix failed on ${socketPath}`))
+          return
+        }
+        listenSocket = socket
+        resolve()
+      }, socketPath)
+    })
+
+    const rawResponse = await rawHttpRequest('GET', '/', { path: socketPath })
+    assert.match(rawResponse, /^HTTP\/1\.1 200/m)
+    assert.match(rawResponse, /unix$/)
+  } finally {
+    if (listenSocket) us_listen_socket_close(listenSocket)
+    unixApp.close()
+    rmSync(socketPath, { force: true })
+  }
 }
 
 function nextClose(socket) {

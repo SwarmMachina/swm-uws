@@ -46,7 +46,8 @@
     "check:release": "node scripts/check-release-prebuilds.js",
     "clean": "node-gyp clean",
     "prepublishOnly": "npm run check:release",
-    "test": "node --test test/import-compatibility.test.js && node test/smoke.js",
+    "test": "node --test test/import-compatibility.test.js test/upstream-surface.test.js && node test/smoke.js",
+    "test:compat:upstream": "node scripts/compare-upstream-surface.js",
     "test:v8-http": "node test/v8-http-smoke.js",
     "test:v8-ws": "node test/v8-ws-smoke.js"
   },
