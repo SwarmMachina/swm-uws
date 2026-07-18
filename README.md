@@ -152,7 +152,7 @@ Defaults: c100, p10, 2-second warmup, 5-second measurement. Set
 `FLAMEGRAPH_DIR` to generate `flamegraph.svg`, or
 `SWM_PROFILE_SKIP_PERF=1` when hardware counters are unavailable.
 
-The v0.4.1 portable balanced build measured +15.20% paired median raw GET
+The v0.4.1 portable balanced build measured +13.95% paired median raw GET
 throughput over the pinned upstream binary. Re-run the Linux benchmark before
 releasing changes to the native parser or build flags. See the
 [`Linux PGO report`](https://github.com/SwarmMachina/swm-uws/blob/master/benchmark/profiles/pgo-balanced-linux/report.md).

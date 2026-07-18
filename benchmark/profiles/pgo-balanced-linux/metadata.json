@@ -1,14 +1,14 @@
 {
   "environment": {
-    "package": "@swarmmachina/swm-uws 0.4.0",
+    "package": "@swarmmachina/swm-uws 0.4.1",
     "upstream": "uWebSockets.js 20.69.0",
     "upstreamCommit": "dddd8ffd1b2c28a66022160923ca92f064cdacb4",
     "node": "22.22.3",
     "abi": 127,
-    "os": "Linux 6.17 x86-64",
-    "cpu": "Intel Xeon E5-2680 v4",
+    "os": "Linux 6.17.0-40-generic x64",
+    "cpu": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
     "logicalCpus": 28,
-    "ramGiB": 62
+    "ramGiB": 63
   },
   "build": {
     "profile": "balanced",
@@ -16,10 +16,10 @@
     "lto": true,
     "march": null,
     "mtune": null,
-    "sha256": "38a003e4670c2e57e9524345e1b0eedd95aa20e0b67346e1856dcae91eaf7ae9",
-    "sizeBytes": 1677912,
+    "sha256": "e346d56347d867af73ca459588959998f9f3b8b9f69c3be274a71735340f9840",
+    "sizeBytes": 1702552,
     "stripped": true,
-    "dynamicDependencies": ["libm.so.6", "libc.so.6", "ld-linux-x86-64.so.2"]
+    "dynamicDependencies": ["ld-linux-x86-64.so.2", "libc.so.6", "libm.so.6"]
   },
   "parameters": {
     "runs": 6,
@@ -34,32 +34,63 @@
   },
   "measurements": {
     "swmLatencyMsMedian": {
-      "p95": 3.6790120000005118,
-      "p97_5": 3.797764000000825,
-      "p99": 3.999181000000135
+      "p95": 3.668181000000004,
+      "p97_5": 3.8023745000004965,
+      "p99": 3.9941450000001595
     },
     "uwsLatencyMsMedian": {
-      "p95": 4.203364000000022,
-      "p97_5": 4.362618000000111,
-      "p99": 4.49790800000028
+      "p95": 4.178139999999985,
+      "p97_5": 4.3716775000000325,
+      "p99": 4.503815500000144
+    },
+    "swmRuntimeMedian": {
+      "eluPct": 85.42432324755262,
+      "rssBytes": 57704448,
+      "heapUsedBytes": 4982692,
+      "externalBytes": 1778479,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": -156924,
+      "externalDeltaBytes": 0
+    },
+    "uwsRuntimeMedian": {
+      "eluPct": 84.01314625365302,
+      "rssBytes": 58738688,
+      "heapUsedBytes": 5319196,
+      "externalBytes": 1828176,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": 255516,
+      "externalDeltaBytes": 0
     },
     "errors": 0
   },
+  "guard": {
+    "status": "pass",
+    "thresholds": {
+      "maxThroughputRegressionPct": 5,
+      "maxLatencyRegressionPct": 20,
+      "latencySlackMs": 0.25,
+      "maxRssRegressionPct": 15,
+      "rssSlackMiB": 5
+    },
+    "errors": 0,
+    "failures": []
+  },
   "hardwareStat": {
-    "requests": 2465190,
-    "requestsPerSecond": 493038,
+    "source": "independent stat-only run",
+    "requests": 2302880,
+    "requestsPerSecond": 460576,
     "latencyMs": {
-      "p95": 3.687843000000157,
-      "p97_5": 3.829751000000215,
-      "p99": 4.014844000000039
+      "p95": 3.9432110000000193,
+      "p97_5": 4.075102999999672,
+      "p99": 4.243733999999677
     },
     "perRequest": {
-      "cycles": 5511.03376210353,
-      "instructions": 8774.873843395439,
-      "branches": 1761.1120489698562,
-      "branchMisses": 8.477960725136805,
-      "cacheReferences": 68.99295551255685,
-      "cacheMisses": 0.05057216685123662
+      "cycles": 5934.972312061419,
+      "instructions": 8851.714256061974,
+      "branches": 1784.6645622003753,
+      "branchMisses": 8.605903911623706,
+      "cacheReferences": 79.60927099979156,
+      "cacheMisses": 0.056058934898909195
     }
   }
 }

@@ -1,13 +1,24 @@
 import { readFile, writeFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import { format } from 'prettier'
 
-const directory = new URL('../benchmark/profiles/pgo-balanced-linux/', import.meta.url)
-const check = process.argv.includes('--check')
-const unknownArguments = process.argv.slice(2).filter((argument) => argument !== '--check')
+let directory = new URL('../benchmark/profiles/pgo-balanced-linux/', import.meta.url)
+let check = false
+const arguments_ = process.argv.slice(2)
 
-if (unknownArguments.length) {
-  throw new Error(`unknown arguments: ${unknownArguments.join(', ')}`)
+for (let index = 0; index < arguments_.length; index++) {
+  const argument = arguments_[index]
+  if (argument === '--check') {
+    check = true
+    continue
+  }
+  if (argument === '--directory' && arguments_[index + 1]) {
+    directory = pathToFileURL(`${resolve(arguments_[++index])}/`)
+    continue
+  }
+  throw new Error(`unknown argument: ${argument}`)
 }
 
 const metadata = await readJson('metadata.json')
@@ -34,6 +45,11 @@ const summary = {
     uwsLatencyMsMedian: metadata.measurements.uwsLatencyMsMedian,
     errors: metadata.measurements.errors
   },
+  runtime: {
+    swmMedian: metadata.measurements.swmRuntimeMedian,
+    uwsMedian: metadata.measurements.uwsRuntimeMedian
+  },
+  guard: metadata.guard,
   hardwareStat: metadata.hardwareStat
 }
 
@@ -108,15 +124,43 @@ function quartiles(values) {
 }
 
 function renderReport(value) {
-  const { environment, build, parameters, results, hardwareStat } = value
+  const { environment, build, parameters, results, runtime: runtimeResults, guard, hardwareStat } = value
   const integerFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
   const formatInteger = (number) => integerFormatter.format(number)
   const fixed = (number, digits) => number.toFixed(digits)
+  const signed = (number, digits) => `${number >= 0 ? '+' : ''}${fixed(number, digits)}`
   const latency = (side, percentile) => fixed(results[`${side}LatencyMsMedian`][percentile], 3)
+  const runtime = (side, metric, suffix = '') =>
+    `${fixed(runtimeResults[`${side}Median`][metric], metric === 'eluPct' ? 2 : 1)}${suffix}`
+  const mib = (bytes) => `${fixed(bytes / 1024 / 1024, 2)} MiB`
+  const counter = (number, digits) => (number === null ? 'unavailable' : fixed(number, digits))
+  const runtimeSection = runtimeResults.swmMedian
+    ? `## Runtime
+
+| Median after warmup | swm-uws | upstream uWS |
+| --- | ---: | ---: |
+| ELU | ${runtime('swm', 'eluPct', '%')} | ${runtime('uws', 'eluPct', '%')} |
+| RSS | ${mib(runtimeResults.swmMedian.rssBytes)} | ${mib(runtimeResults.uwsMedian.rssBytes)} |
+| RSS delta | ${mib(runtimeResults.swmMedian.rssDeltaBytes)} | ${mib(runtimeResults.uwsMedian.rssDeltaBytes)} |
+| Heap used | ${mib(runtimeResults.swmMedian.heapUsedBytes)} | ${mib(runtimeResults.uwsMedian.heapUsedBytes)} |
+
+`
+    : ''
+  const guardSection = guard
+    ? `## Regression guard
+
+**Result: ${guard.status === 'pass' ? 'PASS' : 'FAIL'}**. Limits: throughput -${guard.thresholds.maxThroughputRegressionPct}%,
+tail latency +${guard.thresholds.maxLatencyRegressionPct}% plus ${guard.thresholds.latencySlackMs} ms,
+RSS +${guard.thresholds.maxRssRegressionPct}% plus ${guard.thresholds.rssSlackMiB} MiB.
+
+${guard.failures.length ? guard.failures.map((failure) => `- ${failure}`).join('\n') : 'No regressions exceeded the guard limits.'}
+
+`
+    : ''
 
   return `# Portable balanced PGO+LTO: raw HTTP response
 
-The \`${environment.package}\` development candidate is faster than the pinned
+The \`${environment.package}\` candidate is compared with the pinned
 \`${environment.upstream}\` reference on the identical raw GET response path.
 
 | Result | swm-uws | upstream uWS |
@@ -126,9 +170,9 @@ The \`${environment.package}\` development candidate is faster than the pinned
 | Median p97.5 | ${latency('swm', 'p97_5')} ms | ${latency('uws', 'p97_5')} ms |
 | Median p99 | ${latency('swm', 'p99')} ms | ${latency('uws', 'p99')} ms |
 
-Paired throughput delta: **+${fixed(results.pairedDeltaMedianPct, 2)}%**,
-IQR using Tukey hinges **[+${fixed(results.pairedDeltaIqrPct[0], 2)}%, +${fixed(results.pairedDeltaIqrPct[1], 2)}%]**.
-All ${results.positivePairedRounds} paired rounds were positive. There were ${results.errors} request errors.
+Paired throughput delta: **${signed(results.pairedDeltaMedianPct, 2)}%**,
+IQR using Tukey hinges **[${signed(results.pairedDeltaIqrPct[0], 2)}%, ${signed(results.pairedDeltaIqrPct[1], 2)}%]**.
+${results.positivePairedRounds} of ${parameters.runs} paired rounds favored swm-uws. There were ${results.errors} request errors.
 
 ## Protocol
 
@@ -140,19 +184,19 @@ All ${results.positivePairedRounds} paired rounds were positive. There were ${re
 - server pinned to CPU ${parameters.serverCpu}; ${parameters.clientWorkers} client workers pinned to CPUs ${parameters.clientCpus}
 - identical bundled server, \`App/get/writeHeader/end\` handler, and byte-identical GET
 
-## Hardware counters
+${runtimeSection}${guardSection}## Hardware counters
 
-An independent stat-only run produced ${formatInteger(hardwareStat.requestsPerSecond)} req/s
+The ${hardwareStat.source || 'independent stat-only run'} produced ${formatInteger(hardwareStat.requestsPerSecond)} req/s
 with p99 ${fixed(hardwareStat.latencyMs.p99, 3)} ms.
 
 | Counter | Per request |
 | --- | ---: |
-| Cycles | ${fixed(hardwareStat.perRequest.cycles, 2)} |
-| Instructions | ${fixed(hardwareStat.perRequest.instructions, 2)} |
-| Branches | ${fixed(hardwareStat.perRequest.branches, 2)} |
-| Branch misses | ${fixed(hardwareStat.perRequest.branchMisses, 2)} |
-| Cache references | ${fixed(hardwareStat.perRequest.cacheReferences, 2)} |
-| Cache misses | ${fixed(hardwareStat.perRequest.cacheMisses, 3)} |
+| Cycles | ${counter(hardwareStat.perRequest.cycles, 2)} |
+| Instructions | ${counter(hardwareStat.perRequest.instructions, 2)} |
+| Branches | ${counter(hardwareStat.perRequest.branches, 2)} |
+| Branch misses | ${counter(hardwareStat.perRequest.branchMisses, 2)} |
+| Cache references | ${counter(hardwareStat.perRequest.cacheReferences, 2)} |
+| Cache misses | ${counter(hardwareStat.perRequest.cacheMisses, 3)} |
 
 ## Build
 
@@ -164,13 +208,14 @@ WebSocket depth 1 and depth 16, plus HTTP, WebSocket, and async smoke paths. No
 - SHA-256: \`${build.sha256}\`
 - Size: ${formatInteger(build.sizeBytes)} bytes
 - ELF: generic x86-64, stripped
-- Dynamic dependencies: libc, libm, dynamic loader; C++ runtime is linked statically
+- Dynamic dependencies: ${build.dynamicDependencies.join(', ')}; C++ runtime is linked statically
 
-Rebuild the native binary and regenerate this report with:
+Rebuild the native binary and reproduce the comparison with:
 
 \`\`\`sh
 npm run build:native:pgo
-npm run bench:report
+SWM_BENCH_REFERENCE=/path/to/uwebsockets.js/ESM_wrapper.mjs \\
+  npm run bench:compare:pgo:linux -- benchmark/profiles/pgo-balanced-linux
 \`\`\`
 
 The report is generated from \`metadata.json\` and \`runs.json\`. The PGO profile

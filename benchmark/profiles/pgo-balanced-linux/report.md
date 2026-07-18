@@ -1,22 +1,22 @@
 # Portable balanced PGO+LTO: raw HTTP response
 
-The `@swarmmachina/swm-uws 0.4.0` development candidate is faster than the pinned
+The `@swarmmachina/swm-uws 0.4.1` candidate is compared with the pinned
 `uWebSockets.js 20.69.0` reference on the identical raw GET response path.
 
 | Result            |       swm-uws |  upstream uWS |
 | ----------------- | ------------: | ------------: |
-| Median throughput | 493,458 req/s | 430,937 req/s |
-| Median p95        |      3.679 ms |      4.203 ms |
-| Median p97.5      |      3.798 ms |      4.363 ms |
-| Median p99        |      3.999 ms |      4.498 ms |
+| Median throughput | 493,350 req/s | 430,870 req/s |
+| Median p95        |      3.668 ms |      4.178 ms |
+| Median p97.5      |      3.802 ms |      4.372 ms |
+| Median p99        |      3.994 ms |      4.504 ms |
 
-Paired throughput delta: **+15.20%**,
-IQR using Tukey hinges **[+13.69%, +15.97%]**.
-All 6 paired rounds were positive. There were 0 request errors.
+Paired throughput delta: **+13.95%**,
+IQR using Tukey hinges **[+13.80%, +18.05%]**.
+6 of 6 paired rounds favored swm-uws. There were 0 request errors.
 
 ## Protocol
 
-- Linux 6.17 x86-64, Intel Xeon E5-2680 v4, 28 logical CPUs, 62 GiB RAM
+- Linux 6.17.0-40-generic x64, Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz, 28 logical CPUs, 63 GiB RAM
 - Node.js 22.22.3, ABI v127
 - 6 balanced AB/BA rounds
 - 100 connections, pipelining 10
@@ -24,19 +24,36 @@ All 6 paired rounds were positive. There were 0 request errors.
 - server pinned to CPU 2; 4 client workers pinned to CPUs 3-6
 - identical bundled server, `App/get/writeHeader/end` handler, and byte-identical GET
 
+## Runtime
+
+| Median after warmup |   swm-uws | upstream uWS |
+| ------------------- | --------: | -----------: |
+| ELU                 |    85.42% |       84.01% |
+| RSS                 | 55.03 MiB |    56.02 MiB |
+| RSS delta           |  0.00 MiB |     0.00 MiB |
+| Heap used           |  4.75 MiB |     5.07 MiB |
+
+## Regression guard
+
+**Result: PASS**. Limits: throughput -5%,
+tail latency +20% plus 0.25 ms,
+RSS +15% plus 5 MiB.
+
+No regressions exceeded the guard limits.
+
 ## Hardware counters
 
-An independent stat-only run produced 493,038 req/s
-with p99 4.015 ms.
+The independent stat-only run produced 460,576 req/s
+with p99 4.244 ms.
 
 | Counter          | Per request |
 | ---------------- | ----------: |
-| Cycles           |     5511.03 |
-| Instructions     |     8774.87 |
-| Branches         |     1761.11 |
-| Branch misses    |        8.48 |
-| Cache references |       68.99 |
-| Cache misses     |       0.051 |
+| Cycles           |     5934.97 |
+| Instructions     |     8851.71 |
+| Branches         |     1784.66 |
+| Branch misses    |        8.61 |
+| Cache references |       79.61 |
+| Cache misses     |       0.056 |
 
 ## Build
 
@@ -45,16 +62,17 @@ covers raw GET c100/p10, POST body collection,
 WebSocket depth 1 and depth 16, plus HTTP, WebSocket, and async smoke paths. No
 `-march` or `-mtune` is used.
 
-- SHA-256: `38a003e4670c2e57e9524345e1b0eedd95aa20e0b67346e1856dcae91eaf7ae9`
-- Size: 1,677,912 bytes
+- SHA-256: `e346d56347d867af73ca459588959998f9f3b8b9f69c3be274a71735340f9840`
+- Size: 1,702,552 bytes
 - ELF: generic x86-64, stripped
-- Dynamic dependencies: libc, libm, dynamic loader; C++ runtime is linked statically
+- Dynamic dependencies: ld-linux-x86-64.so.2, libc.so.6, libm.so.6; C++ runtime is linked statically
 
-Rebuild the native binary and regenerate this report with:
+Rebuild the native binary and reproduce the comparison with:
 
 ```sh
 npm run build:native:pgo
-npm run bench:report
+SWM_BENCH_REFERENCE=/path/to/uwebsockets.js/ESM_wrapper.mjs \
+  npm run bench:compare:pgo:linux -- benchmark/profiles/pgo-balanced-linux
 ```
 
 The report is generated from `metadata.json` and `runs.json`. The PGO profile

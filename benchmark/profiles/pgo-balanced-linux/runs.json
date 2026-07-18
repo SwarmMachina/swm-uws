@@ -1,8 +1,218 @@
 [
-  { "round": 1, "order": "swm/uws", "swmRps": 466086, "uwsRps": 431522 },
-  { "round": 2, "order": "uws/swm", "swmRps": 491600, "uwsRps": 432406 },
-  { "round": 3, "order": "swm/uws", "swmRps": 498080, "uwsRps": 429474 },
-  { "round": 4, "order": "uws/swm", "swmRps": 499464, "uwsRps": 433194 },
-  { "round": 5, "order": "swm/uws", "swmRps": 495316, "uwsRps": 430352 },
-  { "round": 6, "order": "uws/swm", "swmRps": 490354, "uwsRps": 409516 }
+  {
+    "round": 1,
+    "order": "swm/uws",
+    "swmRps": 478128,
+    "uwsRps": 405036,
+    "swmLatencyMs": {
+      "p95": 3.800018999999338,
+      "p97_5": 3.932165000000168,
+      "p99": 4.070994000000155
+    },
+    "uwsLatencyMs": {
+      "p95": 4.38808199999994,
+      "p97_5": 4.643120000000181,
+      "p99": 4.789890999999898
+    },
+    "swmRuntime": {
+      "eluPct": 85.20941232939771,
+      "rssBytes": 57667584,
+      "heapUsedBytes": 5245768,
+      "externalBytes": 1778479,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": 125872,
+      "externalDeltaBytes": 0
+    },
+    "uwsRuntime": {
+      "eluPct": 81.54070146371404,
+      "rssBytes": 58740736,
+      "heapUsedBytes": 5392416,
+      "externalBytes": 1828176,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": -14856,
+      "externalDeltaBytes": 0
+    },
+    "swmErrors": 0,
+    "uwsErrors": 0
+  },
+  {
+    "round": 2,
+    "order": "uws/swm",
+    "swmRps": 492940,
+    "uwsRps": 432138,
+    "swmLatencyMs": {
+      "p95": 3.666515999999774,
+      "p97_5": 3.7977670000000217,
+      "p99": 3.999124000000023
+    },
+    "uwsLatencyMs": {
+      "p95": 4.151716000000306,
+      "p97_5": 4.378569999999854,
+      "p99": 4.505124000000251
+    },
+    "swmRuntime": {
+      "eluPct": 71.99793384932096,
+      "rssBytes": 57704448,
+      "heapUsedBytes": 5082056,
+      "externalBytes": 1778479,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": -208152,
+      "externalDeltaBytes": 0
+    },
+    "uwsRuntime": {
+      "eluPct": 83.57155191460123,
+      "rssBytes": 58740736,
+      "heapUsedBytes": 5267792,
+      "externalBytes": 1828176,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": 540304,
+      "externalDeltaBytes": 0
+    },
+    "swmErrors": 0,
+    "uwsErrors": 0
+  },
+  {
+    "round": 3,
+    "order": "swm/uws",
+    "swmRps": 482186,
+    "uwsRps": 429602,
+    "swmLatencyMs": {
+      "p95": 3.736693999999943,
+      "p97_5": 3.930645000000368,
+      "p99": 4.095497000000023
+    },
+    "uwsLatencyMs": {
+      "p95": 4.203885999999784,
+      "p97_5": 4.364785000000211,
+      "p99": 4.496377999999822
+    },
+    "swmRuntime": {
+      "eluPct": 86.11825586929108,
+      "rssBytes": 57716736,
+      "heapUsedBytes": 5228240,
+      "externalBytes": 1778479,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": -4040,
+      "externalDeltaBytes": 0
+    },
+    "uwsRuntime": {
+      "eluPct": 84.45474059270482,
+      "rssBytes": 58740736,
+      "heapUsedBytes": 5428952,
+      "externalBytes": 1828176,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": 573936,
+      "externalDeltaBytes": 0
+    },
+    "swmErrors": 0,
+    "uwsErrors": 0
+  },
+  {
+    "round": 4,
+    "order": "uws/swm",
+    "swmRps": 494288,
+    "uwsRps": 434348,
+    "swmLatencyMs": {
+      "p95": 3.669846000000234,
+      "p97_5": 3.8007240000006277,
+      "p99": 3.9852139999998144
+    },
+    "uwsLatencyMs": {
+      "p95": 4.152394000000186,
+      "p97_5": 4.337699000000612,
+      "p99": 4.457283999999163
+    },
+    "swmRuntime": {
+      "eluPct": 85.63923416570752,
+      "rssBytes": 57667584,
+      "heapUsedBytes": 4583288,
+      "externalBytes": 1778479,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": -702336,
+      "externalDeltaBytes": 0
+    },
+    "uwsRuntime": {
+      "eluPct": 84.6371180486096,
+      "rssBytes": 58687488,
+      "heapUsedBytes": 5081712,
+      "externalBytes": 1828176,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": 53376,
+      "externalDeltaBytes": 0
+    },
+    "swmErrors": 0,
+    "uwsErrors": 0
+  },
+  {
+    "round": 5,
+    "order": "swm/uws",
+    "swmRps": 498924,
+    "uwsRps": 414460,
+    "swmLatencyMs": {
+      "p95": 3.6212580000001253,
+      "p97_5": 3.7514770000000226,
+      "p99": 3.9843689999997878
+    },
+    "uwsLatencyMs": {
+      "p95": 4.390296999999919,
+      "p97_5": 4.539295999999922,
+      "p99": 4.693422000000282
+    },
+    "swmRuntime": {
+      "eluPct": 86.25542344618538,
+      "rssBytes": 57704448,
+      "heapUsedBytes": 4780424,
+      "externalBytes": 1778479,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": -256136,
+      "externalDeltaBytes": 0
+    },
+    "uwsRuntime": {
+      "eluPct": 82.8581155096978,
+      "rssBytes": 58736640,
+      "heapUsedBytes": 5370600,
+      "externalBytes": 1828176,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": 457656,
+      "externalDeltaBytes": 0
+    },
+    "swmErrors": 0,
+    "uwsErrors": 0
+  },
+  {
+    "round": 6,
+    "order": "uws/swm",
+    "swmRps": 493760,
+    "uwsRps": 433766,
+    "swmLatencyMs": {
+      "p95": 3.6375759999999673,
+      "p97_5": 3.8040250000003653,
+      "p99": 3.9891660000002958
+    },
+    "uwsLatencyMs": {
+      "p95": 4.152264000000002,
+      "p97_5": 4.362810999999965,
+      "p99": 4.502507000000037
+    },
+    "swmRuntime": {
+      "eluPct": 71.99240572373803,
+      "rssBytes": 57708544,
+      "heapUsedBytes": 4883328,
+      "externalBytes": 1778479,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": -105696,
+      "externalDeltaBytes": 0
+    },
+    "uwsRuntime": {
+      "eluPct": 84.84688919700713,
+      "rssBytes": 58691584,
+      "heapUsedBytes": 4892144,
+      "externalBytes": 1828176,
+      "rssDeltaBytes": 0,
+      "heapUsedDeltaBytes": -570224,
+      "externalDeltaBytes": 0
+    },
+    "swmErrors": 0,
+    "uwsErrors": 0
+  }
 ]
