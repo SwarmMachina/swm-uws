@@ -5,7 +5,6 @@ const packageName = process.env.SWM_UWS_PACKAGE_NAME || '@swarmmachina/swm-uws'
 const binding = await import(packageName)
 const { App, us_listen_socket_close, version } = binding
 const uWS = binding.default
-
 const require = createRequire(import.meta.url)
 const required = require(packageName)
 
@@ -24,11 +23,13 @@ app.get('/', (res) => {
 })
 
 let listenSocket
+
 await new Promise((resolve, reject) => {
   app.listen(port, (socket) => {
     if (socket) {
       listenSocket = socket
       resolve()
+
       return
     }
 

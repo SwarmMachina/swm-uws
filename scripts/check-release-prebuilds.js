@@ -50,6 +50,7 @@ let failed = false
 
 for (const artifact of expected) {
   const path = join(root, artifact.path)
+
   let bytes
 
   try {

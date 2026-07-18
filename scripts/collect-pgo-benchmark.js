@@ -21,6 +21,7 @@ const runs = []
 for (let round = 1; round <= runCount; round++) {
   const swm = readJson(resolve(rawDirectory, `round-${round}-swm`, 'summary.json'))
   const uws = readJson(resolve(rawDirectory, `round-${round}-uws`, 'summary.json'))
+
   runs.push({
     round,
     order: round % 2 ? 'swm/uws' : 'uws/swm',
@@ -49,7 +50,9 @@ const uwsLatencyMedian = metricMedians(runs, 'uwsLatencyMs')
 const swmRuntimeMedian = metricMedians(runs, 'swmRuntime')
 const uwsRuntimeMedian = metricMedians(runs, 'uwsRuntime')
 
-if (!upstreamCommit) throw new Error('failed to read the pinned upstream release commit')
+if (!upstreamCommit) {
+  throw new Error('failed to read the pinned upstream release commit')
+}
 
 const guard = performanceGuard({
   swmRpsMedian,
@@ -60,7 +63,6 @@ const guard = performanceGuard({
   uwsRuntimeMedian,
   errors: runs.reduce((sum, run) => sum + run.swmErrors + run.uwsErrors, 0)
 })
-
 const metadata = {
   environment: {
     package: `${packageJson.name} ${packageJson.version}`,
@@ -128,13 +130,21 @@ writeJson(resolve(outputDirectory, 'metadata.json'), metadata)
 
 function requiredEnvironment(name) {
   const value = process.env[name]
-  if (!value) throw new Error(`${name} is required`)
+
+  if (!value) {
+    throw new Error(`${name} is required`)
+  }
+
   return value
 }
 
 function numberEnvironment(name, fallback) {
   const value = Number(process.env[name] || fallback)
-  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be positive`)
+
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be positive`)
+  }
+
   return value
 }
 
@@ -156,12 +166,14 @@ function latency(summary) {
 
 function metricMedians(values, key) {
   const names = Object.keys(values[0][key])
+
   return Object.fromEntries(names.map((name) => [name, median(values.map((value) => value[key][name]))]))
 }
 
 function median(values) {
   const sorted = [...values].sort((left, right) => left - right)
   const middle = Math.floor(sorted.length / 2)
+
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
 }
 
@@ -182,16 +194,22 @@ function performanceGuard(input) {
   const maximumRss =
     input.uwsRuntimeMedian.rssBytes * (1 + thresholds.maxRssRegressionPct / 100) + thresholds.rssSlackMiB * 1024 ** 2
 
-  if (input.errors) failures.push(`request errors: ${input.errors}`)
+  if (input.errors) {
+    failures.push(`request errors: ${input.errors}`)
+  }
+
   if (input.swmRpsMedian < minimumThroughput) {
     failures.push(`median throughput ${input.swmRpsMedian} is below ${minimumThroughput}`)
   }
+
   if (input.swmLatencyMedian.p97_5 > maximumP97_5) {
     failures.push(`median p97.5 ${input.swmLatencyMedian.p97_5} ms exceeds ${maximumP97_5} ms`)
   }
+
   if (input.swmLatencyMedian.p99 > maximumP99) {
     failures.push(`median p99 ${input.swmLatencyMedian.p99} ms exceeds ${maximumP99} ms`)
   }
+
   if (input.swmRuntimeMedian.rssBytes > maximumRss) {
     failures.push(`median RSS ${input.swmRuntimeMedian.rssBytes} bytes exceeds ${maximumRss} bytes`)
   }
@@ -206,17 +224,30 @@ function performanceGuard(input) {
 
 function commandOutput(command, arguments_) {
   const result = spawnSync(command, arguments_, { encoding: 'utf8' })
-  if (result.status !== 0) throw new Error(`${command} failed: ${result.stderr}`)
+
+  if (result.status !== 0) {
+    throw new Error(`${command} failed: ${result.stderr}`)
+  }
+
   return result.stdout
 }
 
 function parseDynamicDependencies(lddOutput) {
   const dependencies = new Set()
+
   for (const line of lddOutput.split('\n')) {
     const name = /^\s*([^\s]+)\s+=>/.exec(line)?.[1]
-    if (name) dependencies.add(name)
+
+    if (name) {
+      dependencies.add(name)
+    }
+
     const loader = /^\s*(\/[^\s]+)/.exec(line)?.[1]
-    if (loader) dependencies.add(loader.split('/').at(-1))
+
+    if (loader) {
+      dependencies.add(loader.split('/').at(-1))
+    }
   }
+
   return [...dependencies].sort()
 }

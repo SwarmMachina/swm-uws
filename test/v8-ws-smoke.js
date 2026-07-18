@@ -10,8 +10,11 @@ let nativeSocket
 let detachedMessage
 let openCount = 0
 let closeCount = 0
+
 const subscriptions = []
+
 let resolveClosed
+
 const closed = new Promise((resolve) => {
   resolveClosed = resolve
 })
@@ -46,6 +49,7 @@ app.ws('/ws', {
       assert.equal(ws.unsubscribe('room'), true)
       assert.equal(ws.unsubscribe('room'), false)
       ws.send('unsubscribed')
+
       return
     }
 
@@ -62,10 +66,12 @@ app.ws('/ws', {
 })
 
 let listenSocket
+
 await new Promise((resolve, reject) => {
   app.listen(port, (socket) => {
-    if (!socket) reject(new Error(`listen failed on :${port}`))
-    else {
+    if (!socket) {
+      reject(new Error(`listen failed on :${port}`))
+    } else {
       listenSocket = socket
       resolve()
     }
@@ -73,8 +79,10 @@ await new Promise((resolve, reject) => {
 })
 
 const client = new WebSocket(`ws://127.0.0.1:${port}/ws`)
+
 client.binaryType = 'arraybuffer'
 const greeting = nextMessage(client)
+
 await once(client, 'open')
 assert.equal(await greeting, 'open')
 assert.equal(openCount, 1)
@@ -86,10 +94,12 @@ assert.equal(await nextMessage(client), 'hello')
 assert.equal(detachedMessage.byteLength, 0)
 
 const published = nextMessage(client)
+
 assert.equal(app.publish('room', Uint8Array.from([1, 2, 3]), true), true)
 assert.deepEqual(new Uint8Array(await published), Uint8Array.from([1, 2, 3]))
 
 const unsubscribed = nextMessage(client)
+
 client.send('unsubscribe')
 assert.equal(await unsubscribed, 'unsubscribed')
 assert.deepEqual(subscriptions, [
@@ -126,6 +136,7 @@ function nextMessage(socket) {
 
 async function withTimeout(promise, milliseconds, message) {
   let timer
+
   try {
     return await Promise.race([
       promise,

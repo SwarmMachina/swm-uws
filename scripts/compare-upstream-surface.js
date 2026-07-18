@@ -15,16 +15,23 @@ function captureSurface(bindingName) {
       env: { ...process.env, SWM_UWS_CAPTURE_BINDING: bindingName }
     }
   )
+
   if (result.status !== 0) {
     throw new Error(`Failed to capture ${bindingName} surface\n${result.stdout}${result.stderr}`)
   }
+
   const line = result.stdout.split(/\r?\n/).find((value) => value.startsWith('SWM_UWS_SURFACE:'))
-  if (!line) throw new Error(`Surface output marker missing for ${bindingName}`)
+
+  if (!line) {
+    throw new Error(`Surface output marker missing for ${bindingName}`)
+  }
+
   return JSON.parse(line.slice('SWM_UWS_SURFACE:'.length))
 }
 
 const referenceName = process.env.SWM_UWS_REFERENCE || 'uwebsockets.js'
 const referenceSurface = captureSurface(referenceName)
+
 assert.deepEqual(
   referenceSurface,
   upstreamSurface,
@@ -32,6 +39,7 @@ assert.deepEqual(
 )
 
 const localSurface = captureSurface(fileURLToPath(new URL('../lib/index.js', import.meta.url)))
+
 assert.deepEqual(
   bindingSurfaceDelta(referenceSurface, localSurface),
   allowedSurfaceDelta,

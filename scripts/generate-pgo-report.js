@@ -6,18 +6,22 @@ import { format } from 'prettier'
 
 let directory = new URL('../benchmark/profiles/pgo-balanced-linux/', import.meta.url)
 let check = false
+
 const arguments_ = process.argv.slice(2)
 
 for (let index = 0; index < arguments_.length; index++) {
   const argument = arguments_[index]
+
   if (argument === '--check') {
     check = true
     continue
   }
+
   if (argument === '--directory' && arguments_[index + 1]) {
     directory = pathToFileURL(`${resolve(arguments_[++index])}/`)
     continue
   }
+
   throw new Error(`unknown argument: ${argument}`)
 }
 
@@ -30,7 +34,6 @@ const swmRequestsPerSecond = runs.map((run) => run.swmRps)
 const uwsRequestsPerSecond = runs.map((run) => run.uwsRps)
 const pairedDeltas = runs.map((run) => ((run.swmRps - run.uwsRps) / run.uwsRps) * 100)
 const pairedDeltaIqrPct = quartiles(pairedDeltas)
-
 const summary = {
   environment: metadata.environment,
   build: metadata.build,
@@ -52,7 +55,6 @@ const summary = {
   guard: metadata.guard,
   hardwareStat: metadata.hardwareStat
 }
-
 const summaryText = await format(JSON.stringify(summary), { parser: 'json' })
 const reportText = await format(renderReport(summary), { parser: 'markdown' })
 const outputs = [
@@ -62,13 +64,19 @@ const outputs = [
 
 if (check) {
   const stale = []
+
   for (const [name, expected] of outputs) {
     const actual = await readFile(new URL(name, directory), 'utf8').catch(() => null)
-    if (actual !== expected) stale.push(name)
+
+    if (actual !== expected) {
+      stale.push(name)
+    }
   }
+
   if (stale.length) {
     throw new Error(`generated benchmark files are stale: ${stale.join(', ')}; run npm run bench:report`)
   }
+
   process.stdout.write('benchmark report is up to date\n')
 } else {
   await Promise.all(outputs.map(([name, contents]) => writeFile(new URL(name, directory), contents)))
@@ -83,24 +91,32 @@ function validateInputs(inputMetadata, inputRuns) {
   if (!Array.isArray(inputRuns) || inputRuns.length < 2) {
     throw new Error('runs.json must contain at least two paired runs')
   }
+
   if (inputMetadata.parameters?.runs !== inputRuns.length) {
     throw new Error('metadata run count does not match runs.json')
   }
+
   if (!inputMetadata.measurements || !inputMetadata.hardwareStat) {
     throw new Error('metadata must include measurements and hardwareStat')
   }
 
   const orders = new Map()
+
   for (const [index, run] of inputRuns.entries()) {
-    if (run.round !== index + 1) throw new Error(`run ${index + 1} has an invalid round number`)
+    if (run.round !== index + 1) {
+      throw new Error(`run ${index + 1} has an invalid round number`)
+    }
+
     if (run.order !== 'swm/uws' && run.order !== 'uws/swm') {
       throw new Error(`run ${run.round} has an invalid order`)
     }
+
     for (const key of ['swmRps', 'uwsRps']) {
       if (!Number.isFinite(run[key]) || run[key] <= 0) {
         throw new Error(`run ${run.round} has an invalid ${key}`)
       }
     }
+
     orders.set(run.order, (orders.get(run.order) || 0) + 1)
   }
 
@@ -112,6 +128,7 @@ function validateInputs(inputMetadata, inputRuns) {
 function median(values) {
   const sorted = [...values].sort((left, right) => left - right)
   const middle = Math.floor(sorted.length / 2)
+
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
 }
 
@@ -120,6 +137,7 @@ function quartiles(values) {
   const middle = Math.floor(sorted.length / 2)
   const lower = sorted.slice(0, middle)
   const upper = sorted.slice(Math.ceil(sorted.length / 2))
+
   return [median(lower), median(upper)]
 }
 

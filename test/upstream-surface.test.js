@@ -7,5 +7,6 @@ import { allowedSurfaceDelta, upstreamSurface } from './upstream-surface-contrac
 
 test('non-TLS runtime surface matches pinned upstream except explicit exclusions', async () => {
   const localSurface = await captureBindingSurface(localBinding)
+
   assert.deepEqual(bindingSurfaceDelta(upstreamSurface, localSurface), allowedSurfaceDelta)
 })

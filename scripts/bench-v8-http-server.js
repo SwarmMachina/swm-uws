@@ -5,6 +5,7 @@ const require = createRequire(import.meta.url)
 const native = require('../build/Release/swm_uws.node')
 const port = Number(process.env.PORT || 30124)
 const app = native.createApp()
+
 let startedElu
 let startedMemory
 
@@ -15,6 +16,7 @@ app.get('/', (res) => {
 app.get('/metrics', (res) => {
   const memory = process.memoryUsage()
   const elu = performance.eventLoopUtilization(startedElu)
+
   res.writeHeader('content-type', 'application/json').end(
     JSON.stringify({
       version: native.version(),
@@ -37,7 +39,10 @@ app.get('/shutdown', (res) => {
 })
 
 app.listen('127.0.0.1', port, (ok) => {
-  if (!ok) throw new Error(`listen failed on 127.0.0.1:${port}`)
+  if (!ok) {
+    throw new Error(`listen failed on 127.0.0.1:${port}`)
+  }
+
   startedElu = performance.eventLoopUtilization()
   startedMemory = process.memoryUsage()
   console.log(JSON.stringify({ ready: true, port, version: native.version(), memory: startedMemory }))

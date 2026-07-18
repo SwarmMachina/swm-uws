@@ -16,6 +16,7 @@ const temp = mkdtempSync(join(tmpdir(), 'swm-uws-vendor-'))
 
 try {
   const jsRepo = join(temp, 'uWebSockets.js')
+
   checkout('https://github.com/uNetworking/uWebSockets.js.git', `refs/tags/${tag}`, jsRepo)
   const releaseCommit = output('git', ['rev-parse', 'HEAD'], jsRepo)
   const sourceCommit = readFileSync(join(jsRepo, 'source_commit'), 'utf8').trim()
@@ -23,12 +24,12 @@ try {
   run('git', ['fetch', '--depth=1', 'origin', sourceCommit], jsRepo)
   run('git', ['checkout', '--quiet', '--detach', 'FETCH_HEAD'], jsRepo)
   const uWebSocketsCommit = gitlink(jsRepo, 'uWebSockets')
-
   const uWebSocketsRepo = join(temp, 'uWebSockets')
+
   checkout('https://github.com/uNetworking/uWebSockets.git', uWebSocketsCommit, uWebSocketsRepo)
   const uSocketsCommit = gitlink(uWebSocketsRepo, 'uSockets')
-
   const uSocketsRepo = join(temp, 'uSockets')
+
   checkout('https://github.com/uNetworking/uSockets.git', uSocketsCommit, uSocketsRepo)
 
   syncComponent(uWebSocketsRepo, join(root, 'vendor/uWebSockets'), [
@@ -39,12 +40,14 @@ try {
     'src'
   ])
   syncComponent(uSocketsRepo, join(root, 'vendor/uSockets'), ['LICENSE', 'Makefile', 'README.md', 'src'])
+
   for (const patch of readdirSync(join(root, 'vendor/patches')).sort()) {
     run('git', ['apply', '--directory=vendor/uWebSockets', join('vendor/patches', patch)], root)
   }
 
   const packagePath = join(root, 'package.json')
   const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'))
+
   packageJson.upstream = { uWebSocketsJs: tag }
   writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`)
 
@@ -70,17 +73,21 @@ function checkout(repository, revision, directory) {
 
 function gitlink(directory, path) {
   const fields = output('git', ['ls-tree', 'HEAD', path], directory).split(/\s+/)
+
   if (fields[1] !== 'commit' || !/^[a-f0-9]{40}$/.test(fields[2] || '')) {
     throw new Error(`Missing gitlink ${path} in ${directory}`)
   }
+
   return fields[2]
 }
 
 function syncComponent(source, target, entries) {
   rmSync(target, { recursive: true, force: true })
   mkdirSync(target, { recursive: true })
+
   for (const entry of entries) {
     const destination = join(target, entry)
+
     cpSync(join(source, entry), destination, { recursive: true })
   }
 }
@@ -89,18 +96,26 @@ function writeManifest() {
   const files = [...walk(join(root, 'vendor/uWebSockets')), ...walk(join(root, 'vendor/uSockets'))].sort()
   const lines = files.map((file) => {
     const hash = createHash('sha256').update(readFileSync(file)).digest('hex')
+
     return `${hash}  ${relative(root, file)}`
   })
+
   writeFileSync(join(root, 'vendor/FILES.sha256'), `${lines.join('\n')}\n`)
 }
 
 function walk(directory) {
   const files = []
+
   for (const entry of readdirSync(directory).sort()) {
     const path = join(directory, entry)
-    if (statSync(path).isDirectory()) files.push(...walk(path))
-    else files.push(path)
+
+    if (statSync(path).isDirectory()) {
+      files.push(...walk(path))
+    } else {
+      files.push(path)
+    }
   }
+
   return files
 }
 

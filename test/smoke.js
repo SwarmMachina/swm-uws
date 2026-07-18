@@ -36,6 +36,7 @@ const port = serveOnly ? Number(process.env.PORT || 3000) : 30_000 + (process.pi
 const host = serveOnly ? '0.0.0.0' : '127.0.0.1'
 const app = createApp()
 const sharedRoute = new SharedArrayBuffer('/shared-route'.length)
+
 new Uint8Array(sharedRoute).set(Buffer.from('/shared-route'))
 const requiredAppMethods = [
   'any',
@@ -56,7 +57,10 @@ const requiredAppMethods = [
   'trace',
   'ws'
 ]
-for (const method of requiredAppMethods) assert.equal(typeof app[method], 'function', `app.${method}`)
+
+for (const method of requiredAppMethods) {
+  assert.equal(typeof app[method], 'function', `app.${method}`)
+}
 
 let completedResponse
 let filterCallCount = 0
@@ -66,33 +70,46 @@ let completedRequest
 let completedBodyResponse
 let abortedResponse
 let endWithoutBodyResponse
+
 const v2Chunks = []
+
 let closedSocket
 let closeCount = 0
+
 const socketCloses = []
+
 let limitedMessageCount = 0
 let limitedCloseCount = 0
 let resolveLimitedClose
+
 const limitedClosed = new Promise((resolve) => {
   resolveLimitedClose = resolve
 })
+
 let drainCount = 0
 let backpressureObserved = false
 let pongPayload
 let resolvePong
+
 const pongReceived = new Promise((resolve) => {
   resolvePong = resolve
 })
+
 let resolveDrained
+
 const drained = new Promise((resolve) => {
   resolveDrained = resolve
 })
+
 let abortCount = 0
 let resolveAborted
+
 const aborted = new Promise((resolve) => {
   resolveAborted = resolve
 })
+
 let resolveResponseClosed
+
 const responseClosed = new Promise((resolve) => {
   resolveResponseClosed = resolve
 })
@@ -101,7 +118,10 @@ assert.equal(
   app.filter((res, count) => {
     filterCallCount++
     assert.ok(count === 1 || count === -1)
-    if (count === 1) assert.ok(res.getRemoteAddressAsText().byteLength > 0)
+
+    if (count === 1) {
+      assert.ok(res.getRemoteAddressAsText().byteLength > 0)
+    }
   }),
   app
 )
@@ -136,6 +156,7 @@ app.get('/', (res, req) => {
   ]) {
     assert.equal(typeof res[method], 'function', `res.${method}`)
   }
+
   for (const method of [
     'forEach',
     'getCaseSensitiveMethod',
@@ -148,6 +169,7 @@ app.get('/', (res, req) => {
   ]) {
     assert.equal(typeof req[method], 'function', `req.${method}`)
   }
+
   assert.equal(req.getCaseSensitiveMethod(), 'GET')
   assert.equal(req.setYield(false), req)
   assert.ok([4, 16].includes(res.getRemoteAddress().byteLength))
@@ -182,7 +204,10 @@ app.post('/data-v2', (res) => {
       assert.ok(chunk instanceof ArrayBuffer)
       assert.equal(typeof maxRemainingBodyLength, 'bigint')
       v2Chunks.push(chunk)
-      if (maxRemainingBodyLength === 0n) res.end('v2')
+
+      if (maxRemainingBodyLength === 0n) {
+        res.end('v2')
+      }
     }),
     res
   )
@@ -250,6 +275,7 @@ app.get('/metadata', (res, req) => {
 
 const methodHandler = (res, req) => {
   const method = req.getMethod()
+
   res.writeHeader('x-request-method', method).end(method)
 }
 
@@ -265,6 +291,7 @@ assert.equal(app.any('/method/any', methodHandler), app)
 
 app.post('/body', (res) => {
   const chunks = []
+
   completedBodyResponse = res
 
   assert.equal(
@@ -288,6 +315,7 @@ app.post('/body', (res) => {
 
 app.get('/batch', (res, req) => {
   const snapshot = req.snapshot()
+
   assert.equal(snapshot.method, 'get')
   assert.equal(snapshot.url, '/batch')
   assert.equal(snapshot.query, 'mode=fast')
@@ -360,6 +388,7 @@ app.ws('/ws', {
     ]) {
       assert.equal(typeof ws[method], 'function', `ws.${method}`)
     }
+
     assert.equal(ws.getBufferedAmount(), 0)
     assert.equal(ws.getUserData(), ws)
     assert.ok([4, 16].includes(ws.getRemoteAddress().byteLength))
@@ -386,11 +415,13 @@ app.ws('/ws', {
 
     if (text === 'server-close') {
       assert.equal(ws.close(), undefined)
+
       return
     }
 
     if (text === 'server-end') {
       assert.equal(ws.end(4001, 'server done'), undefined)
+
       return
     }
 
@@ -400,6 +431,7 @@ app.ws('/ws', {
         ws.sendFragment('ment', false)
         ws.sendLastFragment('ed', false)
       })
+
       return
     }
 
@@ -451,6 +483,7 @@ app.ws('/drain', {
     for (let index = 0; index < 64; index++) {
       if (ws.send(payload) === 0) {
         backpressureObserved = true
+
         return
       }
     }
@@ -469,6 +502,7 @@ await new Promise((resolve, reject) => {
   app.listen(host, port, 0, (ok) => {
     if (!ok) {
       reject(new Error(`listen failed on ${host}:${port}`))
+
       return
     }
 
@@ -502,6 +536,7 @@ async function runSelfTest() {
   const noBodyResponse = await fetch(`http://127.0.0.1:${port}/without-body`, {
     signal: AbortSignal.timeout(5_000)
   })
+
   assert.equal(noBodyResponse.status, 200)
   assert.equal(await noBodyResponse.text(), '')
   assert.throws(() => endWithoutBodyResponse.end(), /HTTP response is no longer valid/)
@@ -518,6 +553,7 @@ async function runSelfTest() {
     body: 'onDataV2',
     signal: AbortSignal.timeout(5_000)
   })
+
   assert.equal(await v2Response.text(), 'v2')
   assert.ok(v2Chunks.length > 0)
   assert.ok(v2Chunks.every((chunk) => chunk.byteLength === 0))
@@ -525,11 +561,13 @@ async function runSelfTest() {
   const parameterResponse = await fetch(`http://127.0.0.1:${port}/parameter/alice`, {
     signal: AbortSignal.timeout(5_000)
   })
+
   assert.equal(await parameterResponse.text(), 'parameter')
 
   const sharedResponse = await fetch(`http://127.0.0.1:${port}/shared-route`, {
     signal: AbortSignal.timeout(5_000)
   })
+
   assert.equal(sharedResponse.headers.get('x-buffer-header'), 'yes')
   assert.equal(await sharedResponse.text(), 'shared')
 
@@ -538,6 +576,7 @@ async function runSelfTest() {
   const emptyBodyResponse = await fetch(`http://127.0.0.1:${port}/empty`, {
     signal: AbortSignal.timeout(5_000)
   })
+
   assert.equal(emptyBodyResponse.status, 200)
   assert.equal(await emptyBodyResponse.text(), '')
   assert.throws(() => emptyResponse.end(), /HTTP response is no longer valid/)
@@ -546,6 +585,7 @@ async function runSelfTest() {
     const cachedHeaderResponse = await fetch(`http://127.0.0.1:${port}/cached-headers`, {
       signal: AbortSignal.timeout(5_000)
     })
+
     assert.equal(cachedHeaderResponse.headers.get(cachedHeaderName), cachedHeaderValue)
     assert.equal(await cachedHeaderResponse.text(), 'cached')
   }
@@ -553,6 +593,7 @@ async function runSelfTest() {
   const deferredResponse = await fetch(`http://127.0.0.1:${port}/async-end`, {
     signal: AbortSignal.timeout(5_000)
   })
+
   assert.equal(await deferredResponse.text(), 'async')
   assert.throws(() => asyncResponse.end('late'), /HTTP response is no longer valid/)
 
@@ -571,6 +612,7 @@ async function runSelfTest() {
     headers: { 'x-snapshot-test': 'yes' },
     signal: AbortSignal.timeout(5_000)
   })
+
   assert.equal(batchResponse.status, 201)
   assert.equal(batchResponse.headers.get('x-batch'), 'yes')
   assert.deepEqual(await batchResponse.json(), { batch: true })
@@ -599,11 +641,14 @@ async function runSelfTest() {
     ['TRACE', '/method/trace']
   ]) {
     const rawResponse = await rawHttpRequest(method, path, { host: '127.0.0.1', port })
+
     assert.match(rawResponse, /^HTTP\/1\.1 200/m)
     assert.match(rawResponse, new RegExp(`${method.toLowerCase()}$`))
   }
 
-  if (process.platform !== 'win32') await testUnixListen()
+  if (process.platform !== 'win32') {
+    await testUnixListen()
+  }
 
   const requestBody = Uint8Array.from({ length: 128 * 1024 }, (_, index) => index % 251)
   const bodyResponse = await fetch(`http://127.0.0.1:${port}/body`, {
@@ -622,6 +667,7 @@ async function runSelfTest() {
     body: requestBody,
     signal: AbortSignal.timeout(5_000)
   })
+
   assert.equal(collectedResponse.status, 200)
   assert.equal(await collectedResponse.text(), Buffer.from(requestBody).toString('hex'))
 
@@ -630,12 +676,14 @@ async function runSelfTest() {
     body: 'overflow',
     signal: AbortSignal.timeout(5_000)
   })
+
   assert.equal(overflowResponse.status, 413)
   assert.equal(await overflowResponse.text(), 'too large')
 
   const streamResponse = await fetch(`http://127.0.0.1:${port}/stream-begin`, {
     signal: AbortSignal.timeout(5_000)
   })
+
   assert.equal(streamResponse.status, 200)
   assert.equal(streamResponse.headers.get('transfer-encoding'), 'chunked')
   assert.equal(await streamResponse.text(), 'streamed')
@@ -646,6 +694,7 @@ async function runSelfTest() {
   assert.throws(() => abortedResponse.onData(() => {}), /HTTP response is no longer valid/)
 
   const client = new WebSocket(`ws://127.0.0.1:${port}/ws`)
+
   client.binaryType = 'arraybuffer'
   const greeting = nextMessage(client)
 
@@ -662,48 +711,59 @@ async function runSelfTest() {
   assert.equal(pongPayload.byteLength, 0)
 
   const textEcho = nextMessage(client)
+
   client.send('hello')
   assert.equal(await textEcho, 'hello')
 
   const binaryEcho = nextMessage(client)
+
   client.send(Uint8Array.from([1, 2, 3, 255]))
   assert.deepEqual(new Uint8Array(await binaryEcho), Uint8Array.from([1, 2, 3, 255]))
 
   const fragmented = nextMessage(client)
+
   client.send('fragment')
   assert.equal(await fragmented, 'fragmented')
 
   const immediateClient = await openWebSocketClient()
   const immediateClose = nextClose(immediateClient)
+
   immediateClient.send('server-close')
   const immediateCloseEvent = await immediateClose
+
   assert.equal(immediateCloseEvent.code, 1006)
 
   const limitedClient = new WebSocket(`ws://127.0.0.1:${port}/limited`)
   const limitedClientClose = nextClose(limitedClient)
+
   await nextOpen(limitedClient)
   limitedClient.send('this payload is too long')
   await withTimeout(limitedClosed, 5_000, 'limited WebSocket close callback timed out')
   const limitedCloseEvent = await withTimeout(limitedClientClose, 5_000, 'limited WebSocket client close timed out')
+
   assert.equal(limitedCloseEvent.code, 1006)
   assert.equal(limitedMessageCount, 0)
   assert.equal(limitedCloseCount, 1)
 
   const drainClient = new WebSocket(`ws://127.0.0.1:${port}/drain`)
   const drainClientClose = nextClose(drainClient)
+
   await nextOpen(drainClient)
   await withTimeout(drained, 5_000, 'WebSocket drain callback timed out')
   const drainCloseEvent = await withTimeout(drainClientClose, 5_000, 'drain WebSocket close timed out')
+
   assert.equal(backpressureObserved, true)
   assert.equal(drainCount, 1)
   assert.equal(drainCloseEvent.code, 1000)
   assert.equal(drainCloseEvent.reason, 'drained')
 
   const forcedClose = nextClose(client)
+
   assert.equal(app.close(), app)
   assert.equal(app.close(), app)
   assert.throws(() => app.listen(host, port, () => {}), /app\.listen\(\) cannot be called after app\.close\(\)/)
   const forcedCloseEvent = await forcedClose
+
   assert.equal(forcedCloseEvent.code, 1006)
 
   await new Promise((resolve) => setImmediate(resolve))
@@ -730,6 +790,7 @@ async function openWebSocketClient() {
   })
 
   assert.equal(await greeting, 'open')
+
   return socket
 }
 
@@ -737,9 +798,11 @@ function proxyRequest() {
   return new Promise((resolve, reject) => {
     const socket = createConnection({ host: '127.0.0.1', port })
     const chunks = []
+
     socket.setTimeout(5_000, () => socket.destroy(new Error('PROXY request timed out')))
     socket.on('connect', () => {
       const proxyHeader = Buffer.alloc(28)
+
       Buffer.from('\r\n\r\n\0\r\nQUIT\n', 'binary').copy(proxyHeader)
       proxyHeader[12] = 0x21
       proxyHeader[13] = 0x11
@@ -760,6 +823,7 @@ function rawHttpRequest(method, path, connection) {
   return new Promise((resolve, reject) => {
     const socket = createConnection(connection)
     const chunks = []
+
     socket.setTimeout(5_000, () => socket.destroy(new Error(`${method} request timed out`)))
     socket.on('connect', () => {
       socket.write(`${method} ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`)
@@ -773,6 +837,7 @@ function rawHttpRequest(method, path, connection) {
 async function testUnixListen() {
   const unixApp = createApp()
   const socketPath = join(tmpdir(), `swm-uws-${process.pid}.sock`)
+
   let listenSocket
 
   rmSync(socketPath, { force: true })
@@ -783,18 +848,24 @@ async function testUnixListen() {
       unixApp.listen_unix((socket) => {
         if (!socket) {
           reject(new Error(`listen_unix failed on ${socketPath}`))
+
           return
         }
+
         listenSocket = socket
         resolve()
       }, socketPath)
     })
 
     const rawResponse = await rawHttpRequest('GET', '/', { path: socketPath })
+
     assert.match(rawResponse, /^HTTP\/1\.1 200/m)
     assert.match(rawResponse, /unix$/)
   } finally {
-    if (listenSocket) us_listen_socket_close(listenSocket)
+    if (listenSocket) {
+      us_listen_socket_close(listenSocket)
+    }
+
     unixApp.close()
     rmSync(socketPath, { force: true })
   }

@@ -7,16 +7,18 @@ const payload = new Uint8Array(Number(process.env.PAYLOAD_BYTES || 256))
 const port = Number(process.env.PORT || 30123)
 const sockets = []
 const latencies = []
+
 let messages = 0
 let opened = 0
 let closed = 0
-
 let resolveOpened
+
 const allOpened = new Promise((resolve) => {
   resolveOpened = resolve
 })
 
 let resolveClosed
+
 const allClosed = new Promise((resolve) => {
   resolveClosed = resolve
 })
@@ -24,17 +26,25 @@ const allClosed = new Promise((resolve) => {
 for (let index = 0; index < connections; index++) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`)
   const state = { socket, pending: [] }
+
   sockets.push(state)
 
   socket.addEventListener('open', () => {
     opened++
-    if (opened === connections) resolveOpened()
+
+    if (opened === connections) {
+      resolveOpened()
+    }
   })
 
   socket.addEventListener('message', () => {
     const now = performance.now()
     const sentAt = state.pending.shift()
-    if (sentAt !== undefined) latencies.push(now - sentAt)
+
+    if (sentAt !== undefined) {
+      latencies.push(now - sentAt)
+    }
+
     messages++
 
     if (now < deadline) {
@@ -47,7 +57,10 @@ for (let index = 0; index < connections; index++) {
 
   socket.addEventListener('close', () => {
     closed++
-    if (closed === connections) resolveClosed()
+
+    if (closed === connections) {
+      resolveClosed()
+    }
   })
 
   socket.addEventListener('error', (error) => {
@@ -68,7 +81,9 @@ for (const state of sockets) {
 
 const stopTimer = setTimeout(() => {
   for (const { socket } of sockets) {
-    if (socket.readyState === WebSocket.OPEN) socket.close(1000, 'timeout')
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.close(1000, 'timeout')
+    }
   }
 }, durationMs + 1_000)
 

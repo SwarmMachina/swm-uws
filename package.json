@@ -36,7 +36,7 @@
     "bench:ws": "node scripts/bench-ws.js",
     "profile:http-raw:linux": "bash scripts/profile-http-raw-linux.sh",
     "check": "prettier . --check && eslint .",
-    "fix": "prettier . --write && eslint . --fix",
+    "fix": "eslint . --fix && prettier . --write",
     "install": "node -e \"\"",
     "build:native": "node-gyp rebuild && node scripts/copy-prebuild.js",
     "build:native:pgo": "bash scripts/build-native-pgo.sh",
@@ -53,7 +53,7 @@
     "test:v8-ws": "node test/v8-ws-smoke.js"
   },
   "devDependencies": {
-    "@swarmmachina/standards": "^1.0.4",
+    "@swarmmachina/standards": "^1.1.2",
     "node-gyp": "^11.0.0",
     "prettier": "^3.9.5"
   }

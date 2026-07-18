@@ -20,6 +20,7 @@ let remoteAddressResponse
 let detachedChunk
 let abortCount = 0
 let resolveAborted
+
 const aborted = new Promise((resolve) => {
   resolveAborted = resolve
 })
@@ -58,6 +59,7 @@ app.get('/metadata', (res, req) => {
   assert.equal(req.getHeader('x-missing'), '')
   assert.throws(() => req.getHeader('invalid name'), /valid HTTP header name/)
   const headers = new Map()
+
   req.forEach((name, value) => headers.set(name, value))
   assert.equal(headers.get('x-request-test'), 'request-metadata')
 
@@ -82,6 +84,7 @@ app.get('/query/:id', (res, req) => {
   assert.equal(req.getQuery('missing'), undefined)
   const address = res.getRemoteAddressAsText()
   const addressText = Buffer.from(address).toString('utf8')
+
   assert.ok(address instanceof ArrayBuffer)
   assert.ok(addressText === '127.0.0.1' || addressText === '0000:0000:0000:0000:0000:ffff:7f00:0001')
   assert.throws(() => res.getRemoteAddressAsText('unexpected'), /does not accept arguments/)
@@ -110,6 +113,7 @@ app.get('/try-end', (res) => {
 
 const methodHandler = (res, req) => {
   const method = req.getMethod()
+
   res.writeHeader('x-request-method', method).end(method)
 }
 
@@ -123,6 +127,7 @@ assert.equal(app.any('/method/any', methodHandler), app)
 
 app.post('/body', (res) => {
   const chunks = []
+
   completedBodyResponse = res
   assert.equal(
     res.onAborted(() => assert.fail('completed body request must not abort')),
@@ -133,6 +138,7 @@ app.post('/body', (res) => {
       assert.ok(chunk instanceof ArrayBuffer)
       chunks.push(Buffer.from(new Uint8Array(chunk)))
       detachedChunk = chunk
+
       if (isLast) {
         res.writeHeader('content-type', 'application/octet-stream').end(Buffer.concat(chunks).toString('hex'))
       }
@@ -153,38 +159,46 @@ app.post('/abort', (res) => {
 })
 
 let listenSocket
+
 await new Promise((resolve, reject) => {
   app.listen(port, (socket) => {
     if (socket) {
       listenSocket = socket
       resolve()
-    } else reject(new Error(`listen failed on 127.0.0.1:${port}`))
+    } else {
+      reject(new Error(`listen failed on 127.0.0.1:${port}`))
+    }
   })
 })
 
 const response = await fetch(`http://127.0.0.1:${port}/`)
+
 assert.equal(response.status, 200)
 assert.equal(await response.text(), 'ok')
 assert.throws(() => completedResponse.end('late'), /HTTP response is no longer valid/)
 
 const emptyBodyResponse = await fetch(`http://127.0.0.1:${port}/empty`)
+
 assert.equal(emptyBodyResponse.status, 200)
 assert.equal(await emptyBodyResponse.text(), '')
 assert.throws(() => emptyResponse.end(), /HTTP response is no longer valid/)
 
 for (let attempt = 0; attempt < 2; attempt++) {
   const cachedHeaderResponse = await fetch(`http://127.0.0.1:${port}/cached-headers`)
+
   assert.equal(cachedHeaderResponse.headers.get(cachedHeaderName), cachedHeaderValue)
   assert.equal(await cachedHeaderResponse.text(), 'cached')
 }
 
 const deferredResponse = await fetch(`http://127.0.0.1:${port}/async-end`)
+
 assert.equal(await deferredResponse.text(), 'async')
 assert.throws(() => asyncResponse.end('late'), /HTTP response is no longer valid/)
 
 const metadataResponse = await fetch(`http://127.0.0.1:${port}/metadata`, {
   headers: { 'x-request-test': 'request-metadata' }
 })
+
 assert.equal(metadataResponse.status, 418)
 assert.equal(metadataResponse.headers.get('content-type'), 'application/json')
 assert.equal(metadataResponse.headers.get('x-swm-test'), 'metadata')
@@ -192,14 +206,17 @@ assert.deepEqual(await metadataResponse.json(), { ok: false })
 assert.throws(() => completedRequest.getUrl(), /HTTP request is no longer valid/)
 
 const queryResponse = await fetch(`http://127.0.0.1:${port}/query/42?key=value&empty=`)
+
 assert.equal(queryResponse.status, 200)
 assert.deepEqual(new Uint8Array(await queryResponse.arrayBuffer()), Uint8Array.from([1, 2, 3]))
 assert.throws(() => remoteAddressResponse.getRemoteAddressAsText(), /HTTP response is no longer valid/)
 
 const streamResponse = await fetch(`http://127.0.0.1:${port}/stream`)
+
 assert.equal(await streamResponse.text(), 'abc')
 
 const tryEndResponse = await fetch(`http://127.0.0.1:${port}/try-end`)
+
 assert.equal(await tryEndResponse.text(), 'ok')
 
 for (const [method, path, expectedBody] of [
@@ -212,6 +229,7 @@ for (const [method, path, expectedBody] of [
   ['DELETE', '/method/any', 'delete']
 ]) {
   const methodResponse = await fetch(`http://127.0.0.1:${port}${path}`, { method })
+
   assert.equal(methodResponse.status, 200)
   assert.equal(methodResponse.headers.get('x-request-method'), method.toLowerCase())
   assert.equal(await methodResponse.text(), expectedBody)
@@ -222,6 +240,7 @@ const bodyResponse = await fetch(`http://127.0.0.1:${port}/body`, {
   method: 'POST',
   body: requestBody
 })
+
 assert.equal(bodyResponse.status, 200)
 assert.equal(bodyResponse.headers.get('content-type'), 'application/octet-stream')
 assert.equal(await bodyResponse.text(), Buffer.from(requestBody).toString('hex'))
@@ -249,12 +268,14 @@ function abortRequest() {
         resolve()
       })
     })
+
     socket.once('error', reject)
   })
 }
 
 async function withTimeout(promise, milliseconds, message) {
   let timer
+
   try {
     return await Promise.race([
       promise,

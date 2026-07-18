@@ -4,6 +4,7 @@ import { createApp, version } from '../lib/index.js'
 
 const port = Number(process.env.PORT || 30123)
 const app = createApp()
+
 let startedElu
 let startedMemory
 
@@ -43,7 +44,10 @@ app.ws('/ws', {
 })
 
 app.listen('127.0.0.1', port, (ok) => {
-  if (!ok) throw new Error(`listen failed on 127.0.0.1:${port}`)
+  if (!ok) {
+    throw new Error(`listen failed on 127.0.0.1:${port}`)
+  }
+
   startedElu = performance.eventLoopUtilization()
   startedMemory = process.memoryUsage()
   console.log(JSON.stringify({ ready: true, port, version: version(), memory: startedMemory }))

@@ -20,6 +20,7 @@ if (typeof createApp !== 'function') {
 }
 
 const app = createApp()
+
 let eluStart = performance.eventLoopUtilization()
 let memoryStart = process.memoryUsage()
 let listenSocket = null
@@ -33,8 +34,10 @@ app.post('/post', (res) => {
   res.collectBody(1024 * 1024, (body) => {
     if (body === null) {
       res.writeStatus('413 Payload Too Large').end('too large')
+
       return
     }
+
     res.writeHeader('content-type', 'application/json').end('{"ok":true}')
   })
 })
@@ -53,11 +56,15 @@ app.get('/__swm_profile_reset', (res) => {
 })
 
 function stop() {
-  if (stopping) return
+  if (stopping) {
+    return
+  }
+
   stopping = true
 
   const memory = process.memoryUsage()
   const elu = performance.eventLoopUtilization(eluStart)
+
   fs.writeFileSync(
     metricsPath,
     `${JSON.stringify(
@@ -79,6 +86,7 @@ function stop() {
     api.us_listen_socket_close(listenSocket)
     listenSocket = null
   }
+
   app.close?.()
   process.exit(0)
 }
@@ -87,7 +95,10 @@ process.on('SIGINT', stop)
 process.on('SIGTERM', stop)
 
 app.listen('127.0.0.1', port, (socket) => {
-  if (!socket) throw new Error(`listen failed on 127.0.0.1:${port}`)
+  if (!socket) {
+    throw new Error(`listen failed on 127.0.0.1:${port}`)
+  }
+
   listenSocket = socket
   process.stdout.write(`ready http://127.0.0.1:${port}/base\n`)
 })

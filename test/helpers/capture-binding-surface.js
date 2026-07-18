@@ -58,12 +58,15 @@ export async function captureBindingSurface(bindingModule) {
   })
 
   let port
+
   await new Promise((resolve, reject) => {
     app.listen('127.0.0.1', 0, (socket) => {
       if (!socket) {
         reject(new Error('Binding surface probe failed to listen'))
+
         return
       }
+
       port = binding.us_socket_local_port(socket)
       resolve()
     })
@@ -73,12 +76,14 @@ export async function captureBindingSurface(bindingModule) {
     const response = await fetch(`http://127.0.0.1:${port}/__swm_surface_http`, {
       signal: AbortSignal.timeout(5_000)
     })
+
     assert.equal(await response.text(), 'ok')
     await openWebSocket(`ws://127.0.0.1:${port}/__swm_surface_ws`)
 
     assert.ok(surface.request, 'HttpRequest surface was not captured')
     assert.ok(surface.response, 'HttpResponse surface was not captured')
     assert.ok(surface.websocket, 'WebSocket surface was not captured')
+
     return surface
   } finally {
     app.close()
@@ -90,6 +95,7 @@ export function bindingSurfaceDelta(reference, candidate) {
     Object.keys(reference).map((scope) => {
       const referenceNames = new Set(reference[scope])
       const candidateNames = new Set(candidate[scope])
+
       return [
         scope,
         {
