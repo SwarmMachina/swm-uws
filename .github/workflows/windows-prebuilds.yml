@@ -1,4 +1,4 @@
-name: Prebuilds
+name: CI
 
 on:
   workflow_dispatch:
@@ -8,6 +8,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   quality:
@@ -301,6 +305,68 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  regression-gate:
+    name: PGO performance regression gate
+    runs-on:
+      group: swm-ci
+      labels: swm-linux
+    timeout-minutes: 30
+    needs:
+      - linux
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download PGO+LTO candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x64-node-v127
+          path: prebuilds/linux-x64-glibc
+
+      - name: Install pinned upstream reference
+        run: |
+          npm install \
+            --prefix "$RUNNER_TEMP/uws-reference" \
+            --ignore-scripts \
+            --no-save \
+            "uwebsockets.js@github:uNetworking/uWebSockets.js#v20.69.0"
+          reference="$RUNNER_TEMP/uws-reference/node_modules/uwebsockets.js/ESM_wrapper.mjs"
+          echo "SWM_UWS_REFERENCE=$reference" >> "$GITHUB_ENV"
+          echo "SWM_BENCH_REFERENCE=$reference" >> "$GITHUB_ENV"
+
+      - name: Verify upstream runtime surface
+        run: npm run test:compat:upstream
+
+      - name: Run paired PGO benchmark
+        run: npm run bench:compare:pgo:linux -- "$RUNNER_TEMP/pgo-benchmark"
+        env:
+          SWM_BENCH_SKIP_PERF: 1
+
+      - name: Publish benchmark summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/pgo-benchmark/report.md" ]; then
+            cat "$RUNNER_TEMP/pgo-benchmark/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgo-performance-report
+          path: ${{ runner.temp }}/pgo-benchmark/
+          if-no-files-found: warn
+          retention-days: 14
+
   package:
     name: Assemble npm package
     runs-on: ubuntu-24.04
@@ -309,6 +375,7 @@ jobs:
       - linux
       - windows
       - macos
+      - regression-gate
 
     steps:
       - name: Checkout

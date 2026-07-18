@@ -56,7 +56,7 @@ server_pid=$!
 
 ready=0
 for _ in $(seq 1 100); do
-  if curl -fsS "http://127.0.0.1:$PORT/base" >/dev/null; then
+  if curl -fsS "http://127.0.0.1:$PORT/base" >/dev/null 2>&1; then
     ready=1
     break
   fi
@@ -76,6 +76,8 @@ taskset -c "$CLIENT_CPUS" node "$LOAD_GENERATOR" \
   --pipelining "$PIPELINING" --duration "$WARMUP" --workers "$CLIENT_WORKERS" \
   >/dev/null
 
+curl -fsS "http://127.0.0.1:$PORT/__swm_profile_reset" >/dev/null
+
 if [[ "$SKIP_PERF" == "1" ]]; then
   : >"$STAT_CSV"
   taskset -c "$CLIENT_CPUS" node "$LOAD_GENERATOR" \
@@ -91,15 +93,17 @@ else
     >"$LOAD_JSON"
   wait "$stat_pid"
 
-  perf record -F 999 -g --call-graph dwarf -p "$server_pid" \
-    -o "$PERF_DATA" -- sleep "$DURATION" &
-  record_pid=$!
-  taskset -c "$CLIENT_CPUS" node "$LOAD_GENERATOR" \
-    --host 127.0.0.1 --port "$PORT" --connections "$CONNECTIONS" \
-    --pipelining "$PIPELINING" --duration "$DURATION" --workers "$CLIENT_WORKERS" \
-    >/dev/null
-  wait "$record_pid"
-  perf script -i "$PERF_DATA" >"$PERF_SCRIPT"
+  if [[ -n "${FLAMEGRAPH_DIR:-}" ]]; then
+    perf record -F 999 -g --call-graph dwarf -p "$server_pid" \
+      -o "$PERF_DATA" -- sleep "$DURATION" &
+    record_pid=$!
+    taskset -c "$CLIENT_CPUS" node "$LOAD_GENERATOR" \
+      --host 127.0.0.1 --port "$PORT" --connections "$CONNECTIONS" \
+      --pipelining "$PIPELINING" --duration "$DURATION" --workers "$CLIENT_WORKERS" \
+      >/dev/null
+    wait "$record_pid"
+    perf script -i "$PERF_DATA" >"$PERF_SCRIPT"
+  fi
 fi
 
 kill -TERM "$server_pid"

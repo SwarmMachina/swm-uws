@@ -20,7 +20,8 @@ if (typeof createApp !== 'function') {
 }
 
 const app = createApp()
-const eluStart = performance.eventLoopUtilization()
+let eluStart = performance.eventLoopUtilization()
+let memoryStart = process.memoryUsage()
 let listenSocket = null
 let stopping = false
 
@@ -45,6 +46,12 @@ app.ws('/ws', {
   }
 })
 
+app.get('/__swm_profile_reset', (res) => {
+  eluStart = performance.eventLoopUtilization()
+  memoryStart = process.memoryUsage()
+  res.end('reset')
+})
+
 function stop() {
   if (stopping) return
   stopping = true
@@ -58,7 +65,10 @@ function stop() {
         eluPct: elu.utilization * 100,
         rssBytes: memory.rss,
         heapUsedBytes: memory.heapUsed,
-        externalBytes: memory.external
+        externalBytes: memory.external,
+        rssDeltaBytes: memory.rss - memoryStart.rss,
+        heapUsedDeltaBytes: memory.heapUsed - memoryStart.heapUsed,
+        externalDeltaBytes: memory.external - memoryStart.external
       },
       null,
       2
