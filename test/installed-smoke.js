@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { dirname, resolve } from 'node:path'
 
 const packageName = process.env.SWM_UWS_PACKAGE_NAME || '@swarmmachina/swm-uws'
 const binding = await import(packageName)
@@ -7,8 +9,11 @@ const { App, us_listen_socket_close, version } = binding
 const uWS = binding.default
 const require = createRequire(import.meta.url)
 const required = require(packageName)
+const packageRoot = dirname(dirname(require.resolve(packageName)))
+const manifest = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8'))
+const expectedBindingVersion = `${manifest.version}+uWebSockets-${manifest.upstream.uWebSocketsJs}`
 
-assert.equal(version(), '0.4.1+uWebSockets-v20.69.0')
+assert.equal(version(), expectedBindingVersion)
 assert.equal(uWS.App, App)
 assert.equal(uWS.us_listen_socket_close, us_listen_socket_close)
 assert.equal(uWS.version, version)

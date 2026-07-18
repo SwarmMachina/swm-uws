@@ -2,12 +2,14 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { createConnection } from 'node:net'
 
+import { expectedBindingVersion } from './helpers/expected-version.js'
+
 const require = createRequire(import.meta.url)
 const { App, createApp, us_listen_socket_close, version } = require('../build/Release/swm_uws.node')
 const port = 40_000 + (process.pid % 10_000)
 const app = App()
 
-assert.equal(version(), '0.4.1+uWebSockets-v20.69.0')
+assert.equal(version(), expectedBindingVersion)
 assert.equal(typeof createApp, 'function')
 
 let completedResponse

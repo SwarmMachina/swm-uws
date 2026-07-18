@@ -14,8 +14,9 @@ import {
   version
 } from '../lib/index.js'
 import { resolvePrebuildTarget } from '../lib/load-native.js'
+import { expectedBindingVersion } from './helpers/expected-version.js'
 
-assert.equal(version(), '0.4.1+uWebSockets-v20.69.0')
+assert.equal(version(), expectedBindingVersion)
 assert.deepEqual(capabilities(), {
   beginWrite: true,
   collectBody: true,
