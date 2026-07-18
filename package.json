@@ -1,6 +1,6 @@
 {
   "name": "@swarmmachina/swm-uws",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "High-performance, drop-in non-TLS uWebSockets.js binding for Node.js 22 and 24",
   "upstream": {
     "uWebSocketsJs": "v20.69.0"
@@ -18,9 +18,6 @@
     "LICENSES/",
     "lib/",
     "prebuilds/",
-    "scripts/profile-http-raw-linux.sh",
-    "scripts/profile-http-raw-load.js",
-    "scripts/profile-http-raw-server.js",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
   ],

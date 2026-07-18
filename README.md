@@ -141,8 +141,8 @@ separately.
 
 ## Profiling
 
-The bundled Linux profiler records throughput, latency, ELU, memory, hardware
-counters, and native stacks:
+In a source checkout, the Linux profiler records throughput, latency, ELU,
+memory, hardware counters, and native stacks:
 
 ```sh
 npm run profile:http-raw:linux -- /tmp/http-raw-swm
@@ -152,9 +152,9 @@ Defaults: c100, p10, 2-second warmup, 5-second measurement. Set
 `FLAMEGRAPH_DIR` to generate `flamegraph.svg`, or
 `SWM_PROFILE_SKIP_PERF=1` when hardware counters are unavailable.
 
-The v0.4.1 portable balanced build measured +13.95% paired median raw GET
-throughput over the pinned upstream binary. Re-run the Linux benchmark before
-releasing changes to the native parser or build flags. See the
+The release-candidate portable balanced build measured +13.95% paired median
+raw GET throughput over the pinned upstream binary. Re-run the Linux benchmark
+before releasing changes to the native parser or build flags. See the
 [`Linux PGO report`](https://github.com/SwarmMachina/swm-uws/blob/master/benchmark/profiles/pgo-balanced-linux/report.md).
 
 In a source checkout, regenerate and verify the report with
