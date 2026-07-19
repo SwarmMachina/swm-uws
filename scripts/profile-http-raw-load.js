@@ -24,6 +24,7 @@ function parseArgs(argv) {
     port: 3000,
     connections: 100,
     pipelining: 10,
+    headerVariants: 1,
     duration: 5,
     workers: Math.min(4, os.availableParallelism())
   }
@@ -45,7 +46,7 @@ function parseArgs(argv) {
     options[key] = key === 'host' || key === 'path' || key === 'method' ? value : Number(value)
   }
 
-  for (const key of ['port', 'connections', 'pipelining', 'duration', 'workers']) {
+  for (const key of ['port', 'connections', 'pipelining', 'headerVariants', 'duration', 'workers']) {
     if (!Number.isFinite(options[key]) || options[key] <= 0) {
       throw new Error(`--${key} must be a positive number`)
     }
@@ -53,6 +54,10 @@ function parseArgs(argv) {
 
   if (!Number.isInteger(options.bodySize) || options.bodySize < 0) {
     throw new Error('--bodySize must be a non-negative integer')
+  }
+
+  if (!Number.isInteger(options.headerVariants)) {
+    throw new Error('--headerVariants must be a positive integer')
   }
 
   options.method = options.method.toUpperCase()
@@ -67,18 +72,31 @@ function parseArgs(argv) {
 }
 
 function runWorker() {
-  const { host, method, path, bodySize, port, connections, pipelining, duration } = workerData
+  const { host, method, path, bodySize, port, connections, pipelining, headerVariants, duration } = workerData
   const body = Buffer.alloc(bodySize, 0x61)
   const contentLength = method === 'POST' || body.length ? `Content-Length: ${body.length}\r\n` : ''
-  const request = Buffer.concat([
-    Buffer.from(
-      `${method} ${path} HTTP/1.1\r\nHost: ${host}:${port}\r\nConnection: keep-alive\r\n${contentLength}\r\n`
-    ),
-    body
-  ])
-  const requestBatches = Array.from({ length: pipelining + 1 }, (_, count) =>
-    count === 0 ? Buffer.alloc(0) : Buffer.concat(Array(count).fill(request))
-  )
+  const requestVariants = Array.from({ length: headerVariants }, (_, variant) => {
+    const dynamic = `X-Dynamic-${variant}: value-${variant}\r\n`
+    const orders = [
+      `X-Common-A: alpha\r\n${dynamic}X-Common-B: beta\r\n`,
+      `${dynamic}X-Common-B: beta\r\nX-Common-A: alpha\r\n`,
+      `X-Common-B: beta\r\nX-Common-A: alpha\r\n${dynamic}`
+    ]
+    const variantHeaders = headerVariants === 1 ? '' : `${orders[variant % orders.length]}X-Variant: ${variant}\r\n`
+
+    return Buffer.concat([
+      Buffer.from(
+        `${method} ${path} HTTP/1.1\r\nHost: ${host}:${port}\r\n${variantHeaders}Connection: keep-alive\r\n${contentLength}\r\n`
+      ),
+      body
+    ])
+  })
+  const requestBatches =
+    requestVariants.length === 1
+      ? Array.from({ length: pipelining + 1 }, (_, count) =>
+          count === 0 ? Buffer.alloc(0) : Buffer.concat(Array(count).fill(requestVariants[0]))
+        )
+      : null
   const states = new Set()
   const latencies = []
 
@@ -96,7 +114,27 @@ function runWorker() {
       state.pending.push(now)
     }
 
-    state.socket.write(requestBatches[count] || Buffer.concat(Array(count).fill(request)))
+    if (requestBatches) {
+      state.socket.write(requestBatches[count] || Buffer.concat(Array(count).fill(requestVariants[0])))
+
+      return
+    }
+
+    if (count === 1) {
+      state.socket.write(requestVariants[state.nextVariant])
+      state.nextVariant = (state.nextVariant + 1) % requestVariants.length
+
+      return
+    }
+
+    const batch = []
+
+    for (let index = 0; index < count; index++) {
+      batch.push(requestVariants[state.nextVariant])
+      state.nextVariant = (state.nextVariant + 1) % requestVariants.length
+    }
+
+    state.socket.write(batch.length === 1 ? batch[0] : Buffer.concat(batch))
   }
 
   function recordResponses(state, count) {
@@ -146,7 +184,13 @@ function runWorker() {
 
   for (let index = 0; index < connections; index++) {
     const socket = net.createConnection({ host, port, noDelay: true })
-    const state = { socket, buffer: Buffer.alloc(0), pending: [], responseLength: 0 }
+    const state = {
+      socket,
+      buffer: Buffer.alloc(0),
+      pending: [],
+      responseLength: 0,
+      nextVariant: index % requestVariants.length
+    }
 
     states.add(state)
     socket.setTimeout(5_000, () => socket.destroy(new Error('connection timed out')))
@@ -261,6 +305,7 @@ async function runMain() {
     path: options.path,
     bodySize: options.bodySize,
     pipelining: options.pipelining,
+    headerVariants: options.headerVariants,
     duration: options.duration,
     workers: workerCount,
     requests: {

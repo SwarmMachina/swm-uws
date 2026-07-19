@@ -80,6 +80,7 @@ struct PerContextData {
     Isolate *isolate;
     Global<Object> responseTemplate;
     Global<Object> requestTemplate;
+    Global<Object> requestHeadersTemplate;
     Global<Object> socketTemplate;
     Global<Function> appConstructor;
     ValidatedStringCache responseHeaderNameValidation;
@@ -1240,8 +1241,9 @@ void RequestSnapshot(const FunctionCallbackInfo<Value> &args) {
     Isolate *isolate = args.GetIsolate();
     Local<Context> context = isolate->GetCurrentContext();
     Local<Object> snapshot = Object::New(isolate);
-    Local<Object> headers = Object::New(isolate);
-    if (!headers->SetPrototype(context, Null(isolate)).FromMaybe(false)) return;
+    auto *contextData = static_cast<PerContextData *>(
+        args.Data().As<External>()->Value());
+    Local<Object> headers = contextData->requestHeadersTemplate.Get(isolate)->Clone();
 
     for (const auto &[name, value] : *request) {
         if (!headers
@@ -2504,7 +2506,16 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     SetPrototypeMethod(isolate, request, "getParameter", RequestGetParameter);
     SetPrototypeMethod(isolate, request, "setYield", RequestSetYield);
     SetPrototypeMethod(isolate, request, "forEach", RequestForEach);
-    SetPrototypeMethod(isolate, request, "snapshot", RequestSnapshot);
+    SetPrototypeMethod(
+        isolate,
+        request,
+        "snapshot",
+        RequestSnapshot,
+        contextExternal);
+    // Clones keep one dictionary map; separate null-prototype Object::New calls do not.
+    context->requestHeadersTemplate.Reset(
+        isolate,
+        Object::New(isolate, Null(isolate), nullptr, nullptr, 0));
     context->requestTemplate.Reset(
         isolate,
         request->GetFunction(isolate->GetCurrentContext())
@@ -2639,6 +2650,7 @@ void InitializeModule(
             contextData->apps.clear();
             contextData->responseTemplate.Reset();
             contextData->requestTemplate.Reset();
+            contextData->requestHeadersTemplate.Reset();
             contextData->socketTemplate.Reset();
             contextData->appConstructor.Reset();
             uWS::Loop::get()->free();

@@ -24,6 +24,7 @@ const app = createApp()
 let eluStart = performance.eventLoopUtilization()
 let memoryStart = process.memoryUsage()
 let listenSocket = null
+let snapshotChecksum = 0
 let stopping = false
 
 app.get('/base', (res) => {
@@ -42,6 +43,29 @@ app.post('/post', (res) => {
   })
 })
 
+app.get('/snapshot', (res, req) => {
+  const snapshot = req.snapshot()
+
+  let aborted = false
+
+  res.onAborted(() => {
+    aborted = true
+  })
+  setImmediate(() => {
+    if (aborted) {
+      return
+    }
+
+    const headers = snapshot.headers
+    const variant = headers['x-variant']
+    const dynamic = headers[`x-dynamic-${variant}`]
+
+    snapshotChecksum +=
+      headers.host.length + headers['x-common-a'].length + headers['x-common-b'].length + dynamic.length
+    res.end('ok')
+  })
+})
+
 app.ws('/ws', {
   maxPayloadLength: 1024 * 1024,
   message(ws, message, isBinary) {
@@ -52,6 +76,7 @@ app.ws('/ws', {
 app.get('/__swm_profile_reset', (res) => {
   eluStart = performance.eventLoopUtilization()
   memoryStart = process.memoryUsage()
+  snapshotChecksum = 0
   res.end('reset')
 })
 
@@ -70,6 +95,7 @@ function stop() {
     `${JSON.stringify(
       {
         eluPct: elu.utilization * 100,
+        snapshotChecksum,
         rssBytes: memory.rss,
         heapUsedBytes: memory.heapUsed,
         externalBytes: memory.external,

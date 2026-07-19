@@ -86,5 +86,8 @@ jobs:
       - name: Run raw V8 HTTP smoke
         run: npm run test:v8-http
 
+      - name: Verify snapshot V8 shapes
+        run: npm run test:v8-snapshot-shapes
+
       - name: Run raw V8 WebSocket smoke
         run: npm run test:v8-ws

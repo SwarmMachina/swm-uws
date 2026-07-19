@@ -191,6 +191,9 @@ jobs:
       - name: Run raw V8 HTTP smoke test
         run: npm run test:v8-http
 
+      - name: Verify snapshot V8 shapes
+        run: npm run test:v8-snapshot-shapes
+
       - name: Run raw V8 WebSocket smoke test
         run: npm run test:v8-ws
 
@@ -278,6 +281,9 @@ jobs:
       - name: Run raw V8 HTTP smoke test
         run: npm run test:v8-http
 
+      - name: Verify snapshot V8 shapes
+        run: npm run test:v8-snapshot-shapes
+
       - name: Run raw V8 WebSocket smoke test
         run: npm run test:v8-ws
 
@@ -350,6 +356,20 @@ jobs:
         run: npm run bench:compare:pgo:linux -- "$RUNNER_TEMP/pgo-benchmark"
         env:
           SWM_BENCH_SKIP_PERF: 1
+
+      - name: Run async snapshot PGO benchmark
+        run: |
+          npm run bench:snapshot -- \
+            --binding "$GITHUB_WORKSPACE/prebuilds/linux-x64-glibc/node-v127.node" \
+            --label pgo-lto-node-22 \
+            --output "$RUNNER_TEMP/pgo-benchmark/snapshot-async.json" \
+            --runs 3 \
+            --connections 64 \
+            --pipelining 1 \
+            --headerVariants 24 \
+            --warmup 3 \
+            --duration 10 \
+            --workers 4
 
       - name: Publish benchmark summary
         if: always()

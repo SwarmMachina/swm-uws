@@ -14,6 +14,9 @@ PIPELINING=${SWM_PGO_PIPELINING:-10}
 PROFILE=${SWM_PGO_PROFILE:-balanced}
 GET_DURATION=${SWM_PGO_GET_DURATION:-10}
 POST_DURATION=${SWM_PGO_POST_DURATION:-4}
+SNAPSHOT_DURATION=${SWM_PGO_SNAPSHOT_DURATION:-4}
+SNAPSHOT_PIPELINING=${SWM_PGO_SNAPSHOT_PIPELINING:-1}
+SNAPSHOT_VARIANTS=${SWM_PGO_SNAPSHOT_VARIANTS:-24}
 WS_DURATION=${SWM_PGO_WS_DURATION:-4}
 WORKERS=${SWM_PGO_WORKERS:-4}
 PORT=${SWM_PGO_PORT:-30991}
@@ -44,6 +47,17 @@ if [[ "$PROFILE" != "synthetic" && "$PROFILE" != "balanced" ]]; then
   exit 1
 fi
 
+snapshot_summary=disabled
+if [[ "$PROFILE" == "balanced" ]]; then
+  if ! [[ "$SNAPSHOT_DURATION" =~ ^[1-9][0-9]*$ ]] ||
+    ! [[ "$SNAPSHOT_PIPELINING" =~ ^[1-9][0-9]*$ ]] ||
+    ! [[ "$SNAPSHOT_VARIANTS" =~ ^(1[6-9]|2[0-9]|3[0-2])$ ]]; then
+    echo "snapshot PGO settings require positive duration/pipelining and 16-32 variants" >&2
+    exit 1
+  fi
+  snapshot_summary="${SNAPSHOT_DURATION}s/c${CONNECTIONS}/p${SNAPSHOT_PIPELINING}/v${SNAPSHOT_VARIANTS}"
+fi
+
 instrument_flag="-fprofile-instr-generate=$PROFILE_DIR/default.profraw"
 CC="$CLANG" CXX="$CLANGXX" \
   CFLAGS="$instrument_flag" CXXFLAGS="$instrument_flag" LDFLAGS="$instrument_flag" \
@@ -51,6 +65,7 @@ CC="$CLANG" CXX="$CLANGXX" \
 
 LLVM_PROFILE_FILE="$PROFILE_DIR/smoke-%p.profraw" npm test
 LLVM_PROFILE_FILE="$PROFILE_DIR/http-%p.profraw" npm run test:v8-http
+LLVM_PROFILE_FILE="$PROFILE_DIR/snapshot-shapes-%p.profraw" npm run test:v8-snapshot-shapes
 LLVM_PROFILE_FILE="$PROFILE_DIR/ws-%p.profraw" npm run test:v8-ws
 
 LLVM_PROFILE_FILE="$PROFILE_DIR/server-%p.profraw" \
@@ -98,6 +113,17 @@ if [[ "$PROFILE" == "balanced" ]]; then
     --workers "$WORKERS" \
     >"$PROFILE_DIR/training-post.json"
 
+  node "$ROOT/scripts/profile-http-raw-load.js" \
+    --host 127.0.0.1 \
+    --port "$PORT" \
+    --path /snapshot \
+    --connections "$CONNECTIONS" \
+    --pipelining "$SNAPSHOT_PIPELINING" \
+    --headerVariants "$SNAPSHOT_VARIANTS" \
+    --duration "$SNAPSHOT_DURATION" \
+    --workers "$WORKERS" \
+    >"$PROFILE_DIR/training-snapshot.json"
+
   PORT="$PORT" CONNECTIONS="$CONNECTIONS" DEPTH=1 \
     DURATION_MS="$((WS_DURATION * 1000))" node "$ROOT/scripts/bench-ws.js" \
     >"$PROFILE_DIR/training-ws-closed.json"
@@ -117,4 +143,4 @@ CC="$CLANG" CXX="$CLANGXX" \
   CFLAGS="$use_flags" CXXFLAGS="$use_flags" LDFLAGS="-fprofile-instr-use=$PROFILE_DIR/swm.profdata" \
   npm run build:native
 
-echo "PGO build complete: profile=$PROFILE c=$CONNECTIONS p=$PIPELINING get=${GET_DURATION}s workers=$WORKERS"
+echo "PGO build complete: profile=$PROFILE c=$CONNECTIONS p=$PIPELINING get=${GET_DURATION}s snapshot=$snapshot_summary workers=$WORKERS"

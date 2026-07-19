@@ -89,7 +89,9 @@ package alias.
 ## Lifetime and ownership
 
 - Request wrappers are valid only inside route and upgrade callbacks. Use
-  `req.snapshot(paramCount)` before asynchronous work.
+  `req.snapshot(paramCount)` before asynchronous work. Its `headers` record has
+  a null prototype, so use own-property/keyed access rather than inherited
+  `Object.prototype` methods.
 - Responses remain valid after a route callback only when `onData`,
   `onWritable`, `collectBody`, or `onAborted` is registered.
 - `onData` and `onDataV2` chunks are zero-copy `ArrayBuffer`s detached after
@@ -110,6 +112,7 @@ npm ci
 npm run build:native
 npm test
 npm run test:v8-http
+npm run test:v8-snapshot-shapes
 npm run test:v8-ws
 ```
 
@@ -126,8 +129,11 @@ npm run build:native:pgo
 ```
 
 Required tools: `clang-18`, `libclang-rt-18-dev`, and `llvm-profdata-18`.
-The default balanced profile trains raw GET, POST body collection, and
-WebSocket depths 1 and 16. Use `SWM_PGO_PROFILE=synthetic` for GET-only
+The default balanced profile trains raw GET, POST body collection, async
+request snapshots with 24 header variants, and WebSocket depths 1 and 16. The
+snapshot defaults are c100, p1, and 4 seconds; tune them with
+`SWM_PGO_SNAPSHOT_VARIANTS`, `SWM_PGO_SNAPSHOT_PIPELINING`, and
+`SWM_PGO_SNAPSHOT_DURATION`. Use `SWM_PGO_PROFILE=synthetic` for GET-only
 training.
 
 Build both Linux Node ABI prebuilds with Docker:
