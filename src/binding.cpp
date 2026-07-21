@@ -843,8 +843,10 @@ void ResponseGetProxiedRemotePort(const FunctionCallbackInfo<Value> &args) {
             "res.getProxiedRemotePort() does not accept arguments");
         return;
     }
-    args.GetReturnValue().Set(
-        Number::New(args.GetIsolate(), response->getProxiedRemotePort()));
+    uint16_t networkPort = static_cast<uint16_t>(response->getProxiedRemotePort());
+    const auto *bytes = reinterpret_cast<const uint8_t *>(&networkPort);
+    uint16_t hostPort = static_cast<uint16_t>((bytes[0] << 8) | bytes[1]);
+    args.GetReturnValue().Set(Number::New(args.GetIsolate(), hostPort));
 }
 
 void ResponseUpgrade(const FunctionCallbackInfo<Value> &args) {
@@ -1083,7 +1085,11 @@ void RequestGetMethod(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(args.GetIsolate(), "req.getMethod() does not accept arguments");
         return;
     }
-    args.GetReturnValue().Set(NewString(args.GetIsolate(), request->getMethod()));
+    std::string method(request->getCaseSensitiveMethod());
+    for (char &character : method) {
+        if (character >= 'A' && character <= 'Z') character |= 32;
+    }
+    args.GetReturnValue().Set(NewString(args.GetIsolate(), method));
 }
 
 void RequestGetCaseSensitiveMethod(const FunctionCallbackInfo<Value> &args) {

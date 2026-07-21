@@ -223,8 +223,7 @@ app.get('/parameter/:name', (res, req) => {
 app.get('/proxy-info', (res) => {
   assert.deepEqual([...new Uint8Array(res.getProxiedRemoteAddress())], [203, 0, 113, 7])
   assert.equal(Buffer.from(res.getProxiedRemoteAddressAsText()).toString(), '203.0.113.7')
-  // Pinned upstream exposes the PROXY v2 network-order field without swapping it.
-  assert.equal(res.getProxiedRemotePort(), 0x6eb2)
+  assert.equal(res.getProxiedRemotePort(), 45_678)
   res.end('proxy')
 })
 
