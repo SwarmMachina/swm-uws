@@ -11,6 +11,7 @@
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
+      "import": "./lib/index.js",
       "default": "./lib/index.js"
     }
   },
@@ -44,8 +45,12 @@
     "deps:check:vendor": "node scripts/check-vendor.js",
     "check:release": "node scripts/check-release-prebuilds.js",
     "clean": "node-gyp clean",
-    "prepublishOnly": "npm run check:release",
-    "test": "node --test test/import-compatibility.test.js test/snapshot-headers.test.js test/upstream-surface.test.js && node test/smoke.js",
+    "release:gate": "npm run check && npm test && npm run test:types && npm run test:package && npm run check:release",
+    "prepublishOnly": "npm run release:gate",
+    "test": "node --test test/declaration-exports.test.js test/import-compatibility.test.js test/snapshot-headers.test.js test/upstream-surface.test.js test/readable-contract.test.js && node test/smoke.js",
+    "test:contract": "node --test test/readable-contract.test.js",
+    "test:types": "node scripts/test-packed-types.js",
+    "test:package": "node scripts/test-package.js",
     "test:compat:upstream": "node scripts/compare-upstream-surface.js",
     "test:v8-http": "node test/v8-http-smoke.js",
     "test:v8-snapshot-shapes": "node --allow-natives-syntax test/v8-snapshot-shapes.js",
@@ -53,7 +58,9 @@
   },
   "devDependencies": {
     "@swarmmachina/standards": "^1.1.2",
+    "@types/node": "24.10.1",
     "node-gyp": "^11.0.0",
-    "prettier": "^3.9.5"
+    "prettier": "^3.9.5",
+    "typescript": "5.9.3"
   }
 }

@@ -32,6 +32,12 @@ jobs:
       - name: Check shared standards
         run: npm run check
 
+      - name: Packed consumer type resolution
+        run: npm run test:types
+
+      - name: Package metadata and contents
+        run: npm run test:package
+
       - name: Verify vendored sources
         run: npm run deps:check:vendor
 

@@ -117,10 +117,7 @@ export interface AppOptions {
   [key: string]: unknown
 }
 
-export enum ListenOptions {
-  LIBUS_LISTEN_DEFAULT = 0,
-  LIBUS_LISTEN_EXCLUSIVE_PORT = 1
-}
+export type ListenOptions = 0 | 1
 
 export interface AppInstance {
   get(path: NativeData, handler: HttpHandler): this
