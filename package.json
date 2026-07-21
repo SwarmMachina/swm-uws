@@ -1,6 +1,6 @@
 {
   "name": "@swarmmachina/swm-uws",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "High-performance, drop-in non-TLS uWebSockets.js binding for Node.js 22 and 24",
   "upstream": {
     "uWebSocketsJs": "v20.69.0"
