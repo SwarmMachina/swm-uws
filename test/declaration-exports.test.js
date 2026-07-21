@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import ts from 'typescript'
 
@@ -36,7 +37,7 @@ function declarationValueExports(file) {
 
 test('declaration value exports exactly match runtime exports', () => {
   assert.deepEqual(
-    declarationValueExports(new URL('../lib/index.d.ts', import.meta.url).pathname),
+    declarationValueExports(fileURLToPath(new URL('../lib/index.d.ts', import.meta.url))),
     Object.keys(runtime).sort()
   )
 })
