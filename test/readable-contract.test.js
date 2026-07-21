@@ -190,8 +190,9 @@ test('native readable surface has a functional network contract', { timeout: 15_
       assert.ok(chunk instanceof ArrayBuffer)
       assert.equal(typeof isLast, 'boolean')
       const previous = bodyResults.get('onData') || Buffer.alloc(0)
+      const copy = Buffer.from(new Uint8Array(chunk))
 
-      bodyResults.set('onData', Buffer.concat([previous, Buffer.from(chunk)]))
+      bodyResults.set('onData', Buffer.concat([previous, copy]))
 
       if (isLast) {
         res.end('contract')
@@ -206,7 +207,7 @@ test('native readable surface has a functional network contract', { timeout: 15_
       cover('HttpResponse', 'onDataV2')
       assert.ok(chunk instanceof ArrayBuffer)
       assert.equal(typeof remaining, 'bigint')
-      chunks.push(Buffer.from(chunk))
+      chunks.push(Buffer.from(new Uint8Array(chunk)))
 
       if (remaining === 0n) {
         bodyResults.set('onDataV2', Buffer.concat(chunks))
