@@ -210,7 +210,7 @@ jobs:
           if (Test-Path node_modules/node-gyp) {
             throw "node-gyp leaked into the runtime installation"
           }
-          npm test
+          npm run test:runtime
 
       - name: Verify prebuild
         run: |
@@ -293,7 +293,7 @@ jobs:
           npm ci --omit=dev
           test ! -d node_modules/@swarmmachina/standards
           test ! -d node_modules/node-gyp
-          npm test
+          npm run test:runtime
 
       - name: Verify prebuild
         run: |
