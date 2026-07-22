@@ -172,3 +172,13 @@ In a source checkout, regenerate and verify the report with
 npm run deps:update:vendor -- v20.69.0
 npm run deps:check:vendor
 ```
+
+## License
+
+First-party source code is licensed under the Mozilla Public License 2.0.
+See [LICENSE](LICENSE).
+
+Copyright Contributors to SwarmMachina.
+
+Vendored uWebSockets and uSockets code retains its original licenses and
+copyright notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
