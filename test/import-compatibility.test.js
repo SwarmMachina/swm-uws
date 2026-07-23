@@ -33,3 +33,13 @@ test('CommonJS consumers retain named access and receive the ESM default', () =>
     assert.equal(required[key], binding[key])
   }
 })
+
+test('contextual typing helpers preserve identity without wrapping', () => {
+  const handler = () => {}
+  const behavior = { message() {} }
+
+  assert.equal(binding.defineHttpHandler(handler), handler)
+  assert.equal(binding.defineWebSocketBehavior(behavior), behavior)
+  assert.equal(required.defineHttpHandler, binding.defineHttpHandler)
+  assert.equal(required.defineWebSocketBehavior, binding.defineWebSocketBehavior)
+})

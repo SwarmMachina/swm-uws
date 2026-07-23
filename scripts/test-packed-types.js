@@ -8,6 +8,77 @@ import ts from 'typescript'
 const root = resolve(import.meta.dirname, '..')
 const temp = mkdtempSync(join(tmpdir(), 'swm-uws-packed-types-'))
 
+/**
+ * Verifies the completion and hover path used by TypeScript-backed editors,
+ * including VS Code. The source deliberately has no JSDoc or `@ts-check`.
+ * @param {string} consumer
+ * @param {object} compilerOptions
+ */
+function assertJavaScriptIdeTypes(consumer, compilerOptions) {
+  const file = join(consumer, 'ide-consumer.js')
+  const source = [
+    "import uWS, { defineHttpHandler, defineWebSocketBehavior } from '@swarmmachina/swm-uws'",
+    '',
+    'const app = uWS.App()',
+    "app.get('/', (res, req) => req.getH)",
+    '',
+    'defineHttpHandler((res, req) => res.getProx)',
+    '',
+    'defineWebSocketBehavior({',
+    '  message(ws, message, isBinary) {',
+    '    ws.getB',
+    '  }',
+    '})',
+    ''
+  ].join('\n')
+
+  writeFileSync(file, source)
+
+  const host = {
+    getScriptFileNames: () => [file],
+    getScriptVersion: () => '0',
+    getScriptSnapshot: (path) => {
+      const text = ts.sys.readFile(path)
+
+      return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text)
+    },
+    getCurrentDirectory: () => consumer,
+    getCompilationSettings: () => compilerOptions,
+    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+    fileExists: ts.sys.fileExists,
+    readFile: ts.sys.readFile,
+    readDirectory: ts.sys.readDirectory,
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: ts.sys.getDirectories,
+    realpath: ts.sys.realpath
+  }
+  const service = ts.createLanguageService(host)
+
+  for (const [prefix, expected] of [
+    ['getH', 'getHeader'],
+    ['getProx', 'getProxiedRemoteAddress'],
+    ['getB', 'getBufferedAmount']
+  ]) {
+    const position = source.indexOf(prefix) + prefix.length
+    const completions = service.getCompletionsAtPosition(file, position, {})
+    const names = new Set(completions?.entries.map((entry) => entry.name))
+
+    assert.ok(names.has(expected), `JavaScript IDE completion is missing ${expected}`)
+  }
+
+  const headerDetails = service.getCompletionEntryDetails(
+    file,
+    source.indexOf('getH') + 'getH'.length,
+    'getHeader',
+    {},
+    undefined,
+    {},
+    undefined
+  )
+
+  assert.match(ts.displayPartsToString(headerDetails?.documentation), /Returns a request header value/)
+}
+
 try {
   const artifacts = join(temp, 'artifacts')
   const consumer = join(temp, 'consumer')
@@ -45,6 +116,13 @@ try {
     types: ['node'],
     typeRoots: [join(root, 'node_modules/@types')]
   }
+
+  assertJavaScriptIdeTypes(consumer, {
+    ...shared,
+    checkJs: false,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext
+  })
 
   for (const mode of [
     { name: 'nodenext', module: 'NodeNext', moduleResolution: 'NodeNext' },
@@ -86,7 +164,7 @@ try {
     )
   }
 
-  console.log('packed swm-uws consumer types: NodeNext + Bundler + JS/JSDoc + CommonJS ok')
+  console.log('packed swm-uws consumer types: NodeNext + Bundler + JS + CommonJS + Language Service IntelliSense ok')
 } finally {
   rmSync(temp, { recursive: true, force: true })
 }

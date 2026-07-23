@@ -50,7 +50,7 @@
     "release:gate": "npm run check && npm test && npm run test:types && npm run test:package && npm run check:release",
     "prepublishOnly": "npm run release:gate",
     "test": "node --test test/declaration-exports.test.js && npm run test:runtime",
-    "test:runtime": "node --test test/import-compatibility.test.js test/snapshot-headers.test.js test/upstream-surface.test.js test/readable-contract.test.js && node test/smoke.js",
+    "test:runtime": "node --test test/import-compatibility.test.js test/snapshot-headers.test.js test/upstream-surface.test.js test/readable-contract.test.js test/security-regressions.test.js test/raw-http-framing.test.js && node test/smoke.js",
     "test:contract": "node --test test/readable-contract.test.js",
     "test:types": "node scripts/test-packed-types.js",
     "test:package": "node scripts/test-package.js",

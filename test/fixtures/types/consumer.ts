@@ -4,6 +4,8 @@ import uWS, {
   LIBUS_LISTEN_EXCLUSIVE_PORT,
   capabilities,
   createApp,
+  defineHttpHandler,
+  defineWebSocketBehavior,
   us_listen_socket_close,
   us_socket_local_port,
   version
@@ -11,9 +13,12 @@ import uWS, {
 import type {
   AppInstance,
   AppOptions,
+  Capabilities,
   HttpHandler,
   HttpRequest,
+  HttpRequestSnapshot,
   HttpResponse,
+  ListenHandler,
   ListenOptions,
   ListenSocket,
   NativeData,
@@ -38,19 +43,30 @@ type PublicTypes = [
   us_socket,
   us_socket_context_t,
   HttpRequest,
+  HttpRequestSnapshot,
   HttpResponse,
   WebSocket<object>,
   WebSocketBehavior<object>,
   HttpHandler,
+  ListenHandler,
   AppOptions,
   ListenOptions,
   AppInstance,
-  TemplatedApp
+  TemplatedApp,
+  Capabilities
 ]
 
 const app: AppInstance = createApp()
+const handler = defineHttpHandler((res, req) => res.end(req.getUrl()))
+const behavior = defineWebSocketBehavior({
+  message(ws, message, isBinary) {
+    ws.send(message, isBinary)
+  }
+})
 
 void app
+void handler
+void behavior
 void uWS
 void App
 void version

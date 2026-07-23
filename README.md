@@ -1,24 +1,20 @@
 # @swarmmachina/swm-uws
 
-Raw V8 binding compatible with the ordinary non-TLS HTTP and WebSocket surface
-of uWebSockets.js. It is also the native binding used by `swm-core`. Sources are
-pinned to uWebSockets.js 20.69.0 and vendored in this repository.
+Non-TLS HTTP and WebSocket V8 binding compatible with the standard
+uWebSockets.js `App()` API. Used by `swm-core`.
 
-## Runtime
+- uWebSockets.js: `20.69.0`
+- [vendored revisions](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/VERSIONS.md)
+- [local patches](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/PATCHES.md)
+- [TypeScript API](lib/index.d.ts)
 
-- Node.js 22 and 24
-- Linux x64 with glibc
-- Windows x64
-- macOS arm64 and x64
-
-Alpine/musl and Windows ARM64 are not supported. TLS and permessage-deflate are
-disabled; terminate TLS before the application.
-
-## Usage
+## Install
 
 ```sh
 npm install @swarmmachina/swm-uws
 ```
+
+## Example
 
 ```js
 import uWS from '@swarmmachina/swm-uws'
@@ -26,7 +22,8 @@ import uWS from '@swarmmachina/swm-uws'
 const app = uWS.App()
 
 app.get('/', (res) => {
-  res.writeHeader('content-type', 'application/json').end('{"ok":true}')
+  res.writeHeader('content-type', 'application/json')
+  res.end('{"ok":true}')
 })
 
 app.ws('/ws', {
@@ -36,135 +33,268 @@ app.ws('/ws', {
 })
 
 let listenSocket
+
 app.listen(3000, (socket) => {
-  if (!socket) process.exit(1)
+  if (!socket) throw new Error('listen failed')
   listenSocket = socket
+  console.log('listening on http://127.0.0.1:3000')
 })
 
 process.on('SIGTERM', () => {
-  uWS.us_listen_socket_close(listenSocket)
+  if (listenSocket) uWS.us_listen_socket_close(listenSocket)
   app.close()
 })
 ```
 
-For an explicit switch, change only the module specifier:
-
-```js
-import uWS from 'uwebsockets.js'
-// import uWS from '@swarmmachina/swm-uws'
-```
-
-To keep application source unchanged, install this package under the original
-dependency name with an npm alias:
-
-```sh
-npm install uwebsockets.js@npm:@swarmmachina/swm-uws
-```
-
-Existing default-import and CommonJS code then continues to resolve
-`uwebsockets.js`:
-
-```js
-import uWS from 'uwebsockets.js'
-// or: const uWS = require('uwebsockets.js')
-```
-
-Named imports remain available when preferred:
+Named imports are available:
 
 ```js
 import { App, us_listen_socket_close } from '@swarmmachina/swm-uws'
 ```
 
-The complete surface is declared in [`lib/index.d.ts`](lib/index.d.ts).
+Inline callbacks are typed by the IDE automatically. Use the identity helpers
+when declaring them separately:
 
-The compatibility target is the plain `App()` HTTP/WebSocket API: routing,
-listen options and Unix sockets, request/response streaming and lifetime,
-remote and PROXY protocol addresses, pub/sub, corking, ping, and fragmented
-WebSocket sends. `SSLApp`/TLS, `H3App`, permessage-deflate and its non-zero
-compression constants, SNI methods, worker app descriptors, declarative
-responses, and upstream experimental KV/timer helpers are not implemented.
-Applications using those features require an explicit migration rather than a
-package alias.
+```js
+import { defineHttpHandler, defineWebSocketBehavior } from '@swarmmachina/swm-uws'
 
-## Lifetime and ownership
+const handler = defineHttpHandler((res, req) => {
+  res.end(req.getUrl())
+})
 
-- Request wrappers are valid only inside route and upgrade callbacks. Use
-  `req.snapshot(paramCount)` before asynchronous work. Its `headers` record has
-  a null prototype, so use own-property/keyed access rather than inherited
-  `Object.prototype` methods.
-- Responses remain valid after a route callback only when `onData`,
-  `onWritable`, `collectBody`, or `onAborted` is registered.
-- `onData` and `onDataV2` chunks are zero-copy `ArrayBuffer`s detached after
-  the callback. Copy a chunk if it must be retained.
-- `collectBody(maxSize, callback)` returns an owned `ArrayBuffer`, or `null`
-  when the limit is exceeded.
-- Response and WebSocket wrappers are invalid inside their `onAborted` and
-  `close` callbacks respectively.
-- `app.close()` is idempotent and closes active HTTP and WebSocket contexts.
+const behavior = defineWebSocketBehavior({
+  message(ws, message, isBinary) {
+    ws.send(message, isBinary)
+  }
+})
+```
 
-`capabilities()` reports optional fast paths such as `endBatch`, `beginWrite`,
-and `collectBody`.
+## Drop-in alias
+
+Keep existing `uwebsockets.js` imports:
+
+```sh
+npm install uwebsockets.js@npm:@swarmmachina/swm-uws
+```
+
+```js
+import uWS from 'uwebsockets.js'
+// const uWS = require('uwebsockets.js')
+```
+
+Use an explicit package import when the application also needs unsupported
+upstream features.
+
+## Support
+
+| Runtime | Support    |
+| ------- | ---------- |
+| Node.js | 22, 24     |
+| Linux   | x64, glibc |
+| Windows | x64        |
+| macOS   | arm64, x64 |
+
+Not supported:
+
+- TLS / `SSLApp`
+- `H3App`
+- permessage-deflate and non-zero compression constants
+- SNI
+- Alpine/musl
+- Windows ARM64
+- upstream worker descriptors, declarative responses, KV and timer helpers
+
+Terminate TLS before traffic reaches the application.
+
+## Contracts
+
+### Request lifetime
+
+Request wrappers expire when the route or upgrade callback returns. Snapshot
+data needed by asynchronous work:
+
+```js
+app.get('/users/:id', (res, req) => {
+  const request = req.snapshot(1)
+  let aborted = false
+
+  res.onAborted(() => {
+    aborted = true
+  })
+
+  setImmediate(() => {
+    if (aborted) return
+    console.log(request.params[0], request.headers['user-agent'])
+    res.end('ok')
+  })
+})
+```
+
+`request.headers` has a null prototype:
+
+```js
+Object.hasOwn(request.headers, 'authorization')
+request.headers.authorization
+```
+
+### Streaming data
+
+`onData` and `onDataV2` receive zero-copy `ArrayBuffer`s. They are detached
+after the callback:
+
+```js
+res.onData((chunk, isLast) => {
+  const owned = Buffer.from(new Uint8Array(chunk))
+  // keep `owned`, not `chunk`
+})
+```
+
+Responses stay alive after a route callback only after registering `onData`,
+`onDataV2`, `onWritable`, `collectBody`, or `onAborted`.
+
+### Body collection
+
+```js
+const maxBodyBytes = 16 * 1024 * 1024
+
+res.collectBody(maxBodyBytes, (body) => {
+  if (body === null) {
+    res.writeStatus('413 Payload Too Large')
+    return res.end('request body too large', true)
+  }
+
+  res.end(Buffer.from(body))
+})
+```
+
+```text
+maxSize: integer bytes, 0..1 GiB, per request
+native body memory ≈ concurrent collections × maxSize + overhead
+```
+
+Use application-level admission control for a global memory limit.
+
+### Response framing
+
+`Content-Length` and `Transfer-Encoding` are set by response methods:
+
+```js
+res.end('ok') // Content-Length: 2
+
+res.beginWrite()
+res.write('one')
+res.end('two') // chunked
+```
+
+Manual framing headers are rejected:
+
+```js
+res.writeHeader('content-length', '2') // throws
+res.writeHeader('transfer-encoding', 'chunked') // throws
+res.endBatch('200 OK', ['content-length', '2'], 'ok') // throws
+```
+
+### Callback failures
+
+If a callback throws, Node.js receives the original exception. The binding
+stops the current request or socket sequence and invalidates the affected
+wrapper.
+
+Valid `onWritable` results remain distinct:
+
+```js
+const body = Buffer.from(largePayload)
+
+res.onWritable((offset) => {
+  const [ok, done] = res.tryEnd(body.subarray(offset), body.length)
+  return ok || done
+})
+```
+
+### WebSocket user data
+
+For user data passed to `upgrade()`:
+
+- own string and symbol descriptors are copied once;
+- inherited properties are skipped;
+- accessors are copied without invocation;
+- binding methods such as `send` cannot be shadowed.
+
+### Capabilities
+
+```js
+uWS.capabilities()
+// {
+//   beginWrite: true,
+//   collectBody: true,
+//   requestSnapshot: true,
+//   responseBatch: true,
+//   requestPause: true
+// }
+```
 
 ## Development
 
 ```sh
 npm ci
 npm run build:native
+npm run check
 npm test
 npm run test:v8-http
 npm run test:v8-snapshot-shapes
 npm run test:v8-ws
+npm run test:types
+npm run test:package
+npm run deps:check:vendor
 ```
 
-Vendored source revisions and hashes are recorded in the source repository at
-[`vendor/VERSIONS.md`](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/VERSIONS.md).
+```sh
+# Full prepublish validation
+npm run release:gate
+```
 
 ## Linux release build
 
-Release prebuilds use portable generic x86-64 Clang 18 PGO+LTO without
-`-march` or `-mtune`:
+Portable generic x86-64 Clang 18 PGO+LTO:
 
 ```sh
+# Requires clang-18, libclang-rt-18-dev and llvm-profdata-18
 npm run build:native:pgo
-```
 
-Required tools: `clang-18`, `libclang-rt-18-dev`, and `llvm-profdata-18`.
-The default balanced profile trains raw GET, POST body collection, async
-request snapshots with 24 header variants, and WebSocket depths 1 and 16. The
-snapshot defaults are c100, p1, and 4 seconds; tune them with
-`SWM_PGO_SNAPSHOT_VARIANTS`, `SWM_PGO_SNAPSHOT_PIPELINING`, and
-`SWM_PGO_SNAPSHOT_DURATION`. Use `SWM_PGO_PROFILE=synthetic` for GET-only
-training.
-
-Build both Linux Node ABI prebuilds with Docker:
-
-```sh
+# Build Node ABI 127 and 137 prebuilds with Docker
 npm run build:prebuilds
 ```
 
-Release CI runs PGO only on native x86-64 hosts and builds ABI 127 and 137
-separately.
+```sh
+# Optional training controls (defaults: variants=24, pipelining=1, duration=4s)
+SWM_PGO_SNAPSHOT_VARIANTS=24 \
+SWM_PGO_SNAPSHOT_PIPELINING=1 \
+SWM_PGO_SNAPSHOT_DURATION=4 \
+npm run build:native:pgo
+
+# GET-only training
+SWM_PGO_PROFILE=synthetic npm run build:native:pgo
+```
+
+Release CI runs PGO on native x86-64 hosts. The current portable balanced build
+measured +13.95% paired median raw GET throughput over the pinned upstream
+binary. See the
+[`Linux PGO report`](https://github.com/SwarmMachina/swm-uws/blob/master/benchmark/profiles/pgo-balanced-linux/report.md).
 
 ## Profiling
 
-In a source checkout, the Linux profiler records throughput, latency, ELU,
-memory, hardware counters, and native stacks:
-
 ```sh
 npm run profile:http-raw:linux -- /tmp/http-raw-swm
+
+# Optional
+FLAMEGRAPH_DIR=/path/to/FlameGraph
+SWM_PROFILE_SKIP_PERF=1
+
+npm run bench:report
+npm run bench:report:check
 ```
 
-Defaults: c100, p10, 2-second warmup, 5-second measurement. Set
-`FLAMEGRAPH_DIR` to generate `flamegraph.svg`, or
-`SWM_PROFILE_SKIP_PERF=1` when hardware counters are unavailable.
-
-The release-candidate portable balanced build measured +13.95% paired median
-raw GET throughput over the pinned upstream binary. Re-run the Linux benchmark
-before releasing changes to the native parser or build flags. See the
-[`Linux PGO report`](https://github.com/SwarmMachina/swm-uws/blob/master/benchmark/profiles/pgo-balanced-linux/report.md).
-
-In a source checkout, regenerate and verify the report with
-`npm run bench:report` and `npm run bench:report:check`.
+Defaults: concurrency 100, pipelining 10, 2-second warmup, 5-second measurement.
 
 ## Updating upstream
 
@@ -175,10 +305,9 @@ npm run deps:check:vendor
 
 ## License
 
-First-party source code is licensed under the Mozilla Public License 2.0.
-See [LICENSE](LICENSE).
+[MPL-2.0](LICENSE) for first-party code.
+
+Vendored licenses and notices:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Copyright Contributors to SwarmMachina.
-
-Vendored uWebSockets and uSockets code retains its original licenses and
-copyright notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

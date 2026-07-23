@@ -240,6 +240,11 @@ test('native readable surface has a functional network contract', { timeout: 15_
     assert.ok([4, 16].includes(res.getRemoteAddress().byteLength))
     res.end('proxy')
   })
+  app.get('/proxy-port/:expected', (res, req) => {
+    assert.deepEqual([...new Uint8Array(res.getProxiedRemoteAddress())], [203, 0, 113, 10])
+    assert.equal(res.getProxiedRemotePort(), Number(req.getParameter(0)))
+    res.end('proxy-port')
+  })
 
   app.ws('/ws', {
     open(ws) {
@@ -349,6 +354,16 @@ test('native readable surface has a functional network contract', { timeout: 15_
     )
 
     assert.match(proxyResponse, /proxy$/)
+
+    for (const sourcePort of [1, 41_234, 65_535]) {
+      const response = await rawRequest(
+        port,
+        [`GET /proxy-port/${sourcePort} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`],
+        proxyV2Header(port, sourcePort)
+      )
+
+      assert.match(response, /proxy-port$/)
+    }
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
     const message = await nextEvent(ws, 'message')
