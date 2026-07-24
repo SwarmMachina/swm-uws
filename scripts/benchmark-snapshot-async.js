@@ -5,6 +5,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
+import { median } from '@swarmmachina/benchkit/statistics'
+
 const execFileAsync = promisify(execFile)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const options = parseArgs(process.argv.slice(2))
@@ -172,7 +174,7 @@ function startServer(port, metricsPath) {
 
 async function runLoad(port, duration) {
   const { stdout } = await execFileAsync(process.execPath, [
-    path.join(root, 'scripts/profile-http-raw-load.js'),
+    path.join(root, 'scripts/snapshot-header-load.js'),
     '--host',
     '127.0.0.1',
     '--port',
@@ -206,11 +208,4 @@ function summarize(runResults) {
       runResults.map(({ runtime }) => runtime.sampledAllocationBytesPerRequest)
     )
   }
-}
-
-function median(values) {
-  const sorted = [...values].sort((left, right) => left - right)
-  const middle = Math.floor(sorted.length / 2)
-
-  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
 }

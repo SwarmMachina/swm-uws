@@ -1,14 +1,17 @@
 import { performance } from 'node:perf_hooks'
 
+import { BoundedLatencyRecorder } from '@swarmmachina/benchkit/measurement'
+
 const connections = Number(process.env.CONNECTIONS || 50)
 const depth = Number(process.env.DEPTH || 1)
 const durationMs = Number(process.env.DURATION_MS || 10_000)
 const payload = new Uint8Array(Number(process.env.PAYLOAD_BYTES || 256))
 const port = Number(process.env.PORT || 30123)
 const sockets = []
-const latencies = []
+const latencies = new BoundedLatencyRecorder()
 
 let messages = 0
+let maxLatencyMs = 0
 let opened = 0
 let closed = 0
 let resolveOpened
@@ -42,7 +45,10 @@ for (let index = 0; index < connections; index++) {
     const sentAt = state.pending.shift()
 
     if (sentAt !== undefined) {
-      latencies.push(now - sentAt)
+      const latencyMs = now - sentAt
+
+      latencies.record(latencyMs)
+      maxLatencyMs = Math.max(maxLatencyMs, latencyMs)
     }
 
     messages++
@@ -90,9 +96,8 @@ const stopTimer = setTimeout(() => {
 await allClosed
 clearTimeout(stopTimer)
 
-latencies.sort((left, right) => left - right)
 const elapsedSeconds = (performance.now() - started) / 1_000
-const percentile = (value) => latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * value))]
+const latency = latencies.summary()
 
 console.log(
   JSON.stringify({
@@ -103,10 +108,11 @@ console.log(
     messages,
     messagesPerSecond: messages / elapsedSeconds,
     latencyMs: {
-      p50: percentile(0.5),
-      p95: percentile(0.95),
-      p99: percentile(0.99),
-      max: latencies.at(-1)
+      p50: latency.p50Ms,
+      p95: latency.p95Ms,
+      p99: latency.p99Ms,
+      max: maxLatencyMs,
+      accuracy: latency.accuracy
     }
   })
 )

@@ -2,6 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { pairedComparison } from '@swarmmachina/benchkit/statistics'
 import { format } from 'prettier'
 
 let directory = new URL('../benchmark/profiles/pgo-balanced-linux/', import.meta.url)
@@ -30,20 +31,17 @@ const runs = await readJson('runs.json')
 
 validateInputs(metadata, runs)
 
-const swmRequestsPerSecond = runs.map((run) => run.swmRps)
-const uwsRequestsPerSecond = runs.map((run) => run.uwsRps)
-const pairedDeltas = runs.map((run) => ((run.swmRps - run.uwsRps) / run.uwsRps) * 100)
-const pairedDeltaIqrPct = quartiles(pairedDeltas)
+const throughputComparison = pairedComparison(runs.map((run) => ({ candidate: run.swmRps, reference: run.uwsRps })))
 const summary = {
   environment: metadata.environment,
   build: metadata.build,
   parameters: metadata.parameters,
   results: {
-    swmRequestsPerSecondMedian: median(swmRequestsPerSecond),
-    uwsRequestsPerSecondMedian: median(uwsRequestsPerSecond),
-    pairedDeltaMedianPct: median(pairedDeltas),
-    pairedDeltaIqrPct,
-    positivePairedRounds: pairedDeltas.filter((value) => value > 0).length,
+    swmRequestsPerSecondMedian: throughputComparison.medianCandidate,
+    uwsRequestsPerSecondMedian: throughputComparison.medianReference,
+    pairedDeltaMedianPct: throughputComparison.medianPairedDeltaPct,
+    pairedDeltaIqrPct: [throughputComparison.iqr.q1, throughputComparison.iqr.q3],
+    positivePairedRounds: throughputComparison.winningPairs,
     swmLatencyMsMedian: metadata.measurements.swmLatencyMsMedian,
     uwsLatencyMsMedian: metadata.measurements.uwsLatencyMsMedian,
     errors: metadata.measurements.errors
@@ -123,22 +121,6 @@ function validateInputs(inputMetadata, inputRuns) {
   if (Math.abs((orders.get('swm/uws') || 0) - (orders.get('uws/swm') || 0)) > 1) {
     throw new Error('paired run order is not balanced')
   }
-}
-
-function median(values) {
-  const sorted = [...values].sort((left, right) => left - right)
-  const middle = Math.floor(sorted.length / 2)
-
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
-}
-
-function quartiles(values) {
-  const sorted = [...values].sort((left, right) => left - right)
-  const middle = Math.floor(sorted.length / 2)
-  const lower = sorted.slice(0, middle)
-  const upper = sorted.slice(Math.ceil(sorted.length / 2))
-
-  return [median(lower), median(upper)]
 }
 
 function renderReport(value) {

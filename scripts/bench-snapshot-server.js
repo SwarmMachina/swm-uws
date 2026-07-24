@@ -1,9 +1,10 @@
 import { createRequire } from 'node:module'
-import { Session } from 'node:inspector'
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { performance } from 'node:perf_hooks'
+
+import { V8HeapAllocationSampler } from '@swarmmachina/benchkit/profiling'
 
 const bindingPath = process.env.SWM_SNAPSHOT_BENCH_BINDING || new URL('../lib/index.js', import.meta.url).href
 const metricsPath = process.env.SWM_SNAPSHOT_BENCH_METRICS
@@ -21,12 +22,13 @@ if (typeof createApp !== 'function') {
   throw new TypeError(`${bindingPath} does not export App or createApp`)
 }
 
-const profiler = new Session()
+const allocationSampler = new V8HeapAllocationSampler({
+  samplingIntervalBytes: 32 * 1024,
+  includeCollectedObjects: true
+})
 const app = createApp()
 
-profiler.connect()
-await postProfiler('HeapProfiler.enable')
-await startAllocationSampling()
+await allocationSampler.start()
 
 let eluStart = performance.eventLoopUtilization()
 let memoryStart = process.memoryUsage()
@@ -69,9 +71,9 @@ app.get('/__reset', (res) => {
 })
 
 async function resetMetrics() {
-  await stopAllocationSampling()
+  await allocationSampler.stop()
   global.gc?.()
-  await startAllocationSampling()
+  await allocationSampler.start()
 
   memoryStart = process.memoryUsage()
   heapUsedPeakBytes = memoryStart.heapUsed
@@ -90,8 +92,7 @@ async function stop() {
 
   const elu = performance.eventLoopUtilization(eluStart)
   const memory = process.memoryUsage()
-  const allocationProfile = await stopAllocationSampling()
-  const sampledAllocationBytes = sumSampledAllocations(allocationProfile.profile.head)
+  const allocationProfile = await allocationSampler.stop()
 
   fs.writeFileSync(
     metricsPath,
@@ -104,8 +105,9 @@ async function stop() {
         heapUsedBytes: memory.heapUsed,
         heapUsedPeakBytes,
         heapUsedDeltaBytes: memory.heapUsed - memoryStart.heapUsed,
-        sampledAllocationBytes,
-        sampledAllocationBytesPerRequest: snapshotRequests === 0 ? 0 : sampledAllocationBytes / snapshotRequests
+        sampledAllocationBytes: allocationProfile.sampledAllocationBytes,
+        sampledAllocationBytesPerRequest:
+          snapshotRequests === 0 ? 0 : allocationProfile.sampledAllocationBytes / snapshotRequests
       },
       null,
       2
@@ -117,36 +119,8 @@ async function stop() {
   }
 
   app.close?.()
-  profiler.disconnect()
+  await allocationSampler.dispose()
   process.exit(0)
-}
-
-function startAllocationSampling() {
-  return postProfiler('HeapProfiler.startSampling', {
-    samplingInterval: 32 * 1024,
-    includeObjectsCollectedByMajorGC: true,
-    includeObjectsCollectedByMinorGC: true
-  })
-}
-
-function stopAllocationSampling() {
-  return postProfiler('HeapProfiler.stopSampling')
-}
-
-function postProfiler(method, params = {}) {
-  return new Promise((resolve, reject) => {
-    profiler.post(method, params, (error, result) => {
-      if (error) {
-        reject(error)
-      } else {
-        resolve(result)
-      }
-    })
-  })
-}
-
-function sumSampledAllocations(node) {
-  return node.selfSize + node.children.reduce((total, child) => total + sumSampledAllocations(child), 0)
 }
 
 async function loadBinding(modulePath) {

@@ -113,23 +113,16 @@ server_pid=''
 node --input-type=module - "$LOAD_JSON" "$STAT_CSV" "$METRICS_JSON" "$SUMMARY_JSON" "$REPORT_MD" <<'NODE'
 import fs from 'node:fs'
 
+import { normalizePerfCounters, parsePerfStat } from '@swarmmachina/benchkit/profiling'
+
 const [loadFile, statFile, runtimeFile, summaryFile, reportFile] = process.argv.slice(2)
 const load = JSON.parse(fs.readFileSync(loadFile, 'utf8'))
 const runtime = JSON.parse(fs.readFileSync(runtimeFile, 'utf8'))
 const requests = load.requests?.total || load.requests?.average * load.duration
-const counters = {}
-
-for (const line of fs.readFileSync(statFile, 'utf8').split('\n')) {
-  if (!line || line.startsWith('#')) continue
-  const fields = line.split(',')
-  const value = Number(fields[0])
-  const event = fields[2]
-  if (event && Number.isFinite(value)) counters[event] = value
-}
-
-const perRequest = Object.fromEntries(
-  Object.entries(counters).map(([event, value]) => [event, value / requests])
-)
+const perfCounters = normalizePerfCounters(parsePerfStat(fs.readFileSync(statFile, 'utf8')), requests)
+const counted = perfCounters.filter((counter) => counter.status === 'counted')
+const counters = Object.fromEntries(counted.map((counter) => [counter.event, counter.value]))
+const perRequest = Object.fromEntries(counted.map((counter) => [counter.event, counter.perOperation]))
 
 const summary = {
   parameters: {

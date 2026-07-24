@@ -113,7 +113,7 @@ if [[ "$PROFILE" == "balanced" ]]; then
     --workers "$WORKERS" \
     >"$PROFILE_DIR/training-post.json"
 
-  node "$ROOT/scripts/profile-http-raw-load.js" \
+  node "$ROOT/scripts/snapshot-header-load.js" \
     --host 127.0.0.1 \
     --port "$PORT" \
     --path /snapshot \

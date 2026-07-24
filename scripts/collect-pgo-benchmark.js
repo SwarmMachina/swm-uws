@@ -4,6 +4,9 @@ import os from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+import { relativeMetricGuard } from '@swarmmachina/benchkit/regression'
+import { metricMedians, pairedComparison } from '@swarmmachina/benchkit/statistics'
+
 if (process.argv.length !== 5) {
   throw new Error('usage: collect-pgo-benchmark.js <raw-dir> <out-dir> <candidate-binary>')
 }
@@ -43,12 +46,13 @@ const fileDescription = commandOutput('file', [candidateBinary])
 const dynamicDependencies = parseDynamicDependencies(commandOutput('ldd', [candidateBinary]))
 const upstreamVersions = readFileSync(resolve('vendor/VERSIONS.md'), 'utf8')
 const upstreamCommit = /v20\.69\.0` \/ `([0-9a-f]{40})`/.exec(upstreamVersions)?.[1]
-const swmRpsMedian = median(runs.map((run) => run.swmRps))
-const uwsRpsMedian = median(runs.map((run) => run.uwsRps))
-const swmLatencyMedian = metricMedians(runs, 'swmLatencyMs')
-const uwsLatencyMedian = metricMedians(runs, 'uwsLatencyMs')
-const swmRuntimeMedian = metricMedians(runs, 'swmRuntime')
-const uwsRuntimeMedian = metricMedians(runs, 'uwsRuntime')
+const throughputComparison = pairedComparison(runs.map((run) => ({ candidate: run.swmRps, reference: run.uwsRps })))
+const swmRpsMedian = throughputComparison.medianCandidate
+const uwsRpsMedian = throughputComparison.medianReference
+const swmLatencyMedian = metricMedians(runs.map((run) => run.swmLatencyMs))
+const uwsLatencyMedian = metricMedians(runs.map((run) => run.uwsLatencyMs))
+const swmRuntimeMedian = metricMedians(runs.map((run) => run.swmRuntime))
+const uwsRuntimeMedian = metricMedians(runs.map((run) => run.uwsRuntime))
 
 if (!upstreamCommit) {
   throw new Error('failed to read the pinned upstream release commit')
@@ -164,19 +168,6 @@ function latency(summary) {
   }
 }
 
-function metricMedians(values, key) {
-  const names = Object.keys(values[0][key])
-
-  return Object.fromEntries(names.map((name) => [name, median(values.map((value) => value[key][name]))]))
-}
-
-function median(values) {
-  const sorted = [...values].sort((left, right) => left - right)
-  const middle = Math.floor(sorted.length / 2)
-
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
-}
-
 function performanceGuard(input) {
   const thresholds = {
     maxThroughputRegressionPct: numberEnvironment('SWM_BENCH_MAX_THROUGHPUT_REGRESSION_PCT', 5),
@@ -185,40 +176,53 @@ function performanceGuard(input) {
     maxRssRegressionPct: numberEnvironment('SWM_BENCH_MAX_RSS_REGRESSION_PCT', 15),
     rssSlackMiB: numberEnvironment('SWM_BENCH_RSS_SLACK_MIB', 5)
   }
-  const failures = []
-  const minimumThroughput = input.uwsRpsMedian * (1 - thresholds.maxThroughputRegressionPct / 100)
-  const maximumP97_5 =
-    input.uwsLatencyMedian.p97_5 * (1 + thresholds.maxLatencyRegressionPct / 100) + thresholds.latencySlackMs
-  const maximumP99 =
-    input.uwsLatencyMedian.p99 * (1 + thresholds.maxLatencyRegressionPct / 100) + thresholds.latencySlackMs
-  const maximumRss =
-    input.uwsRuntimeMedian.rssBytes * (1 + thresholds.maxRssRegressionPct / 100) + thresholds.rssSlackMiB * 1024 ** 2
+  const result = relativeMetricGuard({
+    metrics: [
+      {
+        name: 'median throughput',
+        candidate: input.swmRpsMedian,
+        reference: input.uwsRpsMedian,
+        direction: 'higher',
+        maxRegressionPct: thresholds.maxThroughputRegressionPct
+      },
+      {
+        name: 'median p97.5 latency',
+        candidate: input.swmLatencyMedian.p97_5,
+        reference: input.uwsLatencyMedian.p97_5,
+        direction: 'lower',
+        maxRegressionPct: thresholds.maxLatencyRegressionPct,
+        absoluteSlack: thresholds.latencySlackMs
+      },
+      {
+        name: 'median p99 latency',
+        candidate: input.swmLatencyMedian.p99,
+        reference: input.uwsLatencyMedian.p99,
+        direction: 'lower',
+        maxRegressionPct: thresholds.maxLatencyRegressionPct,
+        absoluteSlack: thresholds.latencySlackMs
+      },
+      {
+        name: 'median RSS',
+        candidate: input.swmRuntimeMedian.rssBytes,
+        reference: input.uwsRuntimeMedian.rssBytes,
+        direction: 'lower',
+        maxRegressionPct: thresholds.maxRssRegressionPct,
+        absoluteSlack: thresholds.rssSlackMiB * 1024 ** 2
+      }
+    ]
+  })
+  const failures = [...result.failures]
 
   if (input.errors) {
-    failures.push(`request errors: ${input.errors}`)
-  }
-
-  if (input.swmRpsMedian < minimumThroughput) {
-    failures.push(`median throughput ${input.swmRpsMedian} is below ${minimumThroughput}`)
-  }
-
-  if (input.swmLatencyMedian.p97_5 > maximumP97_5) {
-    failures.push(`median p97.5 ${input.swmLatencyMedian.p97_5} ms exceeds ${maximumP97_5} ms`)
-  }
-
-  if (input.swmLatencyMedian.p99 > maximumP99) {
-    failures.push(`median p99 ${input.swmLatencyMedian.p99} ms exceeds ${maximumP99} ms`)
-  }
-
-  if (input.swmRuntimeMedian.rssBytes > maximumRss) {
-    failures.push(`median RSS ${input.swmRuntimeMedian.rssBytes} bytes exceeds ${maximumRss} bytes`)
+    failures.unshift(`request errors: ${input.errors}`)
   }
 
   return {
     status: failures.length ? 'fail' : 'pass',
     thresholds,
     errors: input.errors,
-    failures
+    failures,
+    metrics: result.rows
   }
 }
 
