@@ -108,11 +108,20 @@ const cases = {
   },
 
   async 'response-writable'() {
-    const payload = new Uint8Array(128 * 1024 * 1024)
+    const payload = new Uint8Array(1024 * 1024)
 
     let callbackCount = 0
     let abortedCount = 0
 
+    const startBackpressuredResponse = (res) => {
+      for (let write = 0; write < 256; write++) {
+        if (!res.write(payload)) {
+          return
+        }
+      }
+
+      throw new Error('failed to trigger HTTP response backpressure')
+    }
     const normalCounts = { true: 0, false: 0, close: 0 }
     const normalResolvers = {}
     const normalResults = Object.fromEntries(
@@ -135,9 +144,7 @@ const cases = {
 
           return result
         })
-        const [, done] = res.tryEnd(payload, payload.length)
-
-        assert.equal(done, false)
+        startBackpressuredResponse(res)
       })
     }
 
@@ -150,9 +157,7 @@ const cases = {
 
         return true
       })
-      const [, done] = res.tryEnd(payload, payload.length)
-
-      assert.equal(done, false)
+      startBackpressuredResponse(res)
     })
 
     app.get('/bad', (res) => {
@@ -161,9 +166,7 @@ const cases = {
         callbackCount++
         throw new Error('response writable failed')
       })
-      const [, done] = res.tryEnd(payload, payload.length)
-
-      assert.equal(done, false)
+      startBackpressuredResponse(res)
     })
     app.get('/ok', (res) => res.end('ok'))
 
