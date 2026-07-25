@@ -27,6 +27,7 @@
   "engines": {
     "node": "22.x || 24.x"
   },
+  "gypfile": false,
   "scripts": {
     "bench:server": "node scripts/bench-server.js",
     "bench:snapshot": "node scripts/benchmark-snapshot-async.js",
@@ -38,7 +39,6 @@
     "profile:http-raw:linux": "bash scripts/profile-http-raw-linux.sh",
     "check": "prettier . --check && eslint .",
     "fix": "eslint . --fix && prettier . --write",
-    "install": "node -e \"\"",
     "build:native": "node-gyp rebuild && node scripts/copy-prebuild.js",
     "build:native:pgo": "bash scripts/build-native-pgo.sh",
     "build:prebuilds": "npm run build:prebuilds:linux",
