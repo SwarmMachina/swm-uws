@@ -3,49 +3,41 @@ import os from 'node:os'
 import { isMainThread, parentPort, workerData, Worker } from 'node:worker_threads'
 import { performance } from 'node:perf_hooks'
 
+import { BoundedLatencyRecorder } from '@swarmmachina/benchkit/measurement'
+import { parseArgs } from '@swarmmachina/benchkit/orchestration'
+
 // Snapshot-specific load preserves rotating header names and insertion orders.
 const HEADER_END = Buffer.from('\r\n\r\n')
 
-function percentile(values, fraction) {
-  if (!values.length) {
-    return 0
-  }
-
-  const sorted = values.sort((a, b) => a - b)
-
-  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)]
-}
-
-function parseArgs(argv) {
-  const options = {
-    host: '127.0.0.1',
-    method: 'GET',
-    path: '/base',
-    bodySize: 0,
-    port: 3000,
-    connections: 100,
-    pipelining: 10,
-    headerVariants: 1,
-    duration: 5,
-    workers: Math.min(4, os.availableParallelism())
-  }
-
-  for (let index = 0; index < argv.length; index += 2) {
-    const name = argv[index]
-    const value = argv[index + 1]
-
-    if (!value || !name.startsWith('--')) {
-      throw new Error(`invalid argument: ${name}`)
-    }
-
-    const key = name.slice(2)
-
-    if (!(key in options)) {
-      throw new Error(`unknown option: ${name}`)
-    }
-
-    options[key] = key === 'host' || key === 'path' || key === 'method' ? value : Number(value)
-  }
+function parseCommandLine(argv) {
+  const options = parseArgs(
+    argv,
+    {
+      host: '127.0.0.1',
+      method: 'GET',
+      path: '/base',
+      bodySize: 0,
+      port: 3000,
+      connections: 100,
+      pipelining: 10,
+      headerVariants: 1,
+      duration: 5,
+      workers: Math.min(4, os.availableParallelism())
+    },
+    {
+      '--host': (out, value) => assignString(out, 'host', '--host', value),
+      '--method': (out, value) => assignString(out, 'method', '--method', value),
+      '--path': (out, value) => assignString(out, 'path', '--path', value),
+      '--bodySize': (out, value) => assignNumber(out, 'bodySize', '--bodySize', value),
+      '--port': (out, value) => assignNumber(out, 'port', '--port', value),
+      '--connections': (out, value) => assignNumber(out, 'connections', '--connections', value),
+      '--pipelining': (out, value) => assignNumber(out, 'pipelining', '--pipelining', value),
+      '--headerVariants': (out, value) => assignNumber(out, 'headerVariants', '--headerVariants', value),
+      '--duration': (out, value) => assignNumber(out, 'duration', '--duration', value),
+      '--workers': (out, value) => assignNumber(out, 'workers', '--workers', value)
+    },
+    { strict: true, offset: 2 }
+  )
 
   for (const key of ['port', 'connections', 'pipelining', 'headerVariants', 'duration', 'workers']) {
     if (!Number.isFinite(options[key]) || options[key] <= 0) {
@@ -70,6 +62,19 @@ function parseArgs(argv) {
   options.workers = Math.min(Math.floor(options.workers), Math.floor(options.connections))
 
   return options
+}
+
+function assignString(out, key, name, value) {
+  if (!value) {
+    throw new TypeError(`${name} requires a value`)
+  }
+
+  out[key] = value
+}
+
+function assignNumber(out, key, name, value) {
+  assignString(out, key, name, value)
+  out[key] = Number(value)
 }
 
 function runWorker() {
@@ -99,7 +104,7 @@ function runWorker() {
         )
       : null
   const states = new Set()
-  const latencies = []
+  const latencies = new BoundedLatencyRecorder()
 
   let connected = 0
   let startupFailed = false
@@ -146,7 +151,7 @@ function runWorker() {
 
       if (running && sentAt !== undefined && now <= stopAt) {
         requests++
-        latencies.push(now - sentAt)
+        latencies.record(now - sentAt)
       }
     }
 
@@ -237,13 +242,13 @@ function runWorker() {
         state.socket.destroy()
       }
 
-      parentPort.postMessage({ type: 'result', requests, errors, latencies })
+      parentPort.postMessage({ type: 'result', requests, errors, latencySnapshot: latencies.snapshot() })
     }, duration * 1000)
   })
 }
 
 async function runMain() {
-  const options = parseArgs(process.argv.slice(2))
+  const options = parseCommandLine(process.argv)
   const workerCount = options.workers
   const baseConnections = Math.floor(options.connections / workerCount)
   const extraConnections = options.connections % workerCount
@@ -297,7 +302,13 @@ async function runMain() {
   }
 
   const results = await resultsPromise
-  const latencies = results.flatMap((result) => result.latencies)
+  const latencies = new BoundedLatencyRecorder()
+
+  for (const result of results) {
+    latencies.merge(result.latencySnapshot)
+  }
+
+  const latency = latencies.summary()
   const requests = results.reduce((sum, result) => sum + result.requests, 0)
   const errors = results.reduce((sum, result) => sum + result.errors, 0)
   const summary = {
@@ -314,9 +325,11 @@ async function runMain() {
       average: requests / options.duration
     },
     latency: {
-      p95: percentile(latencies, 0.95),
-      p97_5: percentile(latencies, 0.975),
-      p99: percentile(latencies, 0.99)
+      p95: latency.p95Ms ?? 0,
+      p97_5: latency.p97_5Ms ?? 0,
+      p99: latency.p99Ms ?? 0,
+      dropped: latency.dropped,
+      accuracy: latency.accuracy
     },
     errors
   }

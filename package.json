@@ -60,10 +60,10 @@
     "test:v8-ws": "node test/v8-ws-smoke.js"
   },
   "devDependencies": {
-    "@swarmmachina/benchkit": "^0.2.0",
-    "@swarmmachina/standards": "^1.1.2",
+    "@swarmmachina/benchkit": "^0.3.0",
+    "@swarmmachina/standards": "^3.0.0",
     "@types/node": "24.10.1",
-    "node-gyp": "^11.0.0",
+    "node-gyp": "^13.0.1",
     "prettier": "^3.9.5",
     "typescript": "5.9.3"
   }

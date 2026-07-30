@@ -30,6 +30,7 @@ using v8::Global;
 using v8::HandleScope;
 using v8::Isolate;
 using v8::Local;
+using v8::Name;
 using v8::NewStringType;
 using v8::Null;
 using v8::Number;
@@ -82,6 +83,8 @@ struct PerContextData {
     Global<Object> responseTemplate;
     Global<Object> requestTemplate;
     Global<Object> requestHeadersTemplate;
+    Global<Object> requestSnapshotTemplate;
+    std::array<Global<String>, 5> requestSnapshotKeys;
     Global<Object> socketTemplate;
     Global<Function> appConstructor;
     ValidatedStringCache responseHeaderNameValidation;
@@ -1402,7 +1405,6 @@ void RequestSnapshot(const FunctionCallbackInfo<Value> &args) {
 
     Isolate *isolate = args.GetIsolate();
     Local<Context> context = isolate->GetCurrentContext();
-    Local<Object> snapshot = Object::New(isolate);
     auto *contextData = static_cast<PerContextData *>(
         args.Data().As<External>()->Value());
     Local<Object> headers = contextData->requestHeadersTemplate.Get(isolate)->Clone();
@@ -1418,44 +1420,46 @@ void RequestSnapshot(const FunctionCallbackInfo<Value> &args) {
         }
     }
 
-    Local<Array> params = Array::New(isolate, static_cast<int>(paramCount));
+    Local<Array> params;
+    std::vector<Local<Value>> paramValues;
+    bool paramsAreDense = true;
+    paramValues.reserve(paramCount);
     for (unsigned int index = 0; index < paramCount; index++) {
         std::string_view value = request->getParameter(static_cast<unsigned short>(index));
-        if (value.data() &&
-            !params
-                 ->Set(context, index, NewString(isolate, value))
-                 .FromMaybe(false)) {
-            return;
+        if (value.data()) paramValues.push_back(NewString(isolate, value));
+        else {
+            paramsAreDense = false;
+            paramValues.push_back(v8::Undefined(isolate));
         }
     }
 
-    if (!snapshot
-             ->CreateDataProperty(
-                 context,
-                 NewString(isolate, "method"),
-                 NewString(isolate, request->getMethod()))
-             .FromMaybe(false) ||
-        !snapshot
-             ->CreateDataProperty(
-                 context,
-                 NewString(isolate, "url"),
-                 NewString(isolate, request->getUrl()))
-             .FromMaybe(false) ||
-        !snapshot
-             ->CreateDataProperty(
-                 context,
-                 NewString(isolate, "query"),
-                 NewString(isolate, request->getQuery()))
-             .FromMaybe(false) ||
-        !snapshot
-             ->CreateDataProperty(context, NewString(isolate, "headers"), headers)
-             .FromMaybe(false) ||
-        !snapshot
-             ->CreateDataProperty(context, NewString(isolate, "params"), params)
-             .FromMaybe(false)) {
-        return;
+    if (paramsAreDense) {
+        params = Array::New(isolate, paramValues.data(), paramValues.size());
+    } else {
+        params = Array::New(isolate, static_cast<int>(paramCount));
+        for (unsigned int index = 0; index < paramCount; index++) {
+            if (!paramValues[index]->IsUndefined() &&
+                !params->Set(context, index, paramValues[index]).FromMaybe(false)) {
+                return;
+            }
+        }
     }
 
+    Local<Name> names[5];
+    for (std::size_t index = 0; index < contextData->requestSnapshotKeys.size(); index++) {
+        names[index] = contextData->requestSnapshotKeys[index].Get(isolate);
+    }
+    Local<Value> values[] = {
+        NewString(isolate, request->getMethod()),
+        NewString(isolate, request->getUrl()),
+        NewString(isolate, request->getQuery()),
+        headers,
+        params,
+    };
+    Local<Object> snapshot = contextData->requestSnapshotTemplate.Get(isolate)->Clone();
+    for (std::size_t index = 0; index < std::size(names); index++) {
+        if (!snapshot->Set(context, names[index], values[index]).FromMaybe(false)) return;
+    }
     args.GetReturnValue().Set(snapshot);
 }
 
@@ -2939,6 +2943,16 @@ PerContextData *Initialize(Isolate *isolate, Local<Object> exports) {
     context->requestHeadersTemplate.Reset(
         isolate,
         Object::New(isolate, Null(isolate), nullptr, nullptr, 0));
+    constexpr const char *snapshotKeys[] = {"method", "url", "query", "headers", "params"};
+    Local<Object> snapshotTemplate = Object::New(isolate);
+    for (std::size_t index = 0; index < std::size(snapshotKeys); index++) {
+        Local<String> key = NewString(isolate, snapshotKeys[index]);
+        context->requestSnapshotKeys[index].Reset(isolate, key);
+        snapshotTemplate
+            ->CreateDataProperty(isolate->GetCurrentContext(), key, v8::Undefined(isolate))
+            .ToChecked();
+    }
+    context->requestSnapshotTemplate.Reset(isolate, snapshotTemplate);
     context->requestTemplate.Reset(
         isolate,
         request->GetFunction(isolate->GetCurrentContext())
@@ -3074,6 +3088,8 @@ void InitializeModule(
             contextData->responseTemplate.Reset();
             contextData->requestTemplate.Reset();
             contextData->requestHeadersTemplate.Reset();
+            contextData->requestSnapshotTemplate.Reset();
+            for (auto &key : contextData->requestSnapshotKeys) key.Reset();
             contextData->socketTemplate.Reset();
             contextData->appConstructor.Reset();
             uWS::Loop::get()->free();

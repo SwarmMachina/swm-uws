@@ -137,6 +137,12 @@ Object.hasOwn(request.headers, 'authorization')
 request.headers.authorization
 ```
 
+`snapshot()` is a lifetime/convenience API, not an unconditional hot-path
+optimization. It eagerly allocates every requested string, the headers record,
+the params array, and the outer object. For synchronous handlers that only need
+selected fields, prefer the individual getters and `forEach()`, and benchmark
+the complete consumer path before enabling snapshots by default.
+
 ### Streaming data
 
 `onData` and `onDataV2` receive zero-copy `ArrayBuffer`s. They are detached
@@ -246,6 +252,10 @@ npm run test:v8-ws
 npm run test:types
 npm run test:package
 npm run deps:check:vendor
+
+# Compare equivalent owned request materialization paths
+npm run bench:snapshot -- --mode snapshot
+npm run bench:snapshot -- --mode forEach
 ```
 
 ```sh

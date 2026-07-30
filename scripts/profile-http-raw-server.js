@@ -3,6 +3,8 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { performance } from 'node:perf_hooks'
 
+import { ProcessMemorySampler } from '@swarmmachina/benchkit/measurement'
+
 const modulePath = process.env.SWM_PROFILE_BINDING || new URL('../lib/index.js', import.meta.url).href
 const metricsPath = process.env.SWM_PROFILE_METRICS
 const port = Number(process.env.SWM_PROFILE_PORT || 3000)
@@ -20,12 +22,14 @@ if (typeof createApp !== 'function') {
 }
 
 const app = createApp()
+const memorySampler = new ProcessMemorySampler()
 
 let eluStart = performance.eventLoopUtilization()
-let memoryStart = process.memoryUsage()
 let listenSocket = null
 let snapshotChecksum = 0
 let stopping = false
+
+memorySampler.start()
 
 app.get('/base', (res) => {
   res.writeHeader('content-type', 'application/json').end('{"ok":true}')
@@ -74,8 +78,9 @@ app.ws('/ws', {
 })
 
 app.get('/__swm_profile_reset', (res) => {
+  memorySampler.stop()
+  memorySampler.start()
   eluStart = performance.eventLoopUtilization()
-  memoryStart = process.memoryUsage()
   snapshotChecksum = 0
   res.end('reset')
 })
@@ -87,8 +92,12 @@ function stop() {
 
   stopping = true
 
-  const memory = process.memoryUsage()
+  const memory = memorySampler.stop()
   const elu = performance.eventLoopUtilization(eluStart)
+
+  if (!memory) {
+    throw new Error('process memory sampler was not running')
+  }
 
   fs.writeFileSync(
     metricsPath,
@@ -96,12 +105,15 @@ function stop() {
       {
         eluPct: elu.utilization * 100,
         snapshotChecksum,
-        rssBytes: memory.rss,
-        heapUsedBytes: memory.heapUsed,
-        externalBytes: memory.external,
-        rssDeltaBytes: memory.rss - memoryStart.rss,
-        heapUsedDeltaBytes: memory.heapUsed - memoryStart.heapUsed,
-        externalDeltaBytes: memory.external - memoryStart.external
+        rssBytes: memory.rss.endBytes,
+        rssPeakBytes: memory.rss.peakBytes,
+        heapUsedBytes: memory.heapUsed.endBytes,
+        heapUsedPeakBytes: memory.heapUsed.peakBytes,
+        externalBytes: memory.external.endBytes,
+        externalPeakBytes: memory.external.peakBytes,
+        rssDeltaBytes: memory.rss.deltaBytes,
+        heapUsedDeltaBytes: memory.heapUsed.deltaBytes,
+        externalDeltaBytes: memory.external.deltaBytes
       },
       null,
       2

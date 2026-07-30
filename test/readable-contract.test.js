@@ -170,6 +170,11 @@ test('native readable surface has a functional network contract', { timeout: 15_
     assert.equal(Object.getPrototypeOf(snapshot.headers), null)
     assert.equal(snapshot.headers['x-contract'], 'Value')
 
+    const sparseSnapshot = req.snapshot(2)
+
+    assert.equal(sparseSnapshot.params.length, 2)
+    assert.equal(1 in sparseSnapshot.params, false)
+
     cover('HttpResponse', 'getRemoteAddress')
     assert.ok([4, 16].includes(arrayBuffer(res.getRemoteAddress()).byteLength))
     cover('HttpResponse', 'getRemoteAddressAsText')

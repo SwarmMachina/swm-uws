@@ -119,6 +119,11 @@ export interface HttpRequest {
   /**
    * Copies request metadata for use after the native callback returns.
    *
+   * This eagerly materializes all snapshot fields. Prefer individual getters
+   * and `forEach()` on latency-sensitive synchronous paths that do not retain
+   * request data, and benchmark the complete consumer path before choosing it
+   * as a default.
+   *
    * @param paramCount Number of positional route parameters to copy.
    * @returns An owned snapshot independent of the native request lifetime.
    */
