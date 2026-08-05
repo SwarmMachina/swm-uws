@@ -353,8 +353,6 @@ jobs:
 
       - name: Run paired PGO benchmark
         run: npm run bench:compare:pgo:linux -- "$RUNNER_TEMP/pgo-benchmark"
-        env:
-          SWM_BENCH_SKIP_PERF: 1
 
       - name: Run request prefetch PGO benchmark
         run: |

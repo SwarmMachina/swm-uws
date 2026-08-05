@@ -395,6 +395,9 @@ npm run bench:report:check
 ```
 
 Defaults: concurrency 100, pipelining 10, 2-second warmup, 5-second measurement.
+Release CI also runs an independent `perf stat` measurement for cycles,
+instructions, branches, and cache events. Its dedicated Linux runner requires
+`kernel.perf_event_paranoid=1` or an equivalent scoped `CAP_PERFMON` policy.
 
 Selective request prefetch (separate target/load processes, balanced ABBA/BAAB blocks):
 
