@@ -86,13 +86,7 @@ test('raw HTTP exchange supports end and close completion without changing wire 
       request.push(chunk)
 
       if (chunk.includes(0x0a)) {
-        const wire = Buffer.concat(request)
-
-        if (wire.equals(Buffer.from('reset\n'))) {
-          socket.write('reset-response', () => socket.resetAndDestroy())
-        } else {
-          socket.end(wire)
-        }
+        socket.end(Buffer.concat(request))
       }
     })
   })
@@ -107,15 +101,33 @@ test('raw HTTP exchange supports end and close completion without changing wire 
     const closeResponse = await rawHttpExchange(address, ['close\n'], { resolveOn: 'close' })
 
     assert.equal(closeResponse.toString(), 'close\n')
-    const resetResponse = await rawHttpExchange(address, ['reset\n'], { acceptResetAfterData: true })
-
-    assert.equal(resetResponse.toString(), 'reset-response')
     assert.throws(() => rawHttpExchange(address, [], { resolveOn: 'invalid' }), /either 'end' or 'close'/)
     assert.throws(() => rawHttpExchange(address, [], { acceptResetAfterData: 'yes' }), /must be a boolean/)
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
   }
 })
+
+test(
+  'raw HTTP exchange can accept a reset after observed response data',
+  {
+    skip: process.platform === 'win32' && 'Windows may discard unread TCP payload when the peer sends an immediate RST'
+  },
+  async () => {
+    const server = createServer((socket) => {
+      socket.once('data', () => socket.write('reset-response', () => socket.resetAndDestroy()))
+    })
+    const address = await listen(server)
+
+    try {
+      const response = await rawHttpExchange(address, ['reset\n'], { acceptResetAfterData: true })
+
+      assert.equal(response.toString(), 'reset-response')
+    } finally {
+      await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+    }
+  }
+)
 
 test('PROXY v2 IPv4 builder validates and serializes addresses and ports', () => {
   const header = proxyProtocolV2Ipv4Header({
