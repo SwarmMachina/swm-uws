@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/SwarmMachina/swm-uws/security/policy
+    about: Read the private reporting instructions; do not disclose vulnerability details in an issue.

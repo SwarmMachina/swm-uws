@@ -1,0 +1,80 @@
+name: Bug report
+description: Report reproducible incorrect behavior in swm-uws
+title: 'bug: '
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not include vulnerability details here; use the private security reporting link instead.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preliminary checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+        - label: The environment and feature are covered by the documented support matrix.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: swm-uws version
+      placeholder: 0.5.7
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: 24.17.0
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+      placeholder: Ubuntu 24.04, Linux x64 glibc
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation or build method
+      options:
+        - npm package with bundled prebuild
+        - Local native build
+        - Repository checkout
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior
+      description: Describe what happens, including the complete error or stack trace when applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest runnable example and exact commands needed to reproduce the problem.
+      render: javascript
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add logs, traces, comparisons with upstream uWebSockets.js, or other useful details.

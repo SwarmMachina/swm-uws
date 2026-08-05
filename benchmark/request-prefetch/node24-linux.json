@@ -1,0 +1,1256 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-04T22:37:04.882Z",
+  "environment": {
+    "loadNode": "v24.17.0",
+    "targetNode": "v24.17.0",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": [
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz"
+    ],
+    "availableParallelism": 4
+  },
+  "parameters": {
+    "quick": true,
+    "blocks": 4,
+    "connections": 100,
+    "pipelining": 10,
+    "workers": 4,
+    "warmupMs": 1000,
+    "durationMs": 5000,
+    "serverCpu": 2,
+    "output": "/tmp/swm-uws-perf.jKSF66/artifacts/prefetch-release-node24.json"
+  },
+  "cells": [
+    {
+      "name": "20h-2s-present-never-sync",
+      "incoming": 20,
+      "selected": 2,
+      "shape": "present",
+      "baseline": "baseline-sync",
+      "candidate": "prefetch-2-never-sync"
+    },
+    {
+      "name": "20h-2s-present-materialized-sync",
+      "incoming": 20,
+      "selected": 2,
+      "shape": "present",
+      "baseline": "foreach-filter-sync",
+      "candidate": "prefetch-2-materialized-sync"
+    }
+  ],
+  "results": [
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "baseline",
+      "mode": "baseline-sync",
+      "run": 0,
+      "requestsPerSecond": 336761.31033101276,
+      "p50Ms": 2.782211097382132,
+      "p95Ms": 5.348053543787076,
+      "p99Ms": 5.675397205095195,
+      "target": {
+        "wallMs": 6157.992740000001,
+        "cpuMs": 6001.111,
+        "cpuCorePct": 97.45238835731396,
+        "cpuHostPct": 3.4804424413326416,
+        "eluPct": 97.82235112143913,
+        "eventLoopDelayMs": {
+          "p50": 21.544959,
+          "p90": 22.315007,
+          "p99": 22.904831,
+          "max": 28.868607
+        },
+        "memMB": {
+          "rssPeak": 60.984375,
+          "heapUsedPeak": 7.335624694824219,
+          "externalPeak": 1.9867267608642578,
+          "arrayBuffersPeak": 0.022004127502441406
+        },
+        "loadAvg": [2.2134426229508186, 2.498688524590164, 2.156229508196719],
+        "loadPeak": [2.27, 2.51, 2.16]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 267.7974593754468,
+        "eluPct": 64.73851058644942,
+        "rssPeakBytes": 162324480,
+        "heapUsedPeakBytes": 50551304
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-never-sync",
+      "run": 1,
+      "requestsPerSecond": 209998.08296240808,
+      "p50Ms": 4.475011964932767,
+      "p95Ms": 5.788905149197099,
+      "p99Ms": 9.128520270242701,
+      "target": {
+        "wallMs": 6096.806076999999,
+        "cpuMs": 6014.026,
+        "cpuCorePct": 98.64223864176549,
+        "cpuHostPct": 3.5229370943487672,
+        "eluPct": 98.65174076091468,
+        "eventLoopDelayMs": {
+          "p50": 22.609919,
+          "p90": 23.805951,
+          "p99": 24.182783,
+          "max": 25.444351
+        },
+        "memMB": {
+          "rssPeak": 64.265625,
+          "heapUsedPeak": 7.5022735595703125,
+          "externalPeak": 2.8335132598876953,
+          "arrayBuffersPeak": 0.022034645080566406
+        },
+        "loadAvg": [2.384333333333331, 2.526333333333334, 2.176333333333337],
+        "loadPeak": [2.41, 2.53, 2.18]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 202.0388418721976,
+        "eluPct": 48.00549045513337,
+        "rssPeakBytes": 167870464,
+        "heapUsedPeakBytes": 50479784
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-never-sync",
+      "run": 2,
+      "requestsPerSecond": 208965.41720823132,
+      "p50Ms": 4.475011964932767,
+      "p95Ms": 5.675397205095195,
+      "p99Ms": 9.128520270242701,
+      "target": {
+        "wallMs": 6106.703196,
+        "cpuMs": 6011.597,
+        "cpuCorePct": 98.44259344285314,
+        "cpuHostPct": 3.515806908673327,
+        "eluPct": 98.45068020070798,
+        "eventLoopDelayMs": {
+          "p50": 22.691839,
+          "p90": 23.805951,
+          "p99": 24.018943,
+          "max": 24.281087
+        },
+        "memMB": {
+          "rssPeak": 64.703125,
+          "heapUsedPeak": 7.516517639160156,
+          "externalPeak": 2.829744338989258,
+          "arrayBuffersPeak": 0.022034645080566406
+        },
+        "loadAvg": [2.6255000000000024, 2.5718333333333327, 2.1918333333333324],
+        "loadPeak": [2.65, 2.58, 2.2]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 200.18537730517295,
+        "eluPct": 48.26225203814335,
+        "rssPeakBytes": 168263680,
+        "heapUsedPeakBytes": 50479912
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "baseline",
+      "mode": "baseline-sync",
+      "run": 3,
+      "requestsPerSecond": 335940.7158468391,
+      "p50Ms": 2.8378553193297744,
+      "p95Ms": 5.348053543787076,
+      "p99Ms": 5.675397205095195,
+      "target": {
+        "wallMs": 6108.993232000001,
+        "cpuMs": 6001.251,
+        "cpuCorePct": 98.23633407489098,
+        "cpuHostPct": 3.5084405026746777,
+        "eluPct": 98.22279110835643,
+        "eventLoopDelayMs": {
+          "p50": 20.168703,
+          "p90": 22.315007,
+          "p99": 22.609919,
+          "max": 22.822911
+        },
+        "memMB": {
+          "rssPeak": 64.921875,
+          "heapUsedPeak": 7.4151611328125,
+          "externalPeak": 2.1890878677368164,
+          "arrayBuffersPeak": 0.022034645080566406
+        },
+        "loadAvg": [2.660819672131151, 2.5836065573770495, 2.200000000000001],
+        "loadPeak": [2.68, 2.59, 2.2]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 271.20206424631124,
+        "eluPct": 64.7716083189641,
+        "rssPeakBytes": 169631744,
+        "heapUsedPeakBytes": 50677552
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-never-sync",
+      "run": 4,
+      "requestsPerSecond": 208834.48591685493,
+      "p50Ms": 4.475011964932767,
+      "p95Ms": 5.788905149197099,
+      "p99Ms": 9.128520270242701,
+      "target": {
+        "wallMs": 6102.960031999999,
+        "cpuMs": 6013.163,
+        "cpuCorePct": 98.52863149145395,
+        "cpuHostPct": 3.518879696123356,
+        "eluPct": 98.5352318023863,
+        "eventLoopDelayMs": {
+          "p50": 22.822911,
+          "p90": 23.773183,
+          "p99": 24.068095,
+          "max": 24.510463
+        },
+        "memMB": {
+          "rssPeak": 65.578125,
+          "heapUsedPeak": 7.583366394042969,
+          "externalPeak": 2.760316848754883,
+          "arrayBuffersPeak": 0.022034645080566406
+        },
+        "loadAvg": [2.7333333333333343, 2.60066666666667, 2.2053333333333307],
+        "loadPeak": [2.78, 2.61, 2.21]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 201.4206939475086,
+        "eluPct": 49.31733329100075,
+        "rssPeakBytes": 169955328,
+        "heapUsedPeakBytes": 50383896
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "baseline",
+      "mode": "baseline-sync",
+      "run": 5,
+      "requestsPerSecond": 336636.5414226311,
+      "p50Ms": 2.782211097382132,
+      "p95Ms": 5.243189748810858,
+      "p99Ms": 5.675397205095195,
+      "target": {
+        "wallMs": 6110.916241999999,
+        "cpuMs": 6001.042,
+        "cpuCorePct": 98.202000524163,
+        "cpuHostPct": 3.5072143044343926,
+        "eluPct": 98.188626696563,
+        "eventLoopDelayMs": {
+          "p50": 20.152319,
+          "p90": 22.396927,
+          "p99": 22.659071,
+          "max": 22.790143
+        },
+        "memMB": {
+          "rssPeak": 65.796875,
+          "heapUsedPeak": 7.446258544921875,
+          "externalPeak": 1.9914178848266602,
+          "arrayBuffersPeak": 0.022034645080566406
+        },
+        "loadAvg": [3.025245901639347, 2.6604918032786924, 2.2316393442622937],
+        "loadPeak": [3.12, 2.68, 2.24]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 271.0570622073356,
+        "eluPct": 65.27428540642943,
+        "rssPeakBytes": 171065344,
+        "heapUsedPeakBytes": 50544264
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "baseline",
+      "mode": "baseline-sync",
+      "run": 6,
+      "requestsPerSecond": 336865.566560988,
+      "p50Ms": 2.8378553193297744,
+      "p95Ms": 5.039590300664031,
+      "p99Ms": 5.675397205095195,
+      "target": {
+        "wallMs": 6104.871011000003,
+        "cpuMs": 6005.756,
+        "cpuCorePct": 98.37646019348463,
+        "cpuHostPct": 3.5134450069101653,
+        "eluPct": 98.36677122210294,
+        "eventLoopDelayMs": {
+          "p50": 20.086783,
+          "p90": 22.315007,
+          "p99": 22.609919,
+          "max": 22.790143
+        },
+        "memMB": {
+          "rssPeak": 66.234375,
+          "heapUsedPeak": 7.438507080078125,
+          "externalPeak": 1.9867563247680664,
+          "arrayBuffersPeak": 0.022034645080566406
+        },
+        "loadAvg": [3.11786885245902, 2.690983606557377, 2.2409836065573754],
+        "loadPeak": [3.18, 2.71, 2.25]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 270.02626449228353,
+        "eluPct": 64.73046498698143,
+        "rssPeakBytes": 169725952,
+        "heapUsedPeakBytes": 50549856
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-never-sync",
+      "run": 7,
+      "requestsPerSecond": 207532.59510130485,
+      "p50Ms": 4.564512204231422,
+      "p95Ms": 5.788905149197099,
+      "p99Ms": 9.128520270242701,
+      "target": {
+        "wallMs": 6116.667233,
+        "cpuMs": 6016.728,
+        "cpuCorePct": 98.36611623302281,
+        "cpuHostPct": 3.513075579750814,
+        "eluPct": 98.37452102919076,
+        "eventLoopDelayMs": {
+          "p50": 22.790143,
+          "p90": 24.051711,
+          "p99": 24.264703,
+          "max": 24.330239
+        },
+        "memMB": {
+          "rssPeak": 66.453125,
+          "heapUsedPeak": 7.595817565917969,
+          "externalPeak": 2.8029651641845703,
+          "arrayBuffersPeak": 0.022034645080566406
+        },
+        "loadAvg": [3.1773333333333325, 2.7126666666666646, 2.25],
+        "loadPeak": [3.18, 2.72, 2.25]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 202.15577048388934,
+        "eluPct": 47.79413379126888,
+        "rssPeakBytes": 168660992,
+        "heapUsedPeakBytes": 50399432
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "baseline",
+      "mode": "baseline-sync",
+      "run": 8,
+      "requestsPerSecond": 334258.2304919507,
+      "p50Ms": 2.782211097382132,
+      "p95Ms": 5.455014614662817,
+      "p99Ms": 5.675397205095195,
+      "target": {
+        "wallMs": 6117.731117000003,
+        "cpuMs": 6001.775,
+        "cpuCorePct": 98.10458951558391,
+        "cpuHostPct": 3.503735339842283,
+        "eluPct": 98.09003236416969,
+        "eventLoopDelayMs": {
+          "p50": 20.545535,
+          "p90": 22.446079,
+          "p99": 22.740991,
+          "max": 23.871487
+        },
+        "memMB": {
+          "rssPeak": 67.109375,
+          "heapUsedPeak": 7.473625183105469,
+          "externalPeak": 2.1057748794555664,
+          "arrayBuffersPeak": 0.022034645080566406
+        },
+        "loadAvg": [3.160819672131151, 2.7199999999999993, 2.2545901639344277],
+        "loadPeak": [3.17, 2.72, 2.26]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 267.3241479192635,
+        "eluPct": 65.2984536410274,
+        "rssPeakBytes": 169156608,
+        "heapUsedPeakBytes": 50594600
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-never-sync",
+      "run": 9,
+      "requestsPerSecond": 209401.8647038562,
+      "p50Ms": 4.475011964932767,
+      "p95Ms": 5.675397205095195,
+      "p99Ms": 9.128520270242701,
+      "target": {
+        "wallMs": 6106.115301999998,
+        "cpuMs": 6013.95,
+        "cpuCorePct": 98.49060658959698,
+        "cpuHostPct": 3.5175216639141778,
+        "eluPct": 98.49673434338987,
+        "eventLoopDelayMs": {
+          "p50": 22.675455,
+          "p90": 23.707647,
+          "p99": 23.969791,
+          "max": 25.067519
+        },
+        "memMB": {
+          "rssPeak": 67.765625,
+          "heapUsedPeak": 7.678047180175781,
+          "externalPeak": 2.782930374145508,
+          "arrayBuffersPeak": 0.022035598754882812
+        },
+        "loadAvg": [3.3969999999999985, 2.777000000000001, 2.279000000000002],
+        "loadPeak": [3.54, 2.81, 2.29]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 199.27532374418718,
+        "eluPct": 49.92078954516218,
+        "rssPeakBytes": 169283584,
+        "heapUsedPeakBytes": 50497480
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-never-sync",
+      "run": 10,
+      "requestsPerSecond": 206083.1370437384,
+      "p50Ms": 4.475011964932767,
+      "p95Ms": 6.143232455569155,
+      "p99Ms": 9.128520270242701,
+      "target": {
+        "wallMs": 6106.470559000001,
+        "cpuMs": 6014.057,
+        "cpuCorePct": 98.48662892734662,
+        "cpuHostPct": 3.5173796045480934,
+        "eluPct": 98.49783756505583,
+        "eventLoopDelayMs": {
+          "p50": 22.757375,
+          "p90": 23.969791,
+          "p99": 24.297471,
+          "max": 24.428543
+        },
+        "memMB": {
+          "rssPeak": 68.203125,
+          "heapUsedPeak": 7.685569763183594,
+          "externalPeak": 2.837678909301758,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.5073333333333334, 2.8100000000000014, 2.290000000000002],
+        "loadPeak": [3.54, 2.81, 2.29]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 207.68552405999537,
+        "eluPct": 49.85929511545141,
+        "rssPeakBytes": 168480768,
+        "heapUsedPeakBytes": 50516552
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "baseline",
+      "mode": "baseline-sync",
+      "run": 11,
+      "requestsPerSecond": 336066.2067938608,
+      "p50Ms": 2.782211097382132,
+      "p95Ms": 5.455014614662817,
+      "p99Ms": 5.675397205095195,
+      "target": {
+        "wallMs": 6107.6412779999955,
+        "cpuMs": 5999.503,
+        "cpuCorePct": 98.22945924493773,
+        "cpuHostPct": 3.5081949730334907,
+        "eluPct": 98.20638812664433,
+        "eventLoopDelayMs": {
+          "p50": 21.626879,
+          "p90": 22.331391,
+          "p99": 22.691839,
+          "max": 23.019519
+        },
+        "memMB": {
+          "rssPeak": 68.640625,
+          "heapUsedPeak": 7.512596130371094,
+          "externalPeak": 2.490603446960449,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.3090163934426227, 2.783606557377052, 2.2918032786885276],
+        "loadPeak": [3.35, 2.8, 2.3]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 267.3129999969627,
+        "eluPct": 65.1418899895097,
+        "rssPeakBytes": 169947136,
+        "heapUsedPeakBytes": 50588032
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-never-sync",
+      "run": 12,
+      "requestsPerSecond": 209057.37089821097,
+      "p50Ms": 4.475011964932767,
+      "p95Ms": 7.638337405750881,
+      "p99Ms": 9.128520270242701,
+      "target": {
+        "wallMs": 6103.555058999991,
+        "cpuMs": 6011.572,
+        "cpuCorePct": 98.49295929813302,
+        "cpuHostPct": 3.5176056892190366,
+        "eluPct": 98.50332264894142,
+        "eventLoopDelayMs": {
+          "p50": 22.642687,
+          "p90": 23.642111,
+          "p99": 23.904255,
+          "max": 24.313855
+        },
+        "memMB": {
+          "rssPeak": 68.859375,
+          "heapUsedPeak": 7.685005187988281,
+          "externalPeak": 2.8089160919189453,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.4004918032786904, 2.814426229508197, 2.303606557377049],
+        "loadPeak": [3.49, 2.84, 2.31]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 201.3442322439311,
+        "eluPct": 48.434517458506434,
+        "rssPeakBytes": 169988096,
+        "heapUsedPeakBytes": 50426056
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "baseline",
+      "mode": "baseline-sync",
+      "run": 13,
+      "requestsPerSecond": 337464.6550287536,
+      "p50Ms": 2.782211097382132,
+      "p95Ms": 5.243189748810858,
+      "p99Ms": 5.675397205095195,
+      "target": {
+        "wallMs": 6115.237133000002,
+        "cpuMs": 6001.577,
+        "cpuCorePct": 98.14136180612438,
+        "cpuHostPct": 3.505048635933014,
+        "eluPct": 98.12100838616223,
+        "eventLoopDelayMs": {
+          "p50": 20.414463,
+          "p90": 22.364159,
+          "p99": 22.659071,
+          "max": 22.740991
+        },
+        "memMB": {
+          "rssPeak": 69.296875,
+          "heapUsedPeak": 7.556785583496094,
+          "externalPeak": 2.399355888366699,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.5116393442622953, 2.8508196721311516, 2.315409836065571],
+        "loadPeak": [3.53, 2.86, 2.32]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 272.6909053820225,
+        "eluPct": 64.6876123244795,
+        "rssPeakBytes": 169500672,
+        "heapUsedPeakBytes": 50615920
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "baseline",
+      "mode": "baseline-sync",
+      "run": 14,
+      "requestsPerSecond": 336540.597262268,
+      "p50Ms": 2.782211097382132,
+      "p95Ms": 5.348053543787076,
+      "p99Ms": 5.675397205095195,
+      "target": {
+        "wallMs": 6097.175883999997,
+        "cpuMs": 6004.878,
+        "cpuCorePct": 98.48621909953094,
+        "cpuHostPct": 3.517364967840391,
+        "eluPct": 98.47643855372218,
+        "eventLoopDelayMs": {
+          "p50": 20.365311,
+          "p90": 22.347775,
+          "p99": 22.675455,
+          "max": 22.790143
+        },
+        "memMB": {
+          "rssPeak": 69.515625,
+          "heapUsedPeak": 7.5551910400390625,
+          "externalPeak": 1.9867582321166992,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.558852459016389, 2.874426229508194, 2.3272131147540986],
+        "loadPeak": [3.57, 2.88, 2.33]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 272.351283255751,
+        "eluPct": 65.06658621067662,
+        "rssPeakBytes": 169738240,
+        "heapUsedPeakBytes": 50630712
+      }
+    },
+    {
+      "cell": "20h-2s-present-never-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-never-sync",
+      "run": 15,
+      "requestsPerSecond": 208098.82730329872,
+      "p50Ms": 4.475011964932767,
+      "p95Ms": 5.788905149197099,
+      "p99Ms": 9.128520270242701,
+      "target": {
+        "wallMs": 6108.669416999997,
+        "cpuMs": 6013.509,
+        "cpuCorePct": 98.44220712394139,
+        "cpuHostPct": 3.5157931115693355,
+        "eluPct": 98.44778243744419,
+        "eventLoopDelayMs": {
+          "p50": 22.806527,
+          "p90": 23.887871,
+          "p99": 24.264703,
+          "max": 24.559615
+        },
+        "memMB": {
+          "rssPeak": 69.953125,
+          "heapUsedPeak": 7.531005859375,
+          "externalPeak": 2.834505081176758,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.5216666666666683, 2.8799999999999977, 2.330833333333332],
+        "loadPeak": [3.57, 2.88, 2.34]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 200.9161760509293,
+        "eluPct": 48.10241521348655,
+        "rssPeakBytes": 170012672,
+        "heapUsedPeakBytes": 50372976
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "baseline",
+      "mode": "foreach-filter-sync",
+      "run": 0,
+      "requestsPerSecond": 130802.89707129307,
+      "p50Ms": 7.488566084069491,
+      "p95Ms": 7.7911041538658985,
+      "p99Ms": 14.976305075952979,
+      "target": {
+        "wallMs": 6108.624163,
+        "cpuMs": 6016.721,
+        "cpuCorePct": 98.49551780322876,
+        "cpuHostPct": 3.5176970644010273,
+        "eluPct": 98.50347117476416,
+        "eventLoopDelayMs": {
+          "p50": 22.593535,
+          "p90": 22.790143,
+          "p99": 22.986751,
+          "max": 26.591231
+        },
+        "memMB": {
+          "rssPeak": 71.578125,
+          "heapUsedPeak": 7.2310028076171875,
+          "externalPeak": 2.193850517272949,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.4474576271186477, 2.8772881355932203, 2.3372881355932225],
+        "loadPeak": [3.48, 2.88, 2.34]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 159.59711438748562,
+        "eluPct": 37.18708541964672,
+        "rssPeakBytes": 168824832,
+        "heapUsedPeakBytes": 50344208
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-materialized-sync",
+      "run": 1,
+      "requestsPerSecond": 151735.38712712948,
+      "p50Ms": 6.266097104680538,
+      "p95Ms": 6.918277524264884,
+      "p99Ms": 13.037774821898086,
+      "target": {
+        "wallMs": 6108.172187999997,
+        "cpuMs": 6017.715,
+        "cpuCorePct": 98.51907927255706,
+        "cpuHostPct": 3.5185385454484663,
+        "eluPct": 98.5253335895833,
+        "eventLoopDelayMs": {
+          "p50": 25.460735,
+          "p90": 26.034175,
+          "p99": 26.492927,
+          "max": 26.836991
+        },
+        "memMB": {
+          "rssPeak": 72.015625,
+          "heapUsedPeak": 7.885200500488281,
+          "externalPeak": 2.3086414337158203,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.3465000000000042, 2.8700000000000023, 2.3345000000000007],
+        "loadPeak": [3.36, 2.87, 2.34]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 167.41861320495528,
+        "eluPct": 37.91523629133626,
+        "rssPeakBytes": 168468480,
+        "heapUsedPeakBytes": 50433752
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-materialized-sync",
+      "run": 2,
+      "requestsPerSecond": 152047.4317557794,
+      "p50Ms": 6.266097104680538,
+      "p95Ms": 6.918277524264884,
+      "p99Ms": 12.782132178331459,
+      "target": {
+        "wallMs": 6115.312697999994,
+        "cpuMs": 6016.399,
+        "cpuCorePct": 98.38252428150824,
+        "cpuHostPct": 3.5136615814824372,
+        "eluPct": 98.39130345445798,
+        "eventLoopDelayMs": {
+          "p50": 25.362431,
+          "p90": 25.903103,
+          "p99": 26.460159,
+          "max": 26.591231
+        },
+        "memMB": {
+          "rssPeak": 72.234375,
+          "heapUsedPeak": 7.903045654296875,
+          "externalPeak": 2.3110218048095703,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.2603333333333326, 2.8636666666666697, 2.3400000000000025],
+        "loadPeak": [3.33, 2.87, 2.34]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 160.6534845956154,
+        "eluPct": 36.65140704319849,
+        "rssPeakBytes": 168579072,
+        "heapUsedPeakBytes": 50308736
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "baseline",
+      "mode": "foreach-filter-sync",
+      "run": 3,
+      "requestsPerSecond": 130125.83959914072,
+      "p50Ms": 7.488566084069491,
+      "p95Ms": 7.7911041538658985,
+      "p99Ms": 14.976305075952979,
+      "target": {
+        "wallMs": 6105.672093000001,
+        "cpuMs": 6018.035,
+        "cpuCorePct": 98.56466099611745,
+        "cpuHostPct": 3.5201664641470516,
+        "eluPct": 98.57339867953799,
+        "eventLoopDelayMs": {
+          "p50": 22.282239,
+          "p90": 22.921215,
+          "p99": 24.444927,
+          "max": 26.886143
+        },
+        "memMB": {
+          "rssPeak": 72.671875,
+          "heapUsedPeak": 7.345695495605469,
+          "externalPeak": 2.217951774597168,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.4071186440677934, 2.9006779661016924, 2.3562711864406785],
+        "loadPeak": [3.45, 2.91, 2.36]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 159.31265253882296,
+        "eluPct": 35.577472843873295,
+        "rssPeakBytes": 169000960,
+        "heapUsedPeakBytes": 50370144
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-materialized-sync",
+      "run": 4,
+      "requestsPerSecond": 152509.39477341075,
+      "p50Ms": 6.266097104680538,
+      "p95Ms": 6.918277524264884,
+      "p99Ms": 12.782132178331459,
+      "target": {
+        "wallMs": 6115.381251999992,
+        "cpuMs": 6016.248,
+        "cpuCorePct": 98.37895222039393,
+        "cpuHostPct": 3.5135340078712116,
+        "eluPct": 98.38656213531858,
+        "eventLoopDelayMs": {
+          "p50": 25.346047,
+          "p90": 25.968639,
+          "p99": 26.329087,
+          "max": 26.902527
+        },
+        "memMB": {
+          "rssPeak": 73.109375,
+          "heapUsedPeak": 7.857536315917969,
+          "externalPeak": 2.302591323852539,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.5606666666666635, 2.939499999999998, 2.369833333333335],
+        "loadPeak": [3.57, 2.94, 2.37]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 163.96210649438586,
+        "eluPct": 42.051930030982106,
+        "rssPeakBytes": 168873984,
+        "heapUsedPeakBytes": 50309344
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "baseline",
+      "mode": "foreach-filter-sync",
+      "run": 5,
+      "requestsPerSecond": 132392.93505621862,
+      "p50Ms": 7.341731454970089,
+      "p95Ms": 7.638337405750881,
+      "p99Ms": 14.682652035248017,
+      "target": {
+        "wallMs": 6101.204375000016,
+        "cpuMs": 6016.807,
+        "cpuCorePct": 98.61670959022716,
+        "cpuHostPct": 3.522025342508113,
+        "eluPct": 98.62996041154099,
+        "eventLoopDelayMs": {
+          "p50": 21.987327,
+          "p90": 22.511615,
+          "p99": 22.740991,
+          "max": 22.986751
+        },
+        "memMB": {
+          "rssPeak": 73.328125,
+          "heapUsedPeak": 7.3720245361328125,
+          "externalPeak": 1.9867277145385742,
+          "arrayBuffersPeak": 0.02200603485107422
+        },
+        "loadAvg": [3.4823333333333357, 2.936333333333335, 2.370000000000002],
+        "loadPeak": [3.53, 2.94, 2.37]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 150.77624947048693,
+        "eluPct": 34.39952456693402,
+        "rssPeakBytes": 168087552,
+        "heapUsedPeakBytes": 50173888
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "baseline",
+      "mode": "foreach-filter-sync",
+      "run": 6,
+      "requestsPerSecond": 130758.40614097542,
+      "p50Ms": 7.488566084069491,
+      "p95Ms": 7.7911041538658985,
+      "p99Ms": 14.976305075952979,
+      "target": {
+        "wallMs": 6112.214076000004,
+        "cpuMs": 6018.786,
+        "cpuCorePct": 98.47145281826998,
+        "cpuHostPct": 3.516837600652499,
+        "eluPct": 98.47873179486056,
+        "eventLoopDelayMs": {
+          "p50": 22.577151,
+          "p90": 22.790143,
+          "p99": 22.986751,
+          "max": 26.902527
+        },
+        "memMB": {
+          "rssPeak": 73.765625,
+          "heapUsedPeak": 7.345985412597656,
+          "externalPeak": 1.9867582321166992,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.383728813559325, 2.9300000000000046, 2.3754237288135567],
+        "loadPeak": [3.4, 2.93, 2.38]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 155.381242292571,
+        "eluPct": 35.76198956359725,
+        "rssPeakBytes": 168869888,
+        "heapUsedPeakBytes": 50353328
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-materialized-sync",
+      "run": 7,
+      "requestsPerSecond": 150515.6682538861,
+      "p50Ms": 6.39141904677415,
+      "p95Ms": 7.056643074750181,
+      "p99Ms": 13.037774821898086,
+      "target": {
+        "wallMs": 6107.03010600002,
+        "cpuMs": 6017.565,
+        "cpuCorePct": 98.53504724150413,
+        "cpuHostPct": 3.5191088300537188,
+        "eluPct": 98.54547294507469,
+        "eventLoopDelayMs": {
+          "p50": 25.591807,
+          "p90": 26.132479,
+          "p99": 26.509311,
+          "max": 26.640383
+        },
+        "memMB": {
+          "rssPeak": 74.203125,
+          "heapUsedPeak": 7.919105529785156,
+          "externalPeak": 2.310029983520508,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.2911666666666646, 2.9156666666666644, 2.372833333333335],
+        "loadPeak": [3.37, 2.93, 2.38]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 167.84944598233898,
+        "eluPct": 40.02859135103939,
+        "rssPeakBytes": 168144896,
+        "heapUsedPeakBytes": 50316216
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "baseline",
+      "mode": "foreach-filter-sync",
+      "run": 8,
+      "requestsPerSecond": 129922.38323979508,
+      "p50Ms": 7.638337405750881,
+      "p95Ms": 7.7911041538658985,
+      "p99Ms": 14.976305075952979,
+      "target": {
+        "wallMs": 6103.4550650000165,
+        "cpuMs": 6018.671,
+        "cpuCorePct": 98.61088409602282,
+        "cpuHostPct": 3.521817289143672,
+        "eluPct": 98.61764623832741,
+        "eventLoopDelayMs": {
+          "p50": 22.724607,
+          "p90": 22.937599,
+          "p99": 23.085055,
+          "max": 23.232511
+        },
+        "memMB": {
+          "rssPeak": 74.421875,
+          "heapUsedPeak": 7.53924560546875,
+          "externalPeak": 2.122340202331543,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.162586206896549, 2.899310344827588, 2.3700000000000014],
+        "loadPeak": [3.26, 2.91, 2.37]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 161.08855599618596,
+        "eluPct": 35.581404529602395,
+        "rssPeakBytes": 169226240,
+        "heapUsedPeakBytes": 50241192
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-materialized-sync",
+      "run": 9,
+      "requestsPerSecond": 153177.05897575393,
+      "p50Ms": 6.143232455569155,
+      "p95Ms": 6.918277524264884,
+      "p99Ms": 12.782132178331459,
+      "target": {
+        "wallMs": 6111.334505000006,
+        "cpuMs": 6015.966,
+        "cpuCorePct": 98.43948150895717,
+        "cpuHostPct": 3.515695768177042,
+        "eluPct": 98.4414403158265,
+        "eventLoopDelayMs": {
+          "p50": 25.133055,
+          "p90": 25.821183,
+          "p99": 26.378239,
+          "max": 26.525695
+        },
+        "memMB": {
+          "rssPeak": 74.859375,
+          "heapUsedPeak": 7.927070617675781,
+          "externalPeak": 2.3103275299072266,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.04491803278688, 2.877213114754098, 2.370000000000002],
+        "loadPeak": [3.07, 2.88, 2.37]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 162.8101318619028,
+        "eluPct": 40.87470112484955,
+        "rssPeakBytes": 168960000,
+        "heapUsedPeakBytes": 50410664
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-materialized-sync",
+      "run": 10,
+      "requestsPerSecond": 150473.52227192058,
+      "p50Ms": 6.39141904677415,
+      "p95Ms": 7.056643074750181,
+      "p99Ms": 13.037774821898086,
+      "target": {
+        "wallMs": 6103.469719000015,
+        "cpuMs": 6016.763,
+        "cpuCorePct": 98.57938643112952,
+        "cpuHostPct": 3.52069237254034,
+        "eluPct": 98.5866611419023,
+        "eventLoopDelayMs": {
+          "p50": 25.526271,
+          "p90": 26.050559,
+          "p99": 26.542079,
+          "max": 26.640383
+        },
+        "memMB": {
+          "rssPeak": 75.078125,
+          "heapUsedPeak": 7.9320526123046875,
+          "externalPeak": 2.3135013580322266,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [2.9799999999999978, 2.8700000000000023, 2.370000000000002],
+        "loadPeak": [2.98, 2.87, 2.37]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 172.20313914878182,
+        "eluPct": 41.166094188492444,
+        "rssPeakBytes": 168304640,
+        "heapUsedPeakBytes": 50331864
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "baseline",
+      "mode": "foreach-filter-sync",
+      "run": 11,
+      "requestsPerSecond": 132841.6592187989,
+      "p50Ms": 7.341731454970089,
+      "p95Ms": 7.638337405750881,
+      "p99Ms": 14.682652035248017,
+      "target": {
+        "wallMs": 6109.1314589999965,
+        "cpuMs": 6020.415,
+        "cpuCorePct": 98.54780569716995,
+        "cpuHostPct": 3.5195644891846407,
+        "eluPct": 98.55646098421515,
+        "eventLoopDelayMs": {
+          "p50": 22.151167,
+          "p90": 22.609919,
+          "p99": 22.953983,
+          "max": 26.427391
+        },
+        "memMB": {
+          "rssPeak": 75.515625,
+          "heapUsedPeak": 7.26953125,
+          "externalPeak": 2.099825859069824,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [2.9799999999999978, 2.8700000000000023, 2.370000000000002],
+        "loadPeak": [2.98, 2.87, 2.37]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 151.1326111565777,
+        "eluPct": 36.949224580014494,
+        "rssPeakBytes": 169885696,
+        "heapUsedPeakBytes": 50351088
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-materialized-sync",
+      "run": 12,
+      "requestsPerSecond": 149899.68775476026,
+      "p50Ms": 6.39141904677415,
+      "p95Ms": 7.488566084069491,
+      "p99Ms": 12.782132178331459,
+      "target": {
+        "wallMs": 6107.541477999999,
+        "cpuMs": 6018.277,
+        "cpuCorePct": 98.53845482144429,
+        "cpuHostPct": 3.5192305293372956,
+        "eluPct": 98.54575789020805,
+        "eventLoopDelayMs": {
+          "p50": 24.952831,
+          "p90": 25.903103,
+          "p99": 26.623999,
+          "max": 26.968063
+        },
+        "memMB": {
+          "rssPeak": 79.890625,
+          "heapUsedPeak": 9.542152404785156,
+          "externalPeak": 2.628206253051758,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [3.0519999999999956, 2.8859999999999966, 2.3779999999999983],
+        "loadPeak": [3.07, 2.89, 2.38]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 172.0155313444024,
+        "eluPct": 40.188522162149965,
+        "rssPeakBytes": 168697856,
+        "heapUsedPeakBytes": 50426544
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "baseline",
+      "mode": "foreach-filter-sync",
+      "run": 13,
+      "requestsPerSecond": 134034.98482253143,
+      "p50Ms": 7.1977759362451845,
+      "p95Ms": 7.638337405750881,
+      "p99Ms": 14.394756897301976,
+      "target": {
+        "wallMs": 6112.0695769999875,
+        "cpuMs": 6019.896,
+        "cpuCorePct": 98.4919416273198,
+        "cpuHostPct": 3.51756934383285,
+        "eluPct": 98.5026345399795,
+        "eventLoopDelayMs": {
+          "p50": 21.446655,
+          "p90": 22.183935,
+          "p99": 22.806527,
+          "max": 27.197439
+        },
+        "memMB": {
+          "rssPeak": 80.328125,
+          "heapUsedPeak": 9.940040588378906,
+          "externalPeak": 1.9867582321166992,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [2.967966101694916, 2.87677966101695, 2.3799999999999977],
+        "loadPeak": [3.07, 2.89, 2.38]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 150.73134021869416,
+        "eluPct": 36.21250959141481,
+        "rssPeakBytes": 168648704,
+        "heapUsedPeakBytes": 50378360
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "baseline",
+      "mode": "foreach-filter-sync",
+      "run": 14,
+      "requestsPerSecond": 133408.77306206245,
+      "p50Ms": 7.341731454970089,
+      "p95Ms": 7.638337405750881,
+      "p99Ms": 14.682652035248017,
+      "target": {
+        "wallMs": 6104.130810999981,
+        "cpuMs": 6017.306,
+        "cpuCorePct": 98.57760566265195,
+        "cpuHostPct": 3.520628773666141,
+        "eluPct": 98.58801914870897,
+        "eventLoopDelayMs": {
+          "p50": 21.970943,
+          "p90": 22.249471,
+          "p99": 22.691839,
+          "max": 26.542079
+        },
+        "memMB": {
+          "rssPeak": 80.546875,
+          "heapUsedPeak": 9.911651611328125,
+          "externalPeak": 1.9867582321166992,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [2.875500000000004, 2.856499999999998, 2.376500000000001],
+        "loadPeak": [2.9, 2.86, 2.38]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 155.1208296717745,
+        "eluPct": 34.81619108442697,
+        "rssPeakBytes": 169148416,
+        "heapUsedPeakBytes": 50394176
+      }
+    },
+    {
+      "cell": "20h-2s-present-materialized-sync",
+      "role": "candidate",
+      "mode": "prefetch-2-materialized-sync",
+      "run": 15,
+      "requestsPerSecond": 151909.58554638256,
+      "p50Ms": 6.266097104680538,
+      "p95Ms": 7.341731454970089,
+      "p99Ms": 12.531502135619077,
+      "target": {
+        "wallMs": 6105.770076999994,
+        "cpuMs": 6016.182,
+        "cpuCorePct": 98.53273091075823,
+        "cpuHostPct": 3.519026103955651,
+        "eluPct": 98.54687512568817,
+        "eventLoopDelayMs": {
+          "p50": 24.952831,
+          "p90": 25.919487,
+          "p99": 26.361855,
+          "max": 26.443775
+        },
+        "memMB": {
+          "rssPeak": 80.984375,
+          "heapUsedPeak": 9.7137451171875,
+          "externalPeak": 2.6252307891845703,
+          "arrayBuffersPeak": 0.02203655242919922
+        },
+        "loadAvg": [2.792666666666665, 2.839333333333336, 2.370000000000002],
+        "loadPeak": [2.83, 2.85, 2.37]
+      },
+      "loadGenerator": {
+        "cpuCorePct": 167.72762981043203,
+        "eluPct": 41.15003154733021,
+        "rssPeakBytes": 168849408,
+        "heapUsedPeakBytes": 50399416
+      }
+    }
+  ]
+}

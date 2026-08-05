@@ -1,20 +1,62 @@
 # @swarmmachina/swm-uws
 
+[![CI](https://github.com/SwarmMachina/swm-uws/actions/workflows/quality.yml/badge.svg)](https://github.com/SwarmMachina/swm-uws/actions/workflows/quality.yml)
+[![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
+[![Node.js](https://img.shields.io/badge/node-22%20%7C%2024-brightgreen.svg)](https://nodejs.org/)
+[![runtime dependencies](https://img.shields.io/badge/runtime_dependencies-0-brightgreen.svg)](#runtime-requirements)
+[![stability](https://img.shields.io/badge/stability-experimental-orange.svg)](#stability)
+
 Non-TLS HTTP and WebSocket V8 binding compatible with the standard
 uWebSockets.js `App()` API. Used by `swm-core`.
 
-- uWebSockets.js: `20.69.0`
-- [vendored revisions](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/VERSIONS.md)
-- [local patches](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/PATCHES.md)
-- [TypeScript API](lib/index.d.ts)
+The binding tracks uWebSockets.js `20.69.0`. See the
+[vendored revisions](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/VERSIONS.md),
+[local patches](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/PATCHES.md),
+and [TypeScript API](lib/index.d.ts).
 
-## Install
+## Features
 
-```sh
+- Drop-in non-TLS compatibility with the standard uWebSockets.js `App()` API.
+- Native HTTP and WebSocket transport for Node.js 22 and 24.
+- TypeScript declarations with typed standalone callback helpers.
+- Zero-copy streaming and bounded native body collection.
+- Per-App native HTTP limits, phase-specific timeouts, and transport counters.
+- Compiled selective request-header prefetch with owned lazy snapshots.
+- Batched responses and explicit capability detection.
+- Platform-specific prebuilds with no runtime dependencies.
+
+## Installation
+
+```bash
 npm install @swarmmachina/swm-uws
 ```
 
-## Example
+### Runtime requirements
+
+| Runtime | Support    |
+| ------- | ---------- |
+| Node.js | 22, 24     |
+| Linux   | x64, glibc |
+| Windows | x64        |
+| macOS   | arm64, x64 |
+
+- No runtime npm dependencies; the package ships platform-specific native prebuilds.
+
+Not supported:
+
+- TLS / `SSLApp`.
+- `H3App`.
+- permessage-deflate and non-zero compression constants.
+- SNI.
+- Alpine/musl.
+- Windows ARM64.
+- Upstream worker descriptors, declarative responses, KV and timer helpers.
+
+Terminate TLS before traffic reaches the application.
+
+## Quick Start
+
+### Basic HTTP and WebSocket Server
 
 ```js
 import uWS from '@swarmmachina/swm-uws'
@@ -85,37 +127,56 @@ import uWS from 'uwebsockets.js'
 Use an explicit package import when the application also needs unsupported
 upstream features.
 
-## Support
-
-| Runtime | Support    |
-| ------- | ---------- |
-| Node.js | 22, 24     |
-| Linux   | x64, glibc |
-| Windows | x64        |
-| macOS   | arm64, x64 |
-
-Not supported:
-
-- TLS / `SSLApp`
-- `H3App`
-- permessage-deflate and non-zero compression constants
-- SNI
-- Alpine/musl
-- Windows ARM64
-- upstream worker descriptors, declarative responses, KV and timer helpers
-
-Terminate TLS before traffic reaches the application.
-
 ## Contracts
+
+### HTTP transport policy
+
+Configure parser limits and lifecycle timeouts independently for each `App`:
+
+```js
+const native = uWS.capabilities()
+
+if (!native.httpTransportConfig || !native.requestPrefetch) {
+  throw new Error('required native fast paths are unavailable')
+}
+
+const app = uWS.App({
+  http: {
+    maxHeaderSize: 16 * 1024,
+    maxHeaderCount: 100,
+    headersTimeoutMs: 10_000,
+    keepAliveTimeoutMs: 5_000,
+    bodyIdleTimeoutMs: 10_000,
+    minBodyRateBytesPerSec: 16 * 1024,
+    responseWriteTimeoutMs: 10_000
+  }
+})
+```
+
+Values are positive finite safe integers without coercion; `0` is rejected and
+`null` is accepted only as `minBodyRateBytesPerSec: null` to disable the body
+rate check. Unknown `http` fields throw synchronously during `App()`.
+`UWS_HTTP_MAX_HEADERS_SIZE` remains a deprecated fallback when
+`maxHeaderSize` is omitted. Explicit timeouts use the coarse four-second
+uSockets wheel and never expire before the configured deadline.
+
+Header limit failures return `431` before HTTP or WebSocket handlers run.
+Read inexpensive per-App counters when exporting metrics:
+
+```js
+const stats = app.getHttpTransportStats()
+console.log(stats.headerTooLarge, stats.bodyRateViolations, stats.activeConnections)
+```
 
 ### Request lifetime
 
-Request wrappers expire when the route or upgrade callback returns. Snapshot
-data needed by asynchronous work:
+Request wrappers expire when the route or upgrade callback returns. Copy the
+individual values needed by asynchronous work while the callback is active:
 
 ```js
 app.get('/users/:id', (res, req) => {
-  const request = req.snapshot(1)
+  const parameter = req.getParameter(0)
+  const userAgent = req.getHeader('user-agent')
   let aborted = false
 
   res.onAborted(() => {
@@ -124,24 +185,41 @@ app.get('/users/:id', (res, req) => {
 
   setImmediate(() => {
     if (aborted) return
-    console.log(request.params[0], request.headers['user-agent'])
+    console.log(parameter, userAgent)
     res.end('ok')
   })
 })
 ```
 
-`request.headers` has a null prototype:
+Values returned by `req.getMethod()`, `getUrl()`, `getQuery()`, `getHeader()` and
+`getParameter()` are owned JavaScript values and may outlive the native request
+wrapper.
+
+For async consumers that need selected headers with duplicate/missing/empty
+semantics, compile a native plan once and prefetch only those fields:
 
 ```js
-Object.hasOwn(request.headers, 'authorization')
-request.headers.authorization
+const plan = new uWS.RequestPrefetchPlan({
+  headers: ['authorization', 'traceparent']
+})
+
+app.get('/*', (res, req) => {
+  const headers = req.prefetch(plan)
+  res.onAborted(() => {})
+  setImmediate(() => {
+    const authorization = headers.getHeader('authorization')
+    const traceparents = headers.getHeaderValues('traceparent')
+    res.end(JSON.stringify({ authorization, traceparents }))
+  })
+})
 ```
 
-`snapshot()` is a lifetime/convenience API, not an unconditional hot-path
-optimization. It eagerly allocates every requested string, the headers record,
-the params array, and the outer object. For synchronous handlers that only need
-selected fields, prefer the individual getters and `forEach()`, and benchmark
-the complete consumer path before enabling snapshots by default.
+Plans normalize and deduplicate names once. Snapshots remain valid after the
+request callback, preserve duplicate wire order, distinguish missing
+(`undefined`) from empty (`''`), and copy no unselected headers. Use
+`getHeaders()` for a null-prototype last-value-wins record or
+`getHeaderEntries()` for all retained pairs in wire order. `headers: []`
+captures nothing; `headers: 'all'` captures every occurrence.
 
 ### Streaming data
 
@@ -233,11 +311,24 @@ uWS.capabilities()
 // {
 //   beginWrite: true,
 //   collectBody: true,
-//   requestSnapshot: true,
+//   httpTransportConfig: true,
+//   requestPrefetch: true,
 //   responseBatch: true,
 //   requestPause: true
 // }
 ```
+
+The six flags describe binding extensions; consumers should negotiate them
+instead of assuming that every compatible binding implements the extension:
+
+| Capability            | Short use                                                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `beginWrite`          | `res.beginWrite()` selects explicit streaming before `write()`.                                                                                   |
+| `collectBody`         | `res.collectBody(maxBytes, callback)` retains one complete body.                                                                                  |
+| `httpTransportConfig` | `App({ http: { maxHeaderCount: 64 } })` applies per-App parser policy.                                                                            |
+| `requestPrefetch`     | `req.prefetch(new RequestPrefetchPlan({ headers: ['authorization'] }))` retains selected headers.                                                 |
+| `responseBatch`       | `res.endBatch(status, preparedHeaderLines, body)` combines a prepared response; consumers should keep it opt-in until their own perf gate passes. |
+| `requestPause`        | `res.pause()` / `res.resume()` controls incoming request-body delivery.                                                                           |
 
 ## Development
 
@@ -245,18 +336,17 @@ uWS.capabilities()
 npm ci
 npm run build:native
 npm run check
+npm run check:cpp
 npm test
 npm run test:v8-http
-npm run test:v8-snapshot-shapes
 npm run test:v8-ws
 npm run test:types
 npm run test:package
 npm run deps:check:vendor
-
-# Compare equivalent owned request materialization paths
-npm run bench:snapshot -- --mode snapshot
-npm run bench:snapshot -- --mode forEach
 ```
+
+`check:cpp` requires LLVM 18+ (`clang-format` and `clang-tidy`) and checks only
+first-party `src/` files. Use `npm run fix:cpp` to apply the shared C++ format.
 
 ```sh
 # Full prepublish validation
@@ -276,20 +366,17 @@ npm run build:prebuilds
 ```
 
 ```sh
-# Optional training controls (defaults: variants=24, pipelining=1, duration=4s)
-SWM_PGO_SNAPSHOT_VARIANTS=24 \
-SWM_PGO_SNAPSHOT_PIPELINING=1 \
-SWM_PGO_SNAPSHOT_DURATION=4 \
-npm run build:native:pgo
-
 # GET-only training
 SWM_PGO_PROFILE=synthetic npm run build:native:pgo
 ```
 
-Release CI runs PGO on native x86-64 hosts. The current portable balanced build
-measured +13.95% paired median raw GET throughput over the pinned upstream
-binary. See the
-[`Linux PGO report`](https://github.com/SwarmMachina/swm-uws/blob/master/benchmark/profiles/pgo-balanced-linux/report.md).
+Release CI runs PGO on native x86-64 hosts. The current working tree measured
+`+12.71%` paired raw-GET throughput over pinned upstream uWebSockets.js
+20.69.0 on isolated Node 22 Linux; all 10 paired rounds favored swm-uws, with
+lower p95, p99, and RSS. See the generated
+[`Linux PGO report`](https://github.com/SwarmMachina/swm-uws/blob/master/benchmark/profiles/pgo-balanced-linux/report.md)
+and the broader
+[`Linux refactor qualification`](benchmark/profiles/refactor-linux/report.md).
 
 ## Profiling
 
@@ -298,6 +385,8 @@ npm run profile:http-raw:linux -- /tmp/http-raw-swm
 
 # Optional
 FLAMEGRAPH_DIR=/path/to/FlameGraph
+SWM_PROFILE_FREQUENCY=199
+SWM_PROFILE_CALL_GRAPH=fp # or dwarf
 SWM_PROFILE_SKIP_PERF=1
 
 npm run bench:report
@@ -306,12 +395,51 @@ npm run bench:report:check
 
 Defaults: concurrency 100, pipelining 10, 2-second warmup, 5-second measurement.
 
+Selective request prefetch (separate target/load processes, balanced ABBA/BAAB blocks):
+
+```sh
+npm run bench:prefetch -- --quick
+```
+
+Node 22/24 reports are under
+[`benchmark/request-prefetch`](benchmark/request-prefetch/). With 20 incoming
+headers and two selected fields, materialized native prefetch measured `+15.4%`
+over `req.forEach()` plus JS filtering. Creating a snapshot that is never used
+measured `-37.9%` to `-40.6%`, so prefetch should remain opt-in per route.
+
+Native before/after comparison with throughput, p95/p99, target ELU and memory:
+
+```sh
+npm run bench:native:abba -- \
+  --baseline /path/to/before.node \
+  --candidate build/Release/swm_uws.node \
+  --blocks 6 \
+  --connections 100 \
+  --pipelining 10 \
+  --warmupMs 2000 \
+  --durationMs 10000 \
+  --workers 4 \
+  --serverCpu 2
+```
+
 ## Updating upstream
 
 ```sh
 npm run deps:update:vendor -- v20.69.0
 npm run deps:check:vendor
 ```
+
+## Stability
+
+The package is currently experimental. Public APIs and runtime behavior may
+change before a stable release; changes should be documented and covered by
+tests.
+
+## Contributing
+
+Run `npm run release:gate` before opening a pull request. Changes to vendored
+upstream code must retain the applicable licenses and be documented in
+[vendor/PATCHES.md](vendor/PATCHES.md).
 
 ## License
 

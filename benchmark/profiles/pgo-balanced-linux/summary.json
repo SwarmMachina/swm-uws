@@ -1,6 +1,6 @@
 {
   "environment": {
-    "package": "@swarmmachina/swm-uws 0.4.1",
+    "package": "@swarmmachina/swm-uws 0.6.0",
     "upstream": "uWebSockets.js 20.69.0",
     "upstreamCommit": "dddd8ffd1b2c28a66022160923ca92f064cdacb4",
     "node": "22.22.3",
@@ -16,57 +16,63 @@
     "lto": true,
     "march": null,
     "mtune": null,
-    "sha256": "e346d56347d867af73ca459588959998f9f3b8b9f69c3be274a71735340f9840",
-    "sizeBytes": 1702552,
+    "sha256": "23538d5142f3a3a4f8b6ae793bf17b3a4ebe9973f46a60e4c185aaf9465c00d4",
+    "sizeBytes": 1772664,
     "stripped": true,
     "dynamicDependencies": ["ld-linux-x86-64.so.2", "libc.so.6", "libm.so.6"]
   },
   "parameters": {
-    "runs": 6,
+    "runs": 10,
     "order": "balanced AB/BA",
     "connections": 100,
     "pipelining": 10,
     "warmupSeconds": 2,
-    "durationSeconds": 5,
+    "durationSeconds": 10,
     "serverCpu": 2,
     "clientCpus": "3-6",
     "clientWorkers": 4
   },
   "results": {
-    "swmRequestsPerSecondMedian": 493350,
-    "uwsRequestsPerSecondMedian": 430870,
-    "pairedDeltaMedianPct": 13.950500994882677,
-    "pairedDeltaIqrPct": [13.799994474476687, 18.045803335999764],
-    "positivePairedRounds": 6,
+    "swmRequestsPerSecondMedian": 495290.2289425786,
+    "uwsRequestsPerSecondMedian": 437171.6710986928,
+    "pairedDeltaMedianPct": 12.713277313733506,
+    "pairedDeltaIqrPct": [11.592916672840603, 13.97124612188819],
+    "positivePairedRounds": 10,
     "swmLatencyMsMedian": {
-      "p95": 3.668181000000004,
-      "p97_5": 3.8023745000004965,
-      "p99": 3.9941450000001595
+      "p95": 3.6350775901246157,
+      "p97_5": 3.7444898265006437,
+      "p99": 3.8957672154912695
     },
     "uwsLatencyMsMedian": {
-      "p95": 4.178139999999985,
-      "p97_5": 4.3716775000000325,
-      "p99": 4.503815500000144
+      "p95": 4.13421933521706,
+      "p97_5": 4.259072759140615,
+      "p99": 4.387266632287027
     },
     "errors": 0
   },
   "runtime": {
     "swmMedian": {
-      "eluPct": 85.42432324755262,
-      "rssBytes": 57704448,
-      "heapUsedBytes": 4982692,
-      "externalBytes": 1778479,
+      "eluPct": 98.28624758775291,
+      "rssBytes": 62488576,
+      "rssPeakBytes": 62488576,
+      "heapUsedBytes": 5989324,
+      "heapUsedPeakBytes": 6914888,
+      "externalBytes": 1801314,
+      "externalPeakBytes": 1801314,
       "rssDeltaBytes": 0,
-      "heapUsedDeltaBytes": -156924,
+      "heapUsedDeltaBytes": -231600,
       "externalDeltaBytes": 0
     },
     "uwsMedian": {
-      "eluPct": 84.01314625365302,
-      "rssBytes": 58738688,
-      "heapUsedBytes": 5319196,
-      "externalBytes": 1828176,
-      "rssDeltaBytes": 0,
-      "heapUsedDeltaBytes": 255516,
+      "eluPct": 98.27184056916161,
+      "rssBytes": 63444992,
+      "rssPeakBytes": 63444992,
+      "heapUsedBytes": 6362308,
+      "heapUsedPeakBytes": 7071696,
+      "externalBytes": 1856104,
+      "externalPeakBytes": 1856104,
+      "rssDeltaBytes": 229376,
+      "heapUsedDeltaBytes": 160852,
       "externalDeltaBytes": 0
     }
   },
@@ -80,24 +86,66 @@
       "rssSlackMiB": 5
     },
     "errors": 0,
-    "failures": []
+    "failures": [],
+    "metrics": [
+      {
+        "name": "median throughput",
+        "candidate": 495290.2289425786,
+        "reference": 437171.6710986928,
+        "direction": "higher",
+        "maxRegressionPct": 5,
+        "absoluteSlack": 0,
+        "boundary": 415313.08754375816,
+        "status": "pass"
+      },
+      {
+        "name": "median p97.5 latency",
+        "candidate": 3.7444898265006437,
+        "reference": 4.259072759140615,
+        "direction": "lower",
+        "maxRegressionPct": 20,
+        "absoluteSlack": 0.25,
+        "boundary": 5.360887310968738,
+        "status": "pass"
+      },
+      {
+        "name": "median p99 latency",
+        "candidate": 3.8957672154912695,
+        "reference": 4.387266632287027,
+        "direction": "lower",
+        "maxRegressionPct": 20,
+        "absoluteSlack": 0.25,
+        "boundary": 5.514719958744432,
+        "status": "pass"
+      },
+      {
+        "name": "median RSS",
+        "candidate": 62488576,
+        "reference": 63444992,
+        "direction": "lower",
+        "maxRegressionPct": 15,
+        "absoluteSlack": 5242880,
+        "boundary": 78204620.8,
+        "status": "pass"
+      }
+    ]
   },
   "hardwareStat": {
     "source": "independent stat-only run",
-    "requests": 2302880,
-    "requestsPerSecond": 460576,
+    "requests": 4909590,
+    "requestsPerSecond": 490739.81111244066,
     "latencyMs": {
-      "p95": 3.9432110000000193,
-      "p97_5": 4.075102999999672,
-      "p99": 4.243733999999677
+      "p95": 3.671068457353572,
+      "p97_5": 3.7444898265006437,
+      "p99": 3.9736825598010954
     },
     "perRequest": {
-      "cycles": 5934.972312061419,
-      "instructions": 8851.714256061974,
-      "branches": 1784.6645622003753,
-      "branchMisses": 8.605903911623706,
-      "cacheReferences": 79.60927099979156,
-      "cacheMisses": 0.056058934898909195
+      "cycles": 5600.654744489866,
+      "instructions": 9177.512727539366,
+      "branches": 1878.951178815339,
+      "branchMisses": 7.657237569735965,
+      "cacheReferences": 69.88712377204614,
+      "cacheMisses": 0.1314519134999053
     }
   }
 }

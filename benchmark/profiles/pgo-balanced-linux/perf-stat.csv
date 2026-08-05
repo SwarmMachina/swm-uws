@@ -1,8 +1,8 @@
-# started on Sat Jul 18 17:21:05 2026
+# started on Wed Aug  5 01:56:56 2026
 
-13667529038,,cycles,3295652275,66.00,,
-20384435726,,instructions,4119295856,83.00,1.49,insn per cycle
-4109868327,,branches,4119200116,83.00,,
-19818364,,branch-misses,4119876863,83.00,0.48,of all branches
-183330598,,cache-references,4119782456,83.00,,
-129097,,cache-misses,4120515030,83.00,0.07,of all cache refs
+27496918527,,cycles,6572331234,66.00,,
+45057824712,,instructions,8215894883,83.00,1.64,insn per cycle
+9224879918,,branches,8217431045,83.00,,
+37593897,,branch-misses,8208871000,83.00,0.41,of all branches
+343117124,,cache-references,8214831082,83.00,,
+645375,,cache-misses,8214584934,83.00,0.19,of all cache refs

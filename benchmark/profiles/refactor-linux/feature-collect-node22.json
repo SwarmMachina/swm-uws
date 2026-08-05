@@ -1,0 +1,374 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-04T22:40:25.645Z",
+  "environment": {
+    "node": "v22.22.3",
+    "platform": "linux",
+    "arch": "x64",
+    "cpu": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+    "logicalCpus": 4
+  },
+  "parameters": {
+    "baseline": "/tmp/swm-uws-perf.jKSF66/artifacts/baseline-node127.node",
+    "candidate": "/tmp/swm-uws-perf.jKSF66/artifacts/candidate-node127.node",
+    "output": "/tmp/swm-uws-perf.jKSF66/artifacts/feature-collect-node22.json",
+    "blocks": 4,
+    "method": "POST",
+    "path": "/post",
+    "bodySize": 256,
+    "connections": 100,
+    "pipelining": 10,
+    "warmupMs": 1000,
+    "durationMs": 5000,
+    "workers": 4,
+    "serverCpu": 2
+  },
+  "medians": {
+    "baseline": {
+      "requestsPerSecond": 232517.6985426533,
+      "p95Ms": 6.411480388222962,
+      "p99Ms": 8.105864761682083,
+      "eluPct": 98.22531637471488,
+      "rssPeakBytes": 67784704,
+      "heapUsedPeakBytes": 7289220
+    },
+    "candidate": {
+      "requestsPerSecond": 237655.41075305018,
+      "p95Ms": 5.84679420068907,
+      "p99Ms": 7.946926236943217,
+      "eluPct": 98.18682056096361,
+      "rssPeakBytes": 67782656,
+      "heapUsedPeakBytes": 7281392
+    },
+    "pairedThroughputDeltaPct": 1.8957755863742543,
+    "deltaPct": {
+      "requestsPerSecond": 2.2096004917468326,
+      "p95Ms": -8.807422831256662,
+      "p99Ms": -1.9607843137255054,
+      "eluPct": -0.03919133597332092,
+      "rssPeakBytes": -0.0030213305939885693
+    }
+  },
+  "results": [
+    {
+      "block": 1,
+      "position": 1,
+      "role": "baseline",
+      "requestsPerSecond": 230467.68541546262,
+      "p95Ms": 7.488566084069491,
+      "p99Ms": 8.433341698054038,
+      "runtime": {
+        "eluPct": 97.98943988623073,
+        "rssBytes": 67792896,
+        "rssPeakBytes": 67792896,
+        "heapUsedBytes": 6560488,
+        "heapUsedPeakBytes": 7367888,
+        "externalBytes": 3064242,
+        "externalPeakBytes": 3980722,
+        "rssDeltaBytes": 0,
+        "heapUsedDeltaBytes": 803320,
+        "externalDeltaBytes": 778240
+      }
+    },
+    {
+      "block": 1,
+      "position": 2,
+      "role": "candidate",
+      "requestsPerSecond": 240558.05767935188,
+      "p95Ms": 6.649632376263826,
+      "p99Ms": 7.946926236943217,
+      "runtime": {
+        "eluPct": 98.04032670990374,
+        "rssBytes": 67784704,
+        "rssPeakBytes": 67784704,
+        "heapUsedBytes": 6647528,
+        "heapUsedPeakBytes": 7280008,
+        "externalBytes": 3144882,
+        "externalPeakBytes": 3985842,
+        "rssDeltaBytes": 229376,
+        "heapUsedDeltaBytes": 960936,
+        "externalDeltaBytes": 930560
+      }
+    },
+    {
+      "block": 1,
+      "position": 3,
+      "role": "candidate",
+      "requestsPerSecond": 243437.251142787,
+      "p95Ms": 5.675397205095195,
+      "p99Ms": 7.7911041538658985,
+      "runtime": {
+        "eluPct": 98.22276985021429,
+        "rssBytes": 67784704,
+        "rssPeakBytes": 67784704,
+        "heapUsedBytes": 5895624,
+        "heapUsedPeakBytes": 7348088,
+        "externalBytes": 2415026,
+        "externalPeakBytes": 3990962,
+        "rssDeltaBytes": 229376,
+        "heapUsedDeltaBytes": 393688,
+        "externalDeltaBytes": 378880
+      }
+    },
+    {
+      "block": 1,
+      "position": 4,
+      "role": "baseline",
+      "requestsPerSecond": 230753.5078569892,
+      "p95Ms": 5.904683252181041,
+      "p99Ms": 8.105864761682083,
+      "runtime": {
+        "eluPct": 97.96102808409424,
+        "rssBytes": 67784704,
+        "rssPeakBytes": 67784704,
+        "heapUsedBytes": 6344712,
+        "heapUsedPeakBytes": 7290392,
+        "externalBytes": 2856882,
+        "externalPeakBytes": 3992754,
+        "rssDeltaBytes": 229376,
+        "heapUsedDeltaBytes": 886672,
+        "externalDeltaBytes": -1000960
+      }
+    },
+    {
+      "block": 2,
+      "position": 1,
+      "role": "candidate",
+      "requestsPerSecond": 236675.2900809813,
+      "p95Ms": 5.904683252181041,
+      "p99Ms": 7.946926236943217,
+      "runtime": {
+        "eluPct": 98.34391416694372,
+        "rssBytes": 67289088,
+        "rssPeakBytes": 67289088,
+        "heapUsedBytes": 5585568,
+        "heapUsedPeakBytes": 7298552,
+        "externalBytes": 2117810,
+        "externalPeakBytes": 3990962,
+        "rssDeltaBytes": 0,
+        "heapUsedDeltaBytes": 122280,
+        "externalDeltaBytes": -1619712
+      }
+    },
+    {
+      "block": 2,
+      "position": 2,
+      "role": "baseline",
+      "requestsPerSecond": 243675.67564893892,
+      "p95Ms": 7.056643074750181,
+      "p99Ms": 8.105864761682083,
+      "runtime": {
+        "eluPct": 98.18949840094925,
+        "rssBytes": 67788800,
+        "rssPeakBytes": 67788800,
+        "heapUsedBytes": 7036376,
+        "heapUsedPeakBytes": 7336224,
+        "externalBytes": 3526322,
+        "externalPeakBytes": 3970482,
+        "rssDeltaBytes": 0,
+        "heapUsedDeltaBytes": 542736,
+        "externalDeltaBytes": 527616
+      }
+    },
+    {
+      "block": 2,
+      "position": 3,
+      "role": "baseline",
+      "requestsPerSecond": 227886.61581350118,
+      "p95Ms": 7.638337405750881,
+      "p99Ms": 8.949529676708531,
+      "runtime": {
+        "eluPct": 98.17390317001781,
+        "rssBytes": 67792896,
+        "rssPeakBytes": 67792896,
+        "heapUsedBytes": 5815576,
+        "heapUsedPeakBytes": 7241368,
+        "externalBytes": 2344114,
+        "externalPeakBytes": 3997874,
+        "rssDeltaBytes": 229376,
+        "heapUsedDeltaBytes": -1179736,
+        "externalDeltaBytes": -1143296
+      }
+    },
+    {
+      "block": 2,
+      "position": 4,
+      "role": "candidate",
+      "requestsPerSecond": 232836.9577800657,
+      "p95Ms": 6.022776917224663,
+      "p99Ms": 8.105864761682083,
+      "runtime": {
+        "eluPct": 98.23692059053576,
+        "rssBytes": 67776512,
+        "rssPeakBytes": 67776512,
+        "heapUsedBytes": 5463904,
+        "heapUsedPeakBytes": 7282776,
+        "externalBytes": 3865522,
+        "externalPeakBytes": 3990962,
+        "rssDeltaBytes": 229376,
+        "heapUsedDeltaBytes": -226744,
+        "externalDeltaBytes": 1646080
+      }
+    },
+    {
+      "block": 3,
+      "position": 1,
+      "role": "baseline",
+      "requestsPerSecond": 237671.98060363188,
+      "p95Ms": 6.918277524264884,
+      "p99Ms": 7.946926236943217,
+      "runtime": {
+        "eluPct": 98.3092337405805,
+        "rssBytes": 67756032,
+        "rssPeakBytes": 67756032,
+        "heapUsedBytes": 6679352,
+        "heapUsedPeakBytes": 7352152,
+        "externalBytes": 3179442,
+        "externalPeakBytes": 3983282,
+        "rssDeltaBytes": 0,
+        "heapUsedDeltaBytes": 1212240,
+        "externalDeltaBytes": -743680
+      }
+    },
+    {
+      "block": 3,
+      "position": 2,
+      "role": "candidate",
+      "requestsPerSecond": 235752.38015241054,
+      "p95Ms": 7.341731454970089,
+      "p99Ms": 8.774048702655422,
+      "runtime": {
+        "eluPct": 98.20004703899214,
+        "rssBytes": 67780608,
+        "rssPeakBytes": 67780608,
+        "heapUsedBytes": 6292768,
+        "heapUsedPeakBytes": 7367256,
+        "externalBytes": 2800562,
+        "externalPeakBytes": 3967922,
+        "rssDeltaBytes": 0,
+        "heapUsedDeltaBytes": 149016,
+        "externalDeltaBytes": 143360
+      }
+    },
+    {
+      "block": 3,
+      "position": 3,
+      "role": "candidate",
+      "requestsPerSecond": 234648.60272768803,
+      "p95Ms": 5.564114906956074,
+      "p99Ms": 7.946926236943217,
+      "runtime": {
+        "eluPct": 98.14879766629687,
+        "rssBytes": 67805184,
+        "rssPeakBytes": 67805184,
+        "heapUsedBytes": 6906784,
+        "heapUsedPeakBytes": 7275360,
+        "externalBytes": 3397298,
+        "externalPeakBytes": 3996082,
+        "rssDeltaBytes": 229376,
+        "heapUsedDeltaBytes": 316768,
+        "externalDeltaBytes": 309504
+      }
+    },
+    {
+      "block": 3,
+      "position": 4,
+      "role": "baseline",
+      "requestsPerSecond": 239767.48737097188,
+      "p95Ms": 5.455014614662817,
+      "p99Ms": 7.7911041538658985,
+      "runtime": {
+        "eluPct": 98.26843561194406,
+        "rssBytes": 67784704,
+        "rssPeakBytes": 67784704,
+        "heapUsedBytes": 6459272,
+        "heapUsedPeakBytes": 7267176,
+        "externalBytes": 2966962,
+        "externalPeakBytes": 3997874,
+        "rssDeltaBytes": 229376,
+        "heapUsedDeltaBytes": -378456,
+        "externalDeltaBytes": -366848
+      }
+    },
+    {
+      "block": 4,
+      "position": 1,
+      "role": "candidate",
+      "requestsPerSecond": 238635.53142511906,
+      "p95Ms": 5.788905149197098,
+      "p99Ms": 7.7911041538658985,
+      "runtime": {
+        "eluPct": 98.16112836130023,
+        "rssBytes": 67780608,
+        "rssPeakBytes": 67780608,
+        "heapUsedBytes": 5664056,
+        "heapUsedPeakBytes": 7255896,
+        "externalBytes": 2192818,
+        "externalPeakBytes": 3983282,
+        "rssDeltaBytes": 229376,
+        "heapUsedDeltaBytes": 201608,
+        "externalDeltaBytes": -1504512
+      }
+    },
+    {
+      "block": 4,
+      "position": 2,
+      "role": "baseline",
+      "requestsPerSecond": 225573.23377754667,
+      "p95Ms": 5.904683252181041,
+      "p99Ms": 8.267982056915724,
+      "runtime": {
+        "eluPct": 98.30931431212575,
+        "rssBytes": 67469312,
+        "rssPeakBytes": 67469312,
+        "heapUsedBytes": 6068416,
+        "heapUsedPeakBytes": 7288048,
+        "externalBytes": 2589106,
+        "externalPeakBytes": 3957682,
+        "rssDeltaBytes": 229376,
+        "heapUsedDeltaBytes": 452672,
+        "externalDeltaBytes": 436736
+      }
+    },
+    {
+      "block": 4,
+      "position": 3,
+      "role": "baseline",
+      "requestsPerSecond": 234281.88922831742,
+      "p95Ms": 5.788905149197098,
+      "p99Ms": 7.946926236943217,
+      "runtime": {
+        "eluPct": 98.26113434848051,
+        "rssBytes": 67747840,
+        "rssPeakBytes": 67747840,
+        "heapUsedBytes": 5549328,
+        "heapUsedPeakBytes": 7270088,
+        "externalBytes": 2086322,
+        "externalPeakBytes": 3996082,
+        "rssDeltaBytes": 229376,
+        "heapUsedDeltaBytes": -551760,
+        "externalDeltaBytes": -535040
+      }
+    },
+    {
+      "block": 4,
+      "position": 4,
+      "role": "candidate",
+      "requestsPerSecond": 240654.38240030778,
+      "p95Ms": 5.675397205095195,
+      "p99Ms": 7.7911041538658985,
+      "runtime": {
+        "eluPct": 98.1735940829351,
+        "rssBytes": 67784704,
+        "rssPeakBytes": 67784704,
+        "heapUsedBytes": 6333064,
+        "heapUsedPeakBytes": 7256664,
+        "externalBytes": 2840242,
+        "externalPeakBytes": 3997874,
+        "rssDeltaBytes": 0,
+        "heapUsedDeltaBytes": 869632,
+        "externalDeltaBytes": -1017600
+      }
+    }
+  ]
+}
