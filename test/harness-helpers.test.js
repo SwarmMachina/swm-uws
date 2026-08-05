@@ -86,7 +86,13 @@ test('raw HTTP exchange supports end and close completion without changing wire 
       request.push(chunk)
 
       if (chunk.includes(0x0a)) {
-        socket.end(Buffer.concat(request))
+        const wire = Buffer.concat(request)
+
+        if (wire.equals(Buffer.from('reset\n'))) {
+          socket.write('reset-response', () => socket.resetAndDestroy())
+        } else {
+          socket.end(wire)
+        }
       }
     })
   })
@@ -101,7 +107,11 @@ test('raw HTTP exchange supports end and close completion without changing wire 
     const closeResponse = await rawHttpExchange(address, ['close\n'], { resolveOn: 'close' })
 
     assert.equal(closeResponse.toString(), 'close\n')
+    const resetResponse = await rawHttpExchange(address, ['reset\n'], { acceptResetAfterData: true })
+
+    assert.equal(resetResponse.toString(), 'reset-response')
     assert.throws(() => rawHttpExchange(address, [], { resolveOn: 'invalid' }), /either 'end' or 'close'/)
+    assert.throws(() => rawHttpExchange(address, [], { acceptResetAfterData: 'yes' }), /must be a boolean/)
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
   }

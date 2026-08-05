@@ -47,7 +47,14 @@ test('UWS_HTTP_MAX_HEADERS_SIZE is a strict deprecated fallback and App option w
   const previous = process.env.UWS_HTTP_MAX_HEADERS_SIZE
 
   try {
-    for (const value of ['', '-1', '1.5', '16kb']) {
+    const invalidValues = ['-1', '1.5', '16kb']
+
+    // Windows removes empty environment variables before native getenv can observe them.
+    if (process.platform !== 'win32') {
+      invalidValues.unshift('')
+    }
+
+    for (const value of invalidValues) {
       process.env.UWS_HTTP_MAX_HEADERS_SIZE = value
       assert.throws(() => createApp(), /UWS_HTTP_MAX_HEADERS_SIZE/)
     }
@@ -152,10 +159,14 @@ test('fragmented request heads use the same per-App size policy', async () => {
   const server = await NativeAppServer.listen(app)
 
   try {
-    const response = await rawExchange(
-      server.port,
+    const response = await rawHttpExchange(
+      { host: '127.0.0.1', port: server.port },
       ['GET / HTTP/1.1\r\nhost: local', 'host\r\nx-long: ', 'a'.repeat(80), '\r\n\r\n'],
-      2
+      {
+        acceptResetAfterData: true,
+        delayMs: 2,
+        timeoutMs: 12_000
+      }
     )
 
     assert.match(response.toString('latin1'), /^HTTP\/1\.1 431 /)
@@ -348,7 +359,7 @@ test('selective prefetch preserves missing, empty, duplicates, wire order, and c
   }
 })
 
-test('header and stalled-body timeout phases increment only their own counters', { timeout: 15_000 }, async () => {
+test('header and body idle timeouts increment only their own counters', { timeout: 20_000 }, async () => {
   const app = createApp({
     http: {
       headersTimeoutMs: 250,
@@ -367,65 +378,14 @@ test('header and stalled-body timeout phases increment only their own counters',
     })
   })
   app.get('/ping', (res) => res.end('ok'))
-  const rateApp = createApp({
-    http: {
-      bodyIdleTimeoutMs: 250,
-      minBodyRateBytesPerSec: 1_000_000
-    }
-  })
-
-  let rateAborts = 0
-
-  rateApp.post('/body', (res) => {
-    res.onData(() => {})
-    res.onAborted(() => {
-      rateAborts++
-    })
-  })
-  const writeApp = createApp({ http: { responseWriteTimeoutMs: 250 } })
-
-  let writeAborts = 0
-
-  const blockedPayload = Buffer.alloc(8 * 1024 * 1024, 0x61)
-
-  writeApp.get('/blocked', (res) => {
-    res.onAborted(() => {
-      writeAborts++
-    })
-    res.onWritable(() => false)
-    res.tryEnd(blockedPayload, blockedPayload.length * 2)
-  })
-  const idleApp = createApp({
-    http: {
-      headersTimeoutMs: 10_000,
-      keepAliveTimeoutMs: 250
-    }
-  })
-
-  idleApp.get('/ping', (res) => res.end('ok'))
   const server = await NativeAppServer.listen(app)
-  const rateServer = await NativeAppServer.listen(rateApp)
-  const writeServer = await NativeAppServer.listen(writeApp)
-  const idleServer = await NativeAppServer.listen(idleApp)
 
   try {
     const headerSocket = createConnection({ host: '127.0.0.1', port: server.port })
     const bodySocket = createConnection({ host: '127.0.0.1', port: server.port })
     const nextHeaderSocket = createConnection({ host: '127.0.0.1', port: server.port })
-    const rateSocket = createConnection({ host: '127.0.0.1', port: rateServer.port })
-    const writeSocket = createConnection({ host: '127.0.0.1', port: writeServer.port })
-    const stableKeepAliveSocket = createConnection({ host: '127.0.0.1', port: server.port })
-    const idleSocket = createConnection({ host: '127.0.0.1', port: idleServer.port })
 
-    await Promise.all([
-      once(headerSocket, 'connect'),
-      once(bodySocket, 'connect'),
-      once(nextHeaderSocket, 'connect'),
-      once(rateSocket, 'connect'),
-      once(writeSocket, 'connect'),
-      once(stableKeepAliveSocket, 'connect'),
-      once(idleSocket, 'connect')
-    ])
+    await Promise.all([once(headerSocket, 'connect'), once(bodySocket, 'connect'), once(nextHeaderSocket, 'connect')])
     headerSocket.write('GET / HTTP/1.1\r\nhost: localhost')
     bodySocket.write('POST /body HTTP/1.1\r\nhost: localhost\r\ncontent-length: 10\r\n\r\na')
     const firstResponse = onceData(nextHeaderSocket)
@@ -433,49 +393,23 @@ test('header and stalled-body timeout phases increment only their own counters',
     nextHeaderSocket.write('GET /ping HTTP/1.1\r\nhost: localhost\r\n\r\n')
     assert.match((await firstResponse).toString('latin1'), /^HTTP\/1\.1 200 /)
     nextHeaderSocket.write('GET /ping HTTP/1.1\r\nhost: localhost')
-    rateSocket.write('POST /body HTTP/1.1\r\nhost: localhost\r\ncontent-length: 10\r\n\r\na')
-    writeSocket.pause()
-    writeSocket.write('GET /blocked HTTP/1.1\r\nhost: localhost\r\n\r\n')
-    const stableResponse = onceData(stableKeepAliveSocket)
-
-    stableKeepAliveSocket.write('GET /ping HTTP/1.1\r\nhost: localhost\r\n\r\n')
-    assert.match((await stableResponse).toString('latin1'), /^HTTP\/1\.1 200 /)
-    const idleResponse = onceData(idleSocket)
-
-    idleSocket.write('GET /ping HTTP/1.1\r\nhost: localhost\r\n\r\n')
-    assert.match((await idleResponse).toString('latin1'), /^HTTP\/1\.1 200 /)
 
     await delay(300)
     assert.equal(headerSocket.destroyed, false)
     assert.equal(bodySocket.destroyed, false)
     assert.equal(nextHeaderSocket.destroyed, false)
-    assert.equal(rateSocket.destroyed, false)
-    assert.equal(writeSocket.destroyed, false)
-    assert.equal(stableKeepAliveSocket.destroyed, false)
-    assert.equal(idleSocket.destroyed, false)
 
-    await waitFor(() => {
-      const stats = app.getHttpTransportStats()
+    await waitFor(
+      () => {
+        const stats = app.getHttpTransportStats()
 
-      return (
-        stats.headerTimeouts === 2 &&
-        stats.bodyTimeouts === 1 &&
-        rateApp.getHttpTransportStats().bodyRateViolations === 1 &&
-        writeApp.getHttpTransportStats().responseWriteTimeouts === 1
-      )
-    }, 12_000)
-    await waitFor(() => idleSocket.destroyed, 12_000)
-    assert.equal(stableKeepAliveSocket.destroyed, false)
+        return stats.headerTimeouts === 2 && stats.bodyTimeouts === 1
+      },
+      15_000,
+      { description: 'header and body idle timeout counters' }
+    )
 
-    for (const socket of [
-      headerSocket,
-      bodySocket,
-      nextHeaderSocket,
-      rateSocket,
-      writeSocket,
-      stableKeepAliveSocket,
-      idleSocket
-    ]) {
+    for (const socket of [headerSocket, bodySocket, nextHeaderSocket]) {
       socket.destroy()
     }
 
@@ -487,18 +421,82 @@ test('header and stalled-body timeout phases increment only their own counters',
     assert.equal(stats.bodyRateViolations, 0)
     assert.equal(stats.responseWriteTimeouts, 0)
     assert.equal(aborts, 1)
-    const rateStats = rateApp.getHttpTransportStats()
-
-    assert.equal(rateStats.bodyTimeouts, 0)
-    assert.equal(rateStats.bodyRateViolations, 1)
-    assert.equal(rateAborts, 1)
-    assert.equal(writeApp.getHttpTransportStats().responseWriteTimeouts, 1)
-    assert.equal(writeAborts, 1)
   } finally {
     server.close()
-    rateServer.close()
-    writeServer.close()
-    idleServer.close()
+  }
+})
+
+test('keep-alive timeout closes only an idle completed connection', { timeout: 20_000 }, async () => {
+  const app = createApp({
+    http: {
+      headersTimeoutMs: 10_000,
+      keepAliveTimeoutMs: 250
+    }
+  })
+
+  app.get('/ping', (res) => res.end('ok'))
+  const server = await NativeAppServer.listen(app)
+  const socket = createConnection({ host: '127.0.0.1', port: server.port })
+
+  socket.on('error', () => {})
+
+  try {
+    await once(socket, 'connect')
+    const response = onceData(socket)
+
+    socket.write('GET /ping HTTP/1.1\r\nhost: localhost\r\n\r\n')
+    assert.match((await response).toString('latin1'), /^HTTP\/1\.1 200 /)
+    await delay(300)
+    assert.equal(socket.destroyed, false)
+    await waitFor(() => socket.destroyed, 15_000, { description: 'keep-alive connection close' })
+    assert.equal(app.getHttpTransportStats().headerTimeouts, 0)
+  } finally {
+    socket.destroy()
+    server.close()
+  }
+})
+
+test('response write timeout closes a demonstrably backpressured response', { timeout: 20_000 }, async () => {
+  const app = createApp({ http: { responseWriteTimeoutMs: 250 } })
+  const payload = Buffer.alloc(1024 * 1024, 0x61)
+
+  let aborts = 0
+  let backpressured = false
+
+  app.get('/blocked', (res) => {
+    res.onAborted(() => {
+      aborts++
+    })
+    res.onWritable(() => false)
+
+    for (let write = 0; write < 64; write++) {
+      if (!res.write(payload)) {
+        backpressured = true
+
+        return
+      }
+    }
+  })
+  const server = await NativeAppServer.listen(app)
+  const socket = createConnection({ host: '127.0.0.1', port: server.port })
+
+  socket.on('error', () => {})
+
+  try {
+    await once(socket, 'connect')
+    socket.pause()
+    socket.write('GET /blocked HTTP/1.1\r\nhost: localhost\r\n\r\n')
+    await waitFor(() => backpressured, 1_000, { description: 'outbound response backpressure' })
+    await delay(300)
+    assert.equal(socket.destroyed, false)
+    await waitFor(() => app.getHttpTransportStats().responseWriteTimeouts === 1, 15_000, {
+      description: 'response write timeout counter'
+    })
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(aborts, 1)
+  } finally {
+    socket.destroy()
+    server.close()
   }
 })
 

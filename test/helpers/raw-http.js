@@ -6,6 +6,7 @@ export function rawHttpExchange(
   chunks,
   {
     prefix,
+    acceptResetAfterData = false,
     delayMs = 0,
     yieldBetweenChunks = false,
     resolveOn = 'end',
@@ -16,6 +17,9 @@ export function rawHttpExchange(
   if (resolveOn !== 'end' && resolveOn !== 'close') {
     throw new TypeError("resolveOn must be either 'end' or 'close'")
   }
+  if (typeof acceptResetAfterData !== 'boolean') {
+    throw new TypeError('acceptResetAfterData must be a boolean')
+  }
 
   return new Promise((resolve, reject) => {
     const socket = createConnection(connection)
@@ -24,7 +28,15 @@ export function rawHttpExchange(
     socket.setTimeout(timeoutMs, () => socket.destroy(new Error(`${timeoutMessage} timed out`)))
     socket.on('data', (chunk) => response.push(chunk))
     socket.once(resolveOn, () => resolve(Buffer.concat(response)))
-    socket.once('error', reject)
+    socket.once('error', (error) => {
+      if (acceptResetAfterData && error.code === 'ECONNRESET' && response.length > 0) {
+        resolve(Buffer.concat(response))
+
+        return
+      }
+
+      reject(error)
+    })
     socket.once('connect', () => {
       void writeChunks(socket, chunks, { prefix, delayMs, yieldBetweenChunks }).catch((error) => {
         socket.destroy(error)
