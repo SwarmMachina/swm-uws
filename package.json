@@ -17,7 +17,6 @@
     }
   },
   "files": [
-    "CHANGELOG.md",
     "LICENSE",
     "LICENSES/",
     "lib/",
