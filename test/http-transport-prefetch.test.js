@@ -47,7 +47,7 @@ test('UWS_HTTP_MAX_HEADERS_SIZE is a strict deprecated fallback and App option w
   const previous = process.env.UWS_HTTP_MAX_HEADERS_SIZE
 
   try {
-    const invalidValues = ['-1', '1.5', '16kb']
+    const invalidValues = ['0', '-1', '1.5', '16kb', '9007199254740992', '1'.repeat(65)]
 
     // Windows removes empty environment variables before native getenv can observe them.
     if (process.platform !== 'win32') {
@@ -56,7 +56,7 @@ test('UWS_HTTP_MAX_HEADERS_SIZE is a strict deprecated fallback and App option w
 
     for (const value of invalidValues) {
       process.env.UWS_HTTP_MAX_HEADERS_SIZE = value
-      assert.throws(() => createApp(), /UWS_HTTP_MAX_HEADERS_SIZE/)
+      assert.throws(() => createApp(), /UWS_HTTP_MAX_HEADERS_SIZE/, `value ${JSON.stringify(value)}`)
     }
 
     process.env.UWS_HTTP_MAX_HEADERS_SIZE = '16384'

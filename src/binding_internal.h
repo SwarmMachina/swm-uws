@@ -3,6 +3,7 @@
 
 #include <App.h>
 #include <node.h>
+#include <uv.h>
 #include <v8.h>
 
 #include "app_state.h"
@@ -18,7 +19,6 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>

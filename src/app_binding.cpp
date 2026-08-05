@@ -514,9 +514,17 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
     }
 
     if (!optionHasMaxHeaderSize) {
-        const char *environmentValue = std::getenv("UWS_HTTP_MAX_HEADERS_SIZE");
-        if (environmentValue) {
-            const std::string_view text(environmentValue);
+        std::array<char, 64> environmentValue{};
+        std::size_t environmentValueSize = environmentValue.size();
+        const int environmentStatus = uv_os_getenv(
+            "UWS_HTTP_MAX_HEADERS_SIZE", environmentValue.data(), &environmentValueSize);
+        if (environmentStatus != UV_ENOENT) {
+            if (environmentStatus != 0) {
+                ThrowTypeError(isolate,
+                               "UWS_HTTP_MAX_HEADERS_SIZE must be a positive decimal safe integer");
+                return std::nullopt;
+            }
+            const std::string_view text(environmentValue.data(), environmentValueSize);
             std::uint64_t parsed = 0;
             const std::from_chars_result result =
                 std::from_chars(text.data(), text.data() + text.size(), parsed);
