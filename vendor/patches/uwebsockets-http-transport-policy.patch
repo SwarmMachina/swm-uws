@@ -1,0 +1,768 @@
+diff --git a/src/App.h b/src/App.h
+index 35be673..0ddbf62 100644
+--- a/src/App.h
++++ b/src/App.h
+@@ -229,8 +229,10 @@ public:
+         other.topicTree = nullptr;
+     }
+
+-    TemplatedApp(SocketContextOptions options = {}) {
+-        httpContext = HttpContext<SSL>::create(Loop::get(), options);
++    TemplatedApp(
++        SocketContextOptions options = {},
++        const HttpTransportConfig &transportConfig = {}) {
++        httpContext = HttpContext<SSL>::create(Loop::get(), options, transportConfig);
+
+         /* Register default handler for 404 (can be overridden by user) */
+         this->any("/*", [](auto *res, auto */*req*/) {
+@@ -252,6 +254,12 @@ public:
+         return !httpContext;
+     }
+
++    HttpTransportStats getHttpTransportStats() const {
++        return httpContext
++            ? httpContext->getSocketContextData()->transportStats
++            : HttpTransportStats{};
++    }
++
+     template <typename UserData>
+     struct WebSocketBehavior {
+         /* Disabled compression by default - probably a bad default */
+diff --git a/src/HttpContext.h b/src/HttpContext.h
+index 79de776..798133d 100644
+--- a/src/HttpContext.h
++++ b/src/HttpContext.h
+@@ -40,12 +40,6 @@ struct HttpContext {
+ private:
+     HttpContext() = delete;
+
+-    /* Maximum delay allowed until an HTTP connection is terminated due to outstanding request or rejected data (slow loris protection) */
+-    static const int HTTP_IDLE_TIMEOUT_S = 10;
+-
+-    /* Minimum allowed receive throughput per second (clients uploading less than 16kB/sec get dropped) */
+-    static const int HTTP_RECEIVE_THROUGHPUT_BYTES = 16 * 1024;
+-
+     us_loop_t *getLoop() {
+         return us_socket_context_loop(SSL, getSocketContext());
+     }
+@@ -70,11 +64,19 @@ private:
+     HttpContext<SSL> *init() {
+         /* Handle socket connections */
+         us_socket_context_on_open(SSL, getSocketContext(), [](us_socket_t *s, int /*is_client*/, char *ip, int ip_length) {
++            HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
++            httpContextData->transportStats.activeConnections++;
++
+             /* Any connected socket should timeout until it has a request */
+-            us_socket_timeout(SSL, s, HTTP_IDLE_TIMEOUT_S);
++            us_socket_timeout(
++                SSL,
++                s,
++                httpContextData->transportConfig.headersTimeoutSeconds);
+
+             /* Init socket ext */
+-            new (us_socket_ext(SSL, s)) HttpResponseData<SSL>;
++            new (us_socket_ext(SSL, s)) HttpResponseData<SSL>(
++                &httpContextData->transportConfig,
++                &httpContextData->transportStats);
+
+ #ifdef UWS_REMOTE_ADDRESS_USERSPACE
+             /* Copy remote address into per-socket cache for later retrieval */
+@@ -91,7 +93,6 @@ private:
+ #endif
+
+             /* Call filter */
+-            HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
+             for (auto &f : httpContextData->filterHandlers) {
+                 f((HttpResponse<SSL> *) s, 1);
+             }
+@@ -106,6 +107,9 @@ private:
+
+             /* Call filter */
+             HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
++            if (httpContextData->transportStats.activeConnections) {
++                httpContextData->transportStats.activeConnections--;
++            }
+             for (auto &f : httpContextData->filterHandlers) {
+                 f((HttpResponse<SSL> *) s, -1);
+             }
+@@ -139,6 +143,14 @@ private:
+
+             HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, s);
+
++            if (httpResponseData->transportPhase == HttpTransportPhase::KeepAliveIdle) {
++                httpResponseData->transportPhase = HttpTransportPhase::HeadersReading;
++                us_socket_timeout(
++                    SSL,
++                    s,
++                    httpResponseData->transportConfig->headersTimeoutSeconds);
++            }
++
+             /* Cork this socket */
+             ((AsyncSocket<SSL> *) s)->cork();
+
+@@ -162,6 +174,9 @@ private:
+                 /* Reset httpResponse */
+                 HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) s);
+                 httpResponseData->offset = 0;
++                httpResponseData->received_bytes_per_timeout = 0;
++                httpResponseData->receivedBodySinceTimeout = false;
++                httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
+
+                 /* Are we not ready for another request yet? Terminate the connection.
+                  * Important for denying async pipelining until, if ever, we want to suppot it.
+@@ -224,7 +239,11 @@ private:
+
+                 /* If we have not responded and we have a data handler, we need to timeout to enfore client sending the data */
+                 if (!((HttpResponse<SSL> *) s)->hasResponded() && httpResponseData->inStream) {
+-                    us_socket_timeout(SSL, (us_socket_t *) s, HTTP_IDLE_TIMEOUT_S);
++                    httpResponseData->transportPhase = HttpTransportPhase::BodyReading;
++                    us_socket_timeout(
++                        SSL,
++                        (us_socket_t *) s,
++                        httpResponseData->transportConfig->bodyIdleTimeoutSeconds);
+                 }
+
+                 /* Continue parsing */
+@@ -237,14 +256,21 @@ private:
+                     /* Todo: can this handle timeout for non-post as well? */
+                     if (maxRemainingBodyLength == 0) {
+                         /* If we just got the last chunk (or empty chunk), disable timeout */
++                        httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
+                         us_socket_timeout(SSL, (struct us_socket_t *) user, 0);
+                     } else {
+-                        /* We still have some more data coming in later, so reset timeout */
+-                        /* Only reset timeout if we got enough bytes (16kb/sec) since last time we reset here */
+-                        httpResponseData->received_bytes_per_timeout += (unsigned int) data.length();
+-                        if (httpResponseData->received_bytes_per_timeout >= HTTP_RECEIVE_THROUGHPUT_BYTES * HTTP_IDLE_TIMEOUT_S) {
+-                            us_socket_timeout(SSL, (struct us_socket_t *) user, HTTP_IDLE_TIMEOUT_S);
++                        httpResponseData->transportPhase = HttpTransportPhase::BodyReading;
++                        httpResponseData->receivedBodySinceTimeout =
++                            httpResponseData->receivedBodySinceTimeout || !data.empty();
++                        httpResponseData->received_bytes_per_timeout += data.length();
++                        if (httpResponseData->received_bytes_per_timeout >=
++                            httpResponseData->transportConfig->bodyRateResetThresholdBytes) {
++                            us_socket_timeout(
++                                SSL,
++                                (struct us_socket_t *) user,
++                                httpResponseData->transportConfig->bodyIdleTimeoutSeconds);
+                             httpResponseData->received_bytes_per_timeout = 0;
++                            httpResponseData->receivedBodySinceTimeout = false;
+                         }
+                     }
+
+@@ -275,6 +301,13 @@ private:
+
+             /* If we got fullptr that means the parser wants us to close the socket from error (same as calling the errorHandler) */
+             if (returnedSocket == FULLPTR) {
++                if (httpResponseData->GetLimitViolation() ==
++                    HttpParser::LimitViolation::HeaderCount) {
++                    httpContextData->transportStats.headerCountExceeded++;
++                } else if (httpResponseData->GetLimitViolation() ==
++                           HttpParser::LimitViolation::HeaderSize) {
++                    httpContextData->transportStats.headerTooLarge++;
++                }
+                 /* For errors, we only deliver them "at most once". We don't care if they get halfways delivered or not. */
+                 us_socket_write(SSL, s, httpErrorResponses[err].data(), (int) httpErrorResponses[err].length(), false);
+                 us_socket_shutdown(SSL, s);
+@@ -286,12 +319,19 @@ private:
+
+             /* We need to uncork in all cases, except for nullptr (closed socket, or upgraded socket) */
+             if (returnedSocket != nullptr) {
++                if (httpResponseData->HasIncompleteHeaders()) {
++                    httpResponseData->transportPhase = HttpTransportPhase::HeadersReading;
++                    us_socket_timeout(
++                        SSL,
++                        s,
++                        httpResponseData->transportConfig->headersTimeoutSeconds);
++                }
+                 /* Timeout on uncork failure */
+                 auto [written, failed] = ((AsyncSocket<SSL> *) returnedSocket)->uncork();
+                 if (failed) {
+-                    /* All Http sockets timeout by this, and this behavior match the one in HttpResponse::cork */
+-                    /* Warning: both HTTP_IDLE_TIMEOUT_S and HTTP_TIMEOUT_S are 10 seconds and both are used the same */
+-                    ((AsyncSocket<SSL> *) s)->timeout(HTTP_IDLE_TIMEOUT_S);
++                    httpResponseData->transportPhase = HttpTransportPhase::ResponseBlocked;
++                    ((AsyncSocket<SSL> *) s)->timeout(
++                        httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+                 }
+
+                 /* We need to check if we should close this socket here now */
+@@ -357,6 +397,11 @@ private:
+
+                 /* The developer indicated that their onWritable failed. */
+                 if (!success) {
++                    httpResponseData->transportPhase = HttpTransportPhase::ResponseBlocked;
++                    us_socket_timeout(
++                        SSL,
++                        s,
++                        httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+                     /* Skip testing if we can drain anything since that might perform an extra syscall */
+                     return s;
+                 }
+@@ -381,8 +426,19 @@ private:
+                 }
+             }
+
+-            /* Expect another writable event, or another request within the timeout */
+-            asyncSocket->timeout(HTTP_IDLE_TIMEOUT_S);
++            if (asyncSocket->getBufferedAmount()) {
++                httpResponseData->transportPhase = HttpTransportPhase::ResponseBlocked;
++                asyncSocket->timeout(
++                    httpResponseData->transportConfig->responseWriteTimeoutSeconds);
++            } else if ((httpResponseData->state &
++                        HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
++                httpResponseData->transportPhase = HttpTransportPhase::KeepAliveIdle;
++                asyncSocket->timeout(
++                    httpResponseData->transportConfig->keepAliveTimeoutSeconds);
++            } else {
++                httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
++                asyncSocket->timeout(0);
++            }
+
+             return s;
+         });
+@@ -399,6 +455,28 @@ private:
+         /* Handle socket timeouts, simply close them so to not confuse client with FIN */
+         us_socket_context_on_timeout(SSL, getSocketContext(), [](us_socket_t *s) {
+
++            HttpResponseData<SSL> *httpResponseData =
++                (HttpResponseData<SSL> *) us_socket_ext(SSL, s);
++            switch (httpResponseData->transportPhase) {
++                case HttpTransportPhase::HeadersReading:
++                    httpResponseData->transportStats->headerTimeouts++;
++                    break;
++                case HttpTransportPhase::BodyReading:
++                    if (httpResponseData->transportConfig->minBodyRateBytesPerSec &&
++                        httpResponseData->receivedBodySinceTimeout) {
++                        httpResponseData->transportStats->bodyRateViolations++;
++                    } else {
++                        httpResponseData->transportStats->bodyTimeouts++;
++                    }
++                    break;
++                case HttpTransportPhase::ResponseBlocked:
++                    httpResponseData->transportStats->responseWriteTimeouts++;
++                    break;
++                case HttpTransportPhase::HandlerResponse:
++                case HttpTransportPhase::KeepAliveIdle:
++                    break;
++            }
++
+             /* Force close rather than gracefully shutdown and risk confusing the client with a complete download */
+             AsyncSocket<SSL> *asyncSocket = (AsyncSocket<SSL> *) s;
+             return asyncSocket->close();
+@@ -410,7 +488,10 @@ private:
+
+ public:
+     /* Construct a new HttpContext using specified loop */
+-    static HttpContext *create(Loop *loop, us_socket_context_options_t options = {}) {
++    static HttpContext *create(
++        Loop *loop,
++        us_socket_context_options_t options = {},
++        const HttpTransportConfig &transportConfig = {}) {
+         HttpContext *httpContext;
+
+         httpContext = (HttpContext *) us_create_socket_context(SSL, (us_loop_t *) loop, sizeof(HttpContextData<SSL>), options);
+@@ -420,7 +501,7 @@ public:
+         }
+
+         /* Init socket context data */
+-        new ((HttpContextData<SSL> *) us_socket_context_ext(SSL, (us_socket_context_t *) httpContext)) HttpContextData<SSL>();
++        new ((HttpContextData<SSL> *) us_socket_context_ext(SSL, (us_socket_context_t *) httpContext)) HttpContextData<SSL>(transportConfig);
+         return httpContext->init();
+     }
+
+diff --git a/src/HttpContextData.h b/src/HttpContextData.h
+index 8337a3a..4806f2d 100644
+--- a/src/HttpContextData.h
++++ b/src/HttpContextData.h
+@@ -19,6 +19,7 @@
+ #define UWS_HTTPCONTEXTDATA_H
+
+ #include "HttpRouter.h"
++#include "HttpTransportConfig.h"
+
+ #include <vector>
+ #include "MoveOnlyFunction.h"
+@@ -32,6 +33,10 @@ struct alignas(16) HttpContextData {
+     template <bool> friend struct HttpContext;
+     template <bool> friend struct HttpResponse;
+     template <bool> friend struct TemplatedApp;
++public:
++    explicit HttpContextData(const HttpTransportConfig &transportConfig)
++        : transportConfig(transportConfig) {}
++
+ private:
+     std::vector<MoveOnlyFunction<void(HttpResponse<SSL> *, int)>> filterHandlers;
+
+@@ -53,6 +58,10 @@ private:
+     /* If we are main acceptor, distribute to these apps */
+     std::vector<void *> childApps;
+     unsigned int roundRobin = 0;
++
++    /* Transport policy and observability are cold relative to router dispatch. */
++    const HttpTransportConfig transportConfig;
++    HttpTransportStats transportStats;
+ };
+
+ }
+diff --git a/src/HttpParser.h b/src/HttpParser.h
+index f595898..ac4a1f9 100644
+--- a/src/HttpParser.h
++++ b/src/HttpParser.h
+@@ -35,6 +35,7 @@
+ #include "ProxyParser.h"
+ #include "QueryParser.h"
+ #include "HttpErrors.h"
++#include "HttpTransportConfig.h"
+
+ namespace uWS {
+
+@@ -42,17 +43,6 @@ namespace uWS {
+ static const unsigned int MINIMUM_HTTP_POST_PADDING = 32;
+ static void *FULLPTR = (void *)~(uintptr_t)0;
+
+-/* STL needs one of these */
+-template <typename T>
+-std::optional<T *> optional_ptr(T *ptr) {
+-    return ptr ? std::optional<T *>(ptr) : std::nullopt;
+-}
+-
+-static const size_t MAX_FALLBACK_SIZE = (size_t) atoi(optional_ptr(getenv("UWS_HTTP_MAX_HEADERS_SIZE")).value_or((char *) "4096"));
+-#ifndef UWS_HTTP_MAX_HEADERS_COUNT
+-#define UWS_HTTP_MAX_HEADERS_COUNT 100
+-#endif
+-
+ struct HttpRequest {
+
+     friend struct HttpParser;
+@@ -60,7 +50,7 @@ struct HttpRequest {
+ private:
+     struct Header {
+         std::string_view key, value;
+-    } headers[UWS_HTTP_MAX_HEADERS_COUNT];
++    } headers[MAX_HEADER_COUNT_CAPACITY + 2];
+     bool ancientHttp;
+     unsigned int querySeparator;
+     bool didYield;
+@@ -194,7 +184,15 @@ public:
+
+ struct HttpParser {
+
++public:
++    enum class LimitViolation : std::uint8_t {
++        None,
++        HeaderSize,
++        HeaderCount,
++    };
++
+ private:
++    const HttpTransportConfig *transportConfig_;
+     std::string fallback;
+     /* This guy really has only 30 bits since we reserve two highest bits to chunked encoding parsing state */
+     uint64_t remainingStreamingBytes = 0;
+@@ -353,7 +351,7 @@ private:
+     }
+
+     /* End is only used for the proxy parser. The HTTP parser recognizes "\ra" as invalid "\r\n" scan and breaks. */
+-    static unsigned int getHeaders(char *postPaddedBuffer, char *end, struct HttpRequest::Header *headers, void *reserved, unsigned int &err) {
++    unsigned int getHeaders(char *postPaddedBuffer, char *end, struct HttpRequest::Header *headers, void *reserved, unsigned int &err) {
+         char *preliminaryKey, *preliminaryValue, *start = postPaddedBuffer;
+
+         #ifdef UWS_WITH_PROXY
+@@ -391,7 +389,7 @@ private:
+         }
+         headers++;
+
+-        for (unsigned int i = 1; i < UWS_HTTP_MAX_HEADERS_COUNT - 1; i++) {
++        for (unsigned int i = 0; i < transportConfig_->maxHeaderCount; i++) {
+             /* Lower case and consume the field name */
+             preliminaryKey = postPaddedBuffer;
+             postPaddedBuffer = (char *) consumeFieldName(postPaddedBuffer);
+@@ -465,6 +463,7 @@ private:
+             }
+         }
+         /* We ran out of header space, too large request */
++        limitViolation_ = LimitViolation::HeaderCount;
+         err = HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE;
+         return 0;
+     }
+@@ -491,7 +490,8 @@ private:
+             consumedTotal += consumed;
+
+             /* Even if we could parse it, check for length here as well */
+-            if (consumed > MAX_FALLBACK_SIZE) {
++            if (consumed > transportConfig_->maxHeaderSize) {
++                limitViolation_ = LimitViolation::HeaderSize;
+                 return {HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE, FULLPTR};
+             }
+
+@@ -615,8 +615,21 @@ private:
+     }
+
+ public:
++    explicit HttpParser(const HttpTransportConfig *transportConfig)
++        : transportConfig_(transportConfig) {}
++
++    [[nodiscard]] LimitViolation GetLimitViolation() const {
++        return limitViolation_;
++    }
++
++    [[nodiscard]] bool HasIncompleteHeaders() const {
++        return !remainingStreamingBytes && !fallback.empty();
++    }
++
+     std::pair<unsigned int, void *> consumePostPadded(char *data, unsigned int length, void *user, void *reserved, MoveOnlyFunction<void *(void *, HttpRequest *)> &&requestHandler, MoveOnlyFunction<void *(void *, std::string_view, uint64_t)> &&dataHandler) {
+
++        limitViolation_ = LimitViolation::None;
++
+         /* This resets BloomFilter by construction, but later we also reset it again.
+          * Optimize this to skip resetting twice (req could be made global) */
+         HttpRequest req;
+@@ -659,7 +672,7 @@ public:
+         } else if (fallback.length()) {
+             unsigned int had = (unsigned int) fallback.length();
+
+-            size_t maxCopyDistance = std::min<size_t>(MAX_FALLBACK_SIZE - fallback.length(), (size_t) length);
++            size_t maxCopyDistance = std::min<size_t>(transportConfig_->maxHeaderSize - fallback.length(), (size_t) length);
+
+             /* We don't want fallback to be short string optimized, since we want to move it */
+             fallback.reserve(fallback.length() + maxCopyDistance + std::max<unsigned int>(MINIMUM_HTTP_POST_PADDING, sizeof(std::string)));
+@@ -714,7 +727,8 @@ public:
+                 }
+
+             } else {
+-                if (fallback.length() == MAX_FALLBACK_SIZE) {
++                if (fallback.length() == transportConfig_->maxHeaderSize) {
++                    limitViolation_ = LimitViolation::HeaderSize;
+                     return {HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE, FULLPTR};
+                 }
+                 return {0, user};
+@@ -730,9 +744,10 @@ public:
+         length -= consumed.first;
+
+         if (length) {
+-            if (length < MAX_FALLBACK_SIZE) {
++            if (length < transportConfig_->maxHeaderSize) {
+                 fallback.append(data, length);
+             } else {
++                limitViolation_ = LimitViolation::HeaderSize;
+                 return {HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE, FULLPTR};
+             }
+         }
+@@ -740,6 +755,9 @@ public:
+         // added for now
+         return {0, user};
+     }
++
++private:
++    LimitViolation limitViolation_ = LimitViolation::None;
+ };
+
+ }
+diff --git a/src/HttpResponse.h b/src/HttpResponse.h
+index 2ea6047..5f5af86 100644
+--- a/src/HttpResponse.h
++++ b/src/HttpResponse.h
+@@ -40,9 +40,6 @@ namespace uWS {
+ /* Some pre-defined status constants to use with writeStatus */
+ static const char *HTTP_200_OK = "200 OK";
+
+-/* The general timeout for HTTP sockets */
+-static const int HTTP_TIMEOUT_S = 10;
+-
+ template <bool SSL>
+ struct HttpResponse : public AsyncSocket<SSL> {
+     /* Solely used for getHttpResponseData() */
+@@ -53,6 +50,29 @@ private:
+         return (HttpResponseData<SSL> *) Super::getAsyncSocketData();
+     }
+
++    void armTransportTimeout(HttpTransportPhase phase, unsigned int timeoutSeconds) {
++        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
++        httpResponseData->transportPhase = phase;
++        Super::timeout(timeoutSeconds);
++    }
++
++    void armAfterResponseProgress() {
++        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
++        if (Super::getBufferedAmount()) {
++            armTransportTimeout(
++                HttpTransportPhase::ResponseBlocked,
++                httpResponseData->transportConfig->responseWriteTimeoutSeconds);
++        } else if ((httpResponseData->state &
++                    HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
++            armTransportTimeout(
++                HttpTransportPhase::KeepAliveIdle,
++                httpResponseData->transportConfig->keepAliveTimeoutSeconds);
++        } else {
++            httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
++            Super::timeout(0);
++        }
++    }
++
+     /* Write an unsigned 32-bit integer in hex */
+     void writeUnsignedHex(unsigned int value) {
+         /* Buf really only needs to be 8 long but building with
+@@ -159,7 +179,7 @@ private:
+             }
+
+             /* tryEnd can never fail when in chunked mode, since we do not have tryWrite (yet), only write */
+-            Super::timeout(HTTP_TIMEOUT_S);
++            armAfterResponseProgress();
+             return true;
+         } else {
+             /* Write content-length on first call */
+@@ -201,8 +221,10 @@ private:
+             bool success = written == data.length() && !failed;
+
+             /* If we are now at the end, start a timeout. Also start a timeout if we failed. */
+-            if (!success || httpResponseData->offset == totalSize) {
+-                Super::timeout(HTTP_TIMEOUT_S);
++            if (!success || Super::getBufferedAmount()) {
++                armTransportTimeout(
++                    HttpTransportPhase::ResponseBlocked,
++                    httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+             }
+
+             /* Remove onAborted, onWritable function and mark done if we reach the end, or if we were given no data (faked size like in HEAD response) */
+@@ -211,6 +233,7 @@ private:
+             /* Possibly need  to separate endWithoutBody and tryEnd with fake length into two separate calls with a boolean that explicitly marks isHeadOnly */
+             if (httpResponseData->offset == totalSize || !data.length()) {
+                 httpResponseData->markDone();
++                armAfterResponseProgress();
+
+                 /* We need to check if we should close this socket here now */
+                 if (!Super::isCorked()) {
+@@ -323,10 +346,16 @@ public:
+         HttpContext<SSL> *httpContext = (HttpContext<SSL> *) us_socket_context(SSL, (struct us_socket_t *) this);
+
+         /* Move any backpressure out of HttpResponse */
+-        BackPressure backpressure(std::move(((AsyncSocketData<SSL> *) getHttpResponseData())->buffer));
++        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
++        BackPressure backpressure(std::move(((AsyncSocketData<SSL> *) httpResponseData)->buffer));
++
++        /* The socket leaves the HTTP transport context when it upgrades. */
++        if (httpResponseData->transportStats->activeConnections) {
++            httpResponseData->transportStats->activeConnections--;
++        }
+
+         /* Destroy HttpResponseData */
+-        getHttpResponseData()->~HttpResponseData();
++        httpResponseData->~HttpResponseData();
+
+         /* Before we adopt and potentially change socket, check if we are corked */
+         bool wasCorked = Super::isCorked();
+@@ -383,7 +412,10 @@ public:
+
+     HttpResponse *resume() {
+         Super::resume();
+-        Super::timeout(HTTP_TIMEOUT_S);
++        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
++        armTransportTimeout(
++            HttpTransportPhase::BodyReading,
++            httpResponseData->transportConfig->bodyIdleTimeoutSeconds);
+         return this;
+     }
+
+@@ -506,8 +538,10 @@ public:
+         Super::write("\r\n", 2);
+
+         auto [written, failed] = Super::write(data.data(), (int) data.length());
+-        if (failed) {
+-            Super::timeout(HTTP_TIMEOUT_S);
++        if (failed || Super::getBufferedAmount()) {
++            armTransportTimeout(
++                HttpTransportPhase::ResponseBlocked,
++                httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+         }
+
+         /* If we did not fail the write, accept more */
+@@ -577,14 +611,14 @@ public:
+                 return static_cast<HttpResponse *>(newCorkedSocket);
+             }
+
++            HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+             if (failed) {
+-                /* For now we only have one single timeout so let's use it */
+-                /* This behavior should equal the behavior in HttpContext when uncorking fails */
+-                Super::timeout(HTTP_TIMEOUT_S);
++                armTransportTimeout(
++                    HttpTransportPhase::ResponseBlocked,
++                    httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+             }
+
+             /* If we have no backbuffer and we are connection close and we responded fully then close */
+-            HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+             if (httpResponseData->state & HttpResponseData<SSL>::HTTP_CONNECTION_CLOSE) {
+                 if ((httpResponseData->state & HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
+                     if (((AsyncSocket<SSL> *) this)->getBufferedAmount() == 0) {
+diff --git a/src/HttpResponseData.h b/src/HttpResponseData.h
+index 8760635..f309976 100644
+--- a/src/HttpResponseData.h
++++ b/src/HttpResponseData.h
+@@ -33,6 +33,13 @@ struct HttpResponseData : AsyncSocketData<SSL>, HttpParser {
+     template <bool> friend struct HttpResponse;
+     template <bool> friend struct HttpContext;
+
++    HttpResponseData(
++        const HttpTransportConfig *transportConfig,
++        HttpTransportStats *transportStats)
++        : HttpParser(transportConfig),
++          transportConfig(transportConfig),
++          transportStats(transportStats) {}
++
+     /* When we are done with a response we mark it like so */
+     void markDone() {
+         onAborted = nullptr;
+@@ -110,7 +117,13 @@ private:
+     uintmax_t offset = 0;
+
+     /* Let's track number of bytes since last timeout reset in data handler */
+-    unsigned int received_bytes_per_timeout = 0;
++    std::uint64_t received_bytes_per_timeout = 0;
++
++    bool receivedBodySinceTimeout = false;
++
++    const HttpTransportConfig *transportConfig;
++    HttpTransportStats *transportStats;
++    HttpTransportPhase transportPhase = HttpTransportPhase::HeadersReading;
+
+     /* Current state (content-length sent, status sent, write called, etc */
+     int state = 0;
+diff --git a/src/HttpTransportConfig.h b/src/HttpTransportConfig.h
+new file mode 100644
+index 0000000..7691049
+--- /dev/null
++++ b/src/HttpTransportConfig.h
+@@ -0,0 +1,131 @@
++/*
++ * SwarmMachina transport-policy extension for vendored uWebSockets.
++ *
++ * Licensed under the Apache License, Version 2.0.
++ */
++
++#ifndef UWS_HTTPTRANSPORTCONFIG_H
++#define UWS_HTTPTRANSPORTCONFIG_H
++
++#include "libusockets.h"
++
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++
++namespace uWS {
++
++inline constexpr std::size_t MAX_HEADER_COUNT_CAPACITY = 100;
++
++enum class HttpTransportPhase : std::uint8_t {
++    HeadersReading,
++    HandlerResponse,
++    BodyReading,
++    ResponseBlocked,
++    KeepAliveIdle,
++};
++
++class HttpTransportConfig final {
++public:
++    static constexpr std::size_t DEFAULT_MAX_HEADER_SIZE = 4096;
++    static constexpr std::uint16_t DEFAULT_MAX_HEADER_COUNT = 100;
++    static constexpr std::uint32_t DEFAULT_HEADERS_TIMEOUT_MS = 10000;
++    static constexpr std::uint32_t DEFAULT_KEEP_ALIVE_TIMEOUT_MS = 10000;
++    static constexpr std::uint32_t DEFAULT_BODY_IDLE_TIMEOUT_MS = 10000;
++    static constexpr std::uint32_t DEFAULT_MIN_BODY_RATE_BYTES_PER_SEC = 16384;
++    static constexpr std::uint32_t DEFAULT_RESPONSE_WRITE_TIMEOUT_MS = 10000;
++
++    HttpTransportConfig(
++        std::size_t maxHeaderSize = DEFAULT_MAX_HEADER_SIZE,
++        std::uint16_t maxHeaderCount = DEFAULT_MAX_HEADER_COUNT,
++        std::uint32_t headersTimeoutMs = DEFAULT_HEADERS_TIMEOUT_MS,
++        std::uint32_t keepAliveTimeoutMs = DEFAULT_KEEP_ALIVE_TIMEOUT_MS,
++        std::uint32_t bodyIdleTimeoutMs = DEFAULT_BODY_IDLE_TIMEOUT_MS,
++        std::optional<std::uint32_t> minBodyRateBytesPerSec =
++            DEFAULT_MIN_BODY_RATE_BYTES_PER_SEC,
++        std::uint32_t responseWriteTimeoutMs = DEFAULT_RESPONSE_WRITE_TIMEOUT_MS,
++        bool headersTimeoutExplicit = false,
++        bool keepAliveTimeoutExplicit = false,
++        bool bodyIdleTimeoutExplicit = false,
++        bool responseWriteTimeoutExplicit = false)
++        : maxHeaderSize(maxHeaderSize),
++          maxHeaderCount(maxHeaderCount),
++          headersTimeoutMs(headersTimeoutMs),
++          keepAliveTimeoutMs(keepAliveTimeoutMs),
++          bodyIdleTimeoutMs(bodyIdleTimeoutMs),
++          minBodyRateBytesPerSec(minBodyRateBytesPerSec),
++          responseWriteTimeoutMs(responseWriteTimeoutMs),
++          headersTimeoutSeconds(
++              ComputeTimeoutSeconds(headersTimeoutMs, headersTimeoutExplicit)),
++          keepAliveTimeoutSeconds(
++              ComputeTimeoutSeconds(keepAliveTimeoutMs, keepAliveTimeoutExplicit)),
++          bodyIdleTimeoutSeconds(
++              ComputeTimeoutSeconds(bodyIdleTimeoutMs, bodyIdleTimeoutExplicit)),
++          responseWriteTimeoutSeconds(
++              ComputeTimeoutSeconds(
++                  responseWriteTimeoutMs,
++                  responseWriteTimeoutExplicit)),
++          bodyRateResetThresholdBytes(
++              ComputeBodyRateResetThreshold(
++                  minBodyRateBytesPerSec,
++                  bodyIdleTimeoutMs)) {}
++
++    const std::size_t maxHeaderSize;
++    const std::uint16_t maxHeaderCount;
++    const std::uint32_t headersTimeoutMs;
++    const std::uint32_t keepAliveTimeoutMs;
++    const std::uint32_t bodyIdleTimeoutMs;
++    const std::optional<std::uint32_t> minBodyRateBytesPerSec;
++    const std::uint32_t responseWriteTimeoutMs;
++    const unsigned int headersTimeoutSeconds;
++    const unsigned int keepAliveTimeoutSeconds;
++    const unsigned int bodyIdleTimeoutSeconds;
++    const unsigned int responseWriteTimeoutSeconds;
++    const std::uint64_t bodyRateResetThresholdBytes;
++
++private:
++    [[nodiscard]] static unsigned int ComputeTimeoutSeconds(
++        std::uint32_t timeoutMs,
++        bool explicitTimeout) {
++        if (!explicitTimeout) {
++            return static_cast<unsigned int>(
++                (static_cast<std::uint64_t>(timeoutMs) + 999) / 1000);
++        }
++
++        /*
++         * uSockets uses a four-second timeout wheel. Add one complete wheel
++         * interval before rounding so a configured deadline is never shortened
++         * by the position of the next sweep. Actual expiry is therefore up to
++         * eight seconds later than the requested millisecond value.
++         */
++        const std::uint64_t requestedSeconds =
++            (static_cast<std::uint64_t>(timeoutMs) + 999) / 1000;
++        const std::uint64_t safeSeconds =
++            requestedSeconds + LIBUS_TIMEOUT_GRANULARITY;
++        return safeSeconds > UINT32_MAX
++            ? UINT32_MAX
++            : static_cast<unsigned int>(safeSeconds);
++    }
++
++    [[nodiscard]] static std::uint64_t ComputeBodyRateResetThreshold(
++        std::optional<std::uint32_t> minimumRate,
++        std::uint32_t timeoutMs) {
++        return minimumRate
++            ? (static_cast<std::uint64_t>(*minimumRate) * timeoutMs + 999) / 1000
++            : 1;
++    }
++};
++
++struct HttpTransportStats {
++    std::uint64_t activeConnections = 0;
++    std::uint64_t headerTooLarge = 0;
++    std::uint64_t headerCountExceeded = 0;
++    std::uint64_t headerTimeouts = 0;
++    std::uint64_t bodyTimeouts = 0;
++    std::uint64_t bodyRateViolations = 0;
++    std::uint64_t responseWriteTimeouts = 0;
++};
++
++}  // namespace uWS
++
++#endif  // UWS_HTTPTRANSPORTCONFIG_H

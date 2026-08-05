@@ -46,34 +46,42 @@ export type us_socket = Socket
 /** Upstream-compatible alias for {@link SocketContext}. */
 export type us_socket_context_t = SocketContext
 
-/** An owned request snapshot created by {@link HttpRequest.snapshot}. */
-export interface HttpRequestSnapshot {
-  /** Lowercase HTTP method. */
-  method: string
+/** Header set captured by a compiled {@link RequestPrefetchPlan}. */
+export type RequestHeaderSelection = 'all' | readonly string[]
 
-  /** Request URL path without the query string. */
-  url: string
+/**
+ * Compiles a reusable, immutable request-header selection.
+ *
+ * Header names are validated, normalized to lowercase, deduplicated, and tied
+ * to the current Node environment.
+ */
+export class RequestPrefetchPlan {
+  constructor(options: { headers: RequestHeaderSelection })
 
-  /** Complete query string without a leading `?`. */
-  query: string
+  readonly headerNames: readonly string[]
+}
 
-  /**
-   * Request headers copied into a null-prototype record.
-   *
-   * Use keyed access or `Object.hasOwn()` instead of inherited
-   * `Object.prototype` methods.
-   */
-  headers: Record<string, string>
+/** Owned selected-header data that remains valid after the route callback. */
+export interface RequestPrefetchSnapshot {
+  /** Returns the first wire value, or `undefined` when the header is absent. */
+  getHeader(name: string): string | undefined
 
-  /** Positional route parameters requested through `snapshot(paramCount)`. */
-  params: Array<string | undefined>
+  /** Returns every wire value in order, or `undefined` when absent. */
+  getHeaderValues(name: string): readonly string[] | undefined
+
+  /** Materializes a null-prototype record; the last wire value wins. */
+  getHeaders(): Record<string, string>
+
+  /** Returns `[lowercaseName, value, ...]` in wire order. */
+  getHeaderEntries(): readonly string[]
 }
 
 /**
  * A stack-backed HTTP request wrapper.
  *
- * The wrapper is valid only during its route or upgrade callback. Call
- * {@link snapshot} before retaining request data for asynchronous work.
+ * The wrapper is valid only during its route or upgrade callback. Values
+ * returned by individual getters are owned JavaScript values and may be
+ * retained after the callback returns.
  */
 export interface HttpRequest {
   /** Returns the lowercase request method. */
@@ -117,17 +125,11 @@ export interface HttpRequest {
   forEach(handler: (name: string, value: string) => void): void
 
   /**
-   * Copies request metadata for use after the native callback returns.
+   * Copies only the headers selected by a reusable native plan.
    *
-   * This eagerly materializes all snapshot fields. Prefer individual getters
-   * and `forEach()` on latency-sensitive synchronous paths that do not retain
-   * request data, and benchmark the complete consumer path before choosing it
-   * as a default.
-   *
-   * @param paramCount Number of positional route parameters to copy.
-   * @returns An owned snapshot independent of the native request lifetime.
+   * No method, URL, query, parameter, or remote-address data is copied.
    */
-  snapshot(paramCount?: number): HttpRequestSnapshot
+  prefetch(plan: RequestPrefetchPlan): RequestPrefetchSnapshot
 }
 
 /**
@@ -494,14 +496,45 @@ export function defineWebSocketBehavior<
   const Behavior extends WebSocketBehavior<UserData> = WebSocketBehavior<UserData>
 >(behavior: Behavior): Behavior
 
-/**
- * Reserved application construction options.
- *
- * The non-TLS binding currently ignores option fields for upstream call-shape
- * compatibility.
- */
+/** Per-application HTTP parser and lifecycle policy. */
+export interface HttpTransportOptions {
+  /** Maximum bytes in the request line and all request header fields. */
+  maxHeaderSize?: number
+
+  /** Maximum number of request header fields, excluding parser sentinel slots. */
+  maxHeaderCount?: number
+
+  /** Maximum time allowed to receive a complete request head. */
+  headersTimeoutMs?: number
+
+  /** Maximum wait for the next request on an idle HTTP keep-alive socket. */
+  keepAliveTimeoutMs?: number
+
+  /** Idle timeout while receiving a request body. */
+  bodyIdleTimeoutMs?: number
+
+  /** Minimum sustained body receive rate; `null` disables rate enforcement. */
+  minBodyRateBytesPerSec?: number | null
+
+  /** Timeout while a response remains blocked by outbound backpressure. */
+  responseWriteTimeoutMs?: number
+}
+
+/** Application construction options. Unknown top-level fields are ignored. */
 export interface AppOptions {
+  http?: HttpTransportOptions
   [key: string]: unknown
+}
+
+/** Snapshot of inexpensive per-application HTTP transport counters. */
+export interface HttpTransportStats {
+  activeConnections: number
+  headerTooLarge: number
+  headerCountExceeded: number
+  headerTimeouts: number
+  bodyTimeouts: number
+  bodyRateViolations: number
+  responseWriteTimeouts: number
 }
 
 /** Listen flags accepted by {@link AppInstance.listen}. */
@@ -572,6 +605,9 @@ export interface AppInstance {
   /** Registers a callback for HTTP connection-count changes. */
   filter(handler: (res: HttpResponse, count: number) => void): this
 
+  /** Returns a snapshot of this application's native HTTP transport counters. */
+  getHttpTransportStats(): HttpTransportStats
+
   /** Idempotently closes listeners and active application contexts. */
   close(): this
 }
@@ -604,7 +640,8 @@ export function version(): string
 export interface Capabilities {
   readonly beginWrite: true
   readonly collectBody: true
-  readonly requestSnapshot: true
+  readonly httpTransportConfig: true
+  readonly requestPrefetch: true
   readonly responseBatch: true
   readonly requestPause: true
 }
@@ -617,6 +654,7 @@ declare const api: {
   readonly capabilities: typeof capabilities
   readonly createApp: typeof createApp
   readonly App: typeof App
+  readonly RequestPrefetchPlan: typeof RequestPrefetchPlan
   readonly us_listen_socket_close: typeof us_listen_socket_close
   readonly us_socket_local_port: typeof us_socket_local_port
   readonly LIBUS_LISTEN_EXCLUSIVE_PORT: typeof LIBUS_LISTEN_EXCLUSIVE_PORT

@@ -40,12 +40,6 @@ struct HttpContext {
 private:
     HttpContext() = delete;
 
-    /* Maximum delay allowed until an HTTP connection is terminated due to outstanding request or rejected data (slow loris protection) */
-    static const int HTTP_IDLE_TIMEOUT_S = 10;
-
-    /* Minimum allowed receive throughput per second (clients uploading less than 16kB/sec get dropped) */
-    static const int HTTP_RECEIVE_THROUGHPUT_BYTES = 16 * 1024;
-
     us_loop_t *getLoop() {
         return us_socket_context_loop(SSL, getSocketContext());
     }
@@ -70,11 +64,19 @@ private:
     HttpContext<SSL> *init() {
         /* Handle socket connections */
         us_socket_context_on_open(SSL, getSocketContext(), [](us_socket_t *s, int /*is_client*/, char *ip, int ip_length) {
+            HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
+            httpContextData->transportStats.activeConnections++;
+
             /* Any connected socket should timeout until it has a request */
-            us_socket_timeout(SSL, s, HTTP_IDLE_TIMEOUT_S);
+            us_socket_timeout(
+                SSL,
+                s,
+                httpContextData->transportConfig.headersTimeoutSeconds);
 
             /* Init socket ext */
-            new (us_socket_ext(SSL, s)) HttpResponseData<SSL>;
+            new (us_socket_ext(SSL, s)) HttpResponseData<SSL>(
+                &httpContextData->transportConfig,
+                &httpContextData->transportStats);
 
 #ifdef UWS_REMOTE_ADDRESS_USERSPACE
             /* Copy remote address into per-socket cache for later retrieval */
@@ -91,7 +93,6 @@ private:
 #endif
 
             /* Call filter */
-            HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
             for (auto &f : httpContextData->filterHandlers) {
                 f((HttpResponse<SSL> *) s, 1);
             }
@@ -106,6 +107,9 @@ private:
 
             /* Call filter */
             HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
+            if (httpContextData->transportStats.activeConnections) {
+                httpContextData->transportStats.activeConnections--;
+            }
             for (auto &f : httpContextData->filterHandlers) {
                 f((HttpResponse<SSL> *) s, -1);
             }
@@ -139,6 +143,14 @@ private:
 
             HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, s);
 
+            if (httpResponseData->transportPhase == HttpTransportPhase::KeepAliveIdle) {
+                httpResponseData->transportPhase = HttpTransportPhase::HeadersReading;
+                us_socket_timeout(
+                    SSL,
+                    s,
+                    httpResponseData->transportConfig->headersTimeoutSeconds);
+            }
+
             /* Cork this socket */
             ((AsyncSocket<SSL> *) s)->cork();
 
@@ -162,6 +174,9 @@ private:
                 /* Reset httpResponse */
                 HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) s);
                 httpResponseData->offset = 0;
+                httpResponseData->received_bytes_per_timeout = 0;
+                httpResponseData->receivedBodySinceTimeout = false;
+                httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
 
                 /* Are we not ready for another request yet? Terminate the connection.
                  * Important for denying async pipelining until, if ever, we want to suppot it.
@@ -224,7 +239,11 @@ private:
 
                 /* If we have not responded and we have a data handler, we need to timeout to enfore client sending the data */
                 if (!((HttpResponse<SSL> *) s)->hasResponded() && httpResponseData->inStream) {
-                    us_socket_timeout(SSL, (us_socket_t *) s, HTTP_IDLE_TIMEOUT_S);
+                    httpResponseData->transportPhase = HttpTransportPhase::BodyReading;
+                    us_socket_timeout(
+                        SSL,
+                        (us_socket_t *) s,
+                        httpResponseData->transportConfig->bodyIdleTimeoutSeconds);
                 }
 
                 /* Continue parsing */
@@ -237,14 +256,21 @@ private:
                     /* Todo: can this handle timeout for non-post as well? */
                     if (maxRemainingBodyLength == 0) {
                         /* If we just got the last chunk (or empty chunk), disable timeout */
+                        httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
                         us_socket_timeout(SSL, (struct us_socket_t *) user, 0);
                     } else {
-                        /* We still have some more data coming in later, so reset timeout */
-                        /* Only reset timeout if we got enough bytes (16kb/sec) since last time we reset here */
-                        httpResponseData->received_bytes_per_timeout += (unsigned int) data.length();
-                        if (httpResponseData->received_bytes_per_timeout >= HTTP_RECEIVE_THROUGHPUT_BYTES * HTTP_IDLE_TIMEOUT_S) {
-                            us_socket_timeout(SSL, (struct us_socket_t *) user, HTTP_IDLE_TIMEOUT_S);
+                        httpResponseData->transportPhase = HttpTransportPhase::BodyReading;
+                        httpResponseData->receivedBodySinceTimeout =
+                            httpResponseData->receivedBodySinceTimeout || !data.empty();
+                        httpResponseData->received_bytes_per_timeout += data.length();
+                        if (httpResponseData->received_bytes_per_timeout >=
+                            httpResponseData->transportConfig->bodyRateResetThresholdBytes) {
+                            us_socket_timeout(
+                                SSL,
+                                (struct us_socket_t *) user,
+                                httpResponseData->transportConfig->bodyIdleTimeoutSeconds);
                             httpResponseData->received_bytes_per_timeout = 0;
+                            httpResponseData->receivedBodySinceTimeout = false;
                         }
                     }
 
@@ -275,6 +301,13 @@ private:
 
             /* If we got fullptr that means the parser wants us to close the socket from error (same as calling the errorHandler) */
             if (returnedSocket == FULLPTR) {
+                if (httpResponseData->GetLimitViolation() ==
+                    HttpParser::LimitViolation::HeaderCount) {
+                    httpContextData->transportStats.headerCountExceeded++;
+                } else if (httpResponseData->GetLimitViolation() ==
+                           HttpParser::LimitViolation::HeaderSize) {
+                    httpContextData->transportStats.headerTooLarge++;
+                }
                 /* For errors, we only deliver them "at most once". We don't care if they get halfways delivered or not. */
                 us_socket_write(SSL, s, httpErrorResponses[err].data(), (int) httpErrorResponses[err].length(), false);
                 us_socket_shutdown(SSL, s);
@@ -286,12 +319,19 @@ private:
 
             /* We need to uncork in all cases, except for nullptr (closed socket, or upgraded socket) */
             if (returnedSocket != nullptr) {
+                if (httpResponseData->HasIncompleteHeaders()) {
+                    httpResponseData->transportPhase = HttpTransportPhase::HeadersReading;
+                    us_socket_timeout(
+                        SSL,
+                        s,
+                        httpResponseData->transportConfig->headersTimeoutSeconds);
+                }
                 /* Timeout on uncork failure */
                 auto [written, failed] = ((AsyncSocket<SSL> *) returnedSocket)->uncork();
                 if (failed) {
-                    /* All Http sockets timeout by this, and this behavior match the one in HttpResponse::cork */
-                    /* Warning: both HTTP_IDLE_TIMEOUT_S and HTTP_TIMEOUT_S are 10 seconds and both are used the same */
-                    ((AsyncSocket<SSL> *) s)->timeout(HTTP_IDLE_TIMEOUT_S);
+                    httpResponseData->transportPhase = HttpTransportPhase::ResponseBlocked;
+                    ((AsyncSocket<SSL> *) s)->timeout(
+                        httpResponseData->transportConfig->responseWriteTimeoutSeconds);
                 }
 
                 /* We need to check if we should close this socket here now */
@@ -357,6 +397,11 @@ private:
 
                 /* The developer indicated that their onWritable failed. */
                 if (!success) {
+                    httpResponseData->transportPhase = HttpTransportPhase::ResponseBlocked;
+                    us_socket_timeout(
+                        SSL,
+                        s,
+                        httpResponseData->transportConfig->responseWriteTimeoutSeconds);
                     /* Skip testing if we can drain anything since that might perform an extra syscall */
                     return s;
                 }
@@ -381,8 +426,19 @@ private:
                 }
             }
 
-            /* Expect another writable event, or another request within the timeout */
-            asyncSocket->timeout(HTTP_IDLE_TIMEOUT_S);
+            if (asyncSocket->getBufferedAmount()) {
+                httpResponseData->transportPhase = HttpTransportPhase::ResponseBlocked;
+                asyncSocket->timeout(
+                    httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+            } else if ((httpResponseData->state &
+                        HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
+                httpResponseData->transportPhase = HttpTransportPhase::KeepAliveIdle;
+                asyncSocket->timeout(
+                    httpResponseData->transportConfig->keepAliveTimeoutSeconds);
+            } else {
+                httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
+                asyncSocket->timeout(0);
+            }
 
             return s;
         });
@@ -399,6 +455,28 @@ private:
         /* Handle socket timeouts, simply close them so to not confuse client with FIN */
         us_socket_context_on_timeout(SSL, getSocketContext(), [](us_socket_t *s) {
 
+            HttpResponseData<SSL> *httpResponseData =
+                (HttpResponseData<SSL> *) us_socket_ext(SSL, s);
+            switch (httpResponseData->transportPhase) {
+                case HttpTransportPhase::HeadersReading:
+                    httpResponseData->transportStats->headerTimeouts++;
+                    break;
+                case HttpTransportPhase::BodyReading:
+                    if (httpResponseData->transportConfig->minBodyRateBytesPerSec &&
+                        httpResponseData->receivedBodySinceTimeout) {
+                        httpResponseData->transportStats->bodyRateViolations++;
+                    } else {
+                        httpResponseData->transportStats->bodyTimeouts++;
+                    }
+                    break;
+                case HttpTransportPhase::ResponseBlocked:
+                    httpResponseData->transportStats->responseWriteTimeouts++;
+                    break;
+                case HttpTransportPhase::HandlerResponse:
+                case HttpTransportPhase::KeepAliveIdle:
+                    break;
+            }
+
             /* Force close rather than gracefully shutdown and risk confusing the client with a complete download */
             AsyncSocket<SSL> *asyncSocket = (AsyncSocket<SSL> *) s;
             return asyncSocket->close();
@@ -410,7 +488,10 @@ private:
 
 public:
     /* Construct a new HttpContext using specified loop */
-    static HttpContext *create(Loop *loop, us_socket_context_options_t options = {}) {
+    static HttpContext *create(
+        Loop *loop,
+        us_socket_context_options_t options = {},
+        const HttpTransportConfig &transportConfig = {}) {
         HttpContext *httpContext;
 
         httpContext = (HttpContext *) us_create_socket_context(SSL, (us_loop_t *) loop, sizeof(HttpContextData<SSL>), options);
@@ -420,7 +501,7 @@ public:
         }
 
         /* Init socket context data */
-        new ((HttpContextData<SSL> *) us_socket_context_ext(SSL, (us_socket_context_t *) httpContext)) HttpContextData<SSL>();
+        new ((HttpContextData<SSL> *) us_socket_context_ext(SSL, (us_socket_context_t *) httpContext)) HttpContextData<SSL>(transportConfig);
         return httpContext->init();
     }
 

@@ -26,6 +26,11 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Install C++ quality tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends clang-format-18 clang-tidy-18
+
       - name: Install dependencies
         run: npm ci
 
@@ -91,9 +96,6 @@ jobs:
 
       - name: Run raw V8 HTTP smoke
         run: npm run test:v8-http
-
-      - name: Verify snapshot V8 shapes
-        run: npm run test:v8-snapshot-shapes
 
       - name: Run raw V8 WebSocket smoke
         run: npm run test:v8-ws

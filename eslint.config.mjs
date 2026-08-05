@@ -1,7 +1,6 @@
 import config from '@swarmmachina/standards/eslint.config.mjs'
 
 export default [
-  { ignores: ['test/v8-snapshot-shapes.js'] },
   ...config,
   {
     rules: {

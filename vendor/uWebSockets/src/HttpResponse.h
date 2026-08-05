@@ -40,9 +40,6 @@ namespace uWS {
 /* Some pre-defined status constants to use with writeStatus */
 static const char *HTTP_200_OK = "200 OK";
 
-/* The general timeout for HTTP sockets */
-static const int HTTP_TIMEOUT_S = 10;
-
 template <bool SSL>
 struct HttpResponse : public AsyncSocket<SSL> {
     /* Solely used for getHttpResponseData() */
@@ -51,6 +48,29 @@ struct HttpResponse : public AsyncSocket<SSL> {
 private:
     HttpResponseData<SSL> *getHttpResponseData() {
         return (HttpResponseData<SSL> *) Super::getAsyncSocketData();
+    }
+
+    void armTransportTimeout(HttpTransportPhase phase, unsigned int timeoutSeconds) {
+        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+        httpResponseData->transportPhase = phase;
+        Super::timeout(timeoutSeconds);
+    }
+
+    void armAfterResponseProgress() {
+        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+        if (Super::getBufferedAmount()) {
+            armTransportTimeout(
+                HttpTransportPhase::ResponseBlocked,
+                httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+        } else if ((httpResponseData->state &
+                    HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
+            armTransportTimeout(
+                HttpTransportPhase::KeepAliveIdle,
+                httpResponseData->transportConfig->keepAliveTimeoutSeconds);
+        } else {
+            httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
+            Super::timeout(0);
+        }
     }
 
     /* Write an unsigned 32-bit integer in hex */
@@ -159,7 +179,7 @@ private:
             }
 
             /* tryEnd can never fail when in chunked mode, since we do not have tryWrite (yet), only write */
-            Super::timeout(HTTP_TIMEOUT_S);
+            armAfterResponseProgress();
             return true;
         } else {
             /* Write content-length on first call */
@@ -201,8 +221,10 @@ private:
             bool success = written == data.length() && !failed;
 
             /* If we are now at the end, start a timeout. Also start a timeout if we failed. */
-            if (!success || httpResponseData->offset == totalSize) {
-                Super::timeout(HTTP_TIMEOUT_S);
+            if (!success || Super::getBufferedAmount()) {
+                armTransportTimeout(
+                    HttpTransportPhase::ResponseBlocked,
+                    httpResponseData->transportConfig->responseWriteTimeoutSeconds);
             }
 
             /* Remove onAborted, onWritable function and mark done if we reach the end, or if we were given no data (faked size like in HEAD response) */
@@ -211,6 +233,7 @@ private:
             /* Possibly need  to separate endWithoutBody and tryEnd with fake length into two separate calls with a boolean that explicitly marks isHeadOnly */
             if (httpResponseData->offset == totalSize || !data.length()) {
                 httpResponseData->markDone();
+                armAfterResponseProgress();
 
                 /* We need to check if we should close this socket here now */
                 if (!Super::isCorked()) {
@@ -323,10 +346,16 @@ public:
         HttpContext<SSL> *httpContext = (HttpContext<SSL> *) us_socket_context(SSL, (struct us_socket_t *) this);
 
         /* Move any backpressure out of HttpResponse */
-        BackPressure backpressure(std::move(((AsyncSocketData<SSL> *) getHttpResponseData())->buffer));
+        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+        BackPressure backpressure(std::move(((AsyncSocketData<SSL> *) httpResponseData)->buffer));
+
+        /* The socket leaves the HTTP transport context when it upgrades. */
+        if (httpResponseData->transportStats->activeConnections) {
+            httpResponseData->transportStats->activeConnections--;
+        }
 
         /* Destroy HttpResponseData */
-        getHttpResponseData()->~HttpResponseData();
+        httpResponseData->~HttpResponseData();
 
         /* Before we adopt and potentially change socket, check if we are corked */
         bool wasCorked = Super::isCorked();
@@ -383,7 +412,10 @@ public:
 
     HttpResponse *resume() {
         Super::resume();
-        Super::timeout(HTTP_TIMEOUT_S);
+        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+        armTransportTimeout(
+            HttpTransportPhase::BodyReading,
+            httpResponseData->transportConfig->bodyIdleTimeoutSeconds);
         return this;
     }
 
@@ -506,8 +538,10 @@ public:
         Super::write("\r\n", 2);
 
         auto [written, failed] = Super::write(data.data(), (int) data.length());
-        if (failed) {
-            Super::timeout(HTTP_TIMEOUT_S);
+        if (failed || Super::getBufferedAmount()) {
+            armTransportTimeout(
+                HttpTransportPhase::ResponseBlocked,
+                httpResponseData->transportConfig->responseWriteTimeoutSeconds);
         }
 
         /* If we did not fail the write, accept more */
@@ -577,14 +611,14 @@ public:
                 return static_cast<HttpResponse *>(newCorkedSocket);
             }
 
+            HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
             if (failed) {
-                /* For now we only have one single timeout so let's use it */
-                /* This behavior should equal the behavior in HttpContext when uncorking fails */
-                Super::timeout(HTTP_TIMEOUT_S);
+                armTransportTimeout(
+                    HttpTransportPhase::ResponseBlocked,
+                    httpResponseData->transportConfig->responseWriteTimeoutSeconds);
             }
 
             /* If we have no backbuffer and we are connection close and we responded fully then close */
-            HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
             if (httpResponseData->state & HttpResponseData<SSL>::HTTP_CONNECTION_CLOSE) {
                 if ((httpResponseData->state & HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
                     if (((AsyncSocket<SSL> *) this)->getBufferedAmount() == 0) {

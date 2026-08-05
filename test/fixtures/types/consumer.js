@@ -1,9 +1,11 @@
-import { createApp, defineHttpHandler, defineWebSocketBehavior } from '@swarmmachina/swm-uws'
+import { RequestPrefetchPlan, createApp, defineHttpHandler, defineWebSocketBehavior } from '@swarmmachina/swm-uws'
+
+const prefetchPlan = new RequestPrefetchPlan({ headers: ['x-test'] })
 
 export const handler = defineHttpHandler((res, req) => {
   req.getUrl()
   req.getHeader('x-test')
-  req.snapshot()
+  req.prefetch(prefetchPlan).getHeaderValues('x-test')
   res.getRemoteAddress()
   res.getProxiedRemoteAddress()
   res.collectBody(1024, () => {})

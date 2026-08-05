@@ -19,6 +19,7 @@
 #define UWS_HTTPCONTEXTDATA_H
 
 #include "HttpRouter.h"
+#include "HttpTransportConfig.h"
 
 #include <vector>
 #include "MoveOnlyFunction.h"
@@ -32,6 +33,10 @@ struct alignas(16) HttpContextData {
     template <bool> friend struct HttpContext;
     template <bool> friend struct HttpResponse;
     template <bool> friend struct TemplatedApp;
+public:
+    explicit HttpContextData(const HttpTransportConfig &transportConfig)
+        : transportConfig(transportConfig) {}
+
 private:
     std::vector<MoveOnlyFunction<void(HttpResponse<SSL> *, int)>> filterHandlers;
 
@@ -53,6 +58,10 @@ private:
     /* If we are main acceptor, distribute to these apps */
     std::vector<void *> childApps;
     unsigned int roundRobin = 0;
+
+    /* Transport policy and observability are cold relative to router dispatch. */
+    const HttpTransportConfig transportConfig;
+    HttpTransportStats transportStats;
 };
 
 }

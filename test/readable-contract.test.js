@@ -5,16 +5,7 @@ import test from 'node:test'
 import { createApp, us_socket_local_port } from '../lib/index.js'
 
 const READABLE_SURFACE = {
-  HttpRequest: [
-    'forEach',
-    'getCaseSensitiveMethod',
-    'getHeader',
-    'getMethod',
-    'getParameter',
-    'getQuery',
-    'getUrl',
-    'snapshot'
-  ],
+  HttpRequest: ['forEach', 'getCaseSensitiveMethod', 'getHeader', 'getMethod', 'getParameter', 'getQuery', 'getUrl'],
   HttpResponse: [
     'collectBody',
     'getProxiedRemoteAddress',
@@ -37,7 +28,7 @@ const READABLE_SURFACE = {
     'isSubscribed'
   ]
 }
-const explicitReaders = new Set(['collectBody', 'forEach', 'onData', 'onDataV2', 'snapshot'])
+const explicitReaders = new Set(['collectBody', 'forEach', 'onData', 'onDataV2'])
 
 function prototypeReaders(value) {
   return Object.getOwnPropertyNames(Object.getPrototypeOf(value))
@@ -159,21 +150,6 @@ test('native readable surface has a functional network contract', { timeout: 15_
       headers[name] = value
     })
     assert.equal(headers['x-contract'], 'Value')
-
-    cover('HttpRequest', 'snapshot')
-    const snapshot = req.snapshot(1)
-
-    assert.deepEqual(
-      { method: snapshot.method, url: snapshot.url, query: snapshot.query, params: snapshot.params },
-      { method: 'post', url: '/contract/alice', query: 'one=1&empty=&encoded=a%20b', params: ['alice'] }
-    )
-    assert.equal(Object.getPrototypeOf(snapshot.headers), null)
-    assert.equal(snapshot.headers['x-contract'], 'Value')
-
-    const sparseSnapshot = req.snapshot(2)
-
-    assert.equal(sparseSnapshot.params.length, 2)
-    assert.equal(1 in sparseSnapshot.params, false)
 
     cover('HttpResponse', 'getRemoteAddress')
     assert.ok([4, 16].includes(arrayBuffer(res.getRemoteAddress()).byteLength))

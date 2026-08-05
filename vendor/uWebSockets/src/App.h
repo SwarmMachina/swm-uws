@@ -229,8 +229,10 @@ public:
         other.topicTree = nullptr;
     }
 
-    TemplatedApp(SocketContextOptions options = {}) {
-        httpContext = HttpContext<SSL>::create(Loop::get(), options);
+    TemplatedApp(
+        SocketContextOptions options = {},
+        const HttpTransportConfig &transportConfig = {}) {
+        httpContext = HttpContext<SSL>::create(Loop::get(), options, transportConfig);
 
         /* Register default handler for 404 (can be overridden by user) */
         this->any("/*", [](auto *res, auto */*req*/) {
@@ -250,6 +252,12 @@ public:
 
     bool constructorFailed() {
         return !httpContext;
+    }
+
+    HttpTransportStats getHttpTransportStats() const {
+        return httpContext
+            ? httpContext->getSocketContextData()->transportStats
+            : HttpTransportStats{};
     }
 
     template <typename UserData>

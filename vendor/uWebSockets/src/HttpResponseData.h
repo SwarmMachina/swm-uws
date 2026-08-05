@@ -33,6 +33,13 @@ struct HttpResponseData : AsyncSocketData<SSL>, HttpParser {
     template <bool> friend struct HttpResponse;
     template <bool> friend struct HttpContext;
 
+    HttpResponseData(
+        const HttpTransportConfig *transportConfig,
+        HttpTransportStats *transportStats)
+        : HttpParser(transportConfig),
+          transportConfig(transportConfig),
+          transportStats(transportStats) {}
+
     /* When we are done with a response we mark it like so */
     void markDone() {
         onAborted = nullptr;
@@ -110,7 +117,13 @@ private:
     uintmax_t offset = 0;
 
     /* Let's track number of bytes since last timeout reset in data handler */
-    unsigned int received_bytes_per_timeout = 0;
+    std::uint64_t received_bytes_per_timeout = 0;
+
+    bool receivedBodySinceTimeout = false;
+
+    const HttpTransportConfig *transportConfig;
+    HttpTransportStats *transportStats;
+    HttpTransportPhase transportPhase = HttpTransportPhase::HeadersReading;
 
     /* Current state (content-length sent, status sent, write called, etc */
     int state = 0;

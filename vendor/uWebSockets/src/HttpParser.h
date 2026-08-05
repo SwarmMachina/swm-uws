@@ -35,23 +35,13 @@
 #include "ProxyParser.h"
 #include "QueryParser.h"
 #include "HttpErrors.h"
+#include "HttpTransportConfig.h"
 
 namespace uWS {
 
 /* We require at least this much post padding */
 static const unsigned int MINIMUM_HTTP_POST_PADDING = 32;
 static void *FULLPTR = (void *)~(uintptr_t)0;
-
-/* STL needs one of these */
-template <typename T>
-std::optional<T *> optional_ptr(T *ptr) {
-    return ptr ? std::optional<T *>(ptr) : std::nullopt;
-}
-
-static const size_t MAX_FALLBACK_SIZE = (size_t) atoi(optional_ptr(getenv("UWS_HTTP_MAX_HEADERS_SIZE")).value_or((char *) "4096"));
-#ifndef UWS_HTTP_MAX_HEADERS_COUNT
-#define UWS_HTTP_MAX_HEADERS_COUNT 100
-#endif
 
 struct HttpRequest {
 
@@ -60,7 +50,7 @@ struct HttpRequest {
 private:
     struct Header {
         std::string_view key, value;
-    } headers[UWS_HTTP_MAX_HEADERS_COUNT];
+    } headers[MAX_HEADER_COUNT_CAPACITY + 2];
     bool ancientHttp;
     unsigned int querySeparator;
     bool didYield;
@@ -194,7 +184,15 @@ public:
 
 struct HttpParser {
 
+public:
+    enum class LimitViolation : std::uint8_t {
+        None,
+        HeaderSize,
+        HeaderCount,
+    };
+
 private:
+    const HttpTransportConfig *transportConfig_;
     std::string fallback;
     /* This guy really has only 30 bits since we reserve two highest bits to chunked encoding parsing state */
     uint64_t remainingStreamingBytes = 0;
@@ -353,7 +351,7 @@ private:
     }
 
     /* End is only used for the proxy parser. The HTTP parser recognizes "\ra" as invalid "\r\n" scan and breaks. */
-    static unsigned int getHeaders(char *postPaddedBuffer, char *end, struct HttpRequest::Header *headers, void *reserved, unsigned int &err) {
+    unsigned int getHeaders(char *postPaddedBuffer, char *end, struct HttpRequest::Header *headers, void *reserved, unsigned int &err) {
         char *preliminaryKey, *preliminaryValue, *start = postPaddedBuffer;
 
         #ifdef UWS_WITH_PROXY
@@ -391,7 +389,7 @@ private:
         }
         headers++;
 
-        for (unsigned int i = 1; i < UWS_HTTP_MAX_HEADERS_COUNT - 1; i++) {
+        for (unsigned int i = 0; i < transportConfig_->maxHeaderCount; i++) {
             /* Lower case and consume the field name */
             preliminaryKey = postPaddedBuffer;
             postPaddedBuffer = (char *) consumeFieldName(postPaddedBuffer);
@@ -465,6 +463,7 @@ private:
             }
         }
         /* We ran out of header space, too large request */
+        limitViolation_ = LimitViolation::HeaderCount;
         err = HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE;
         return 0;
     }
@@ -491,7 +490,8 @@ private:
             consumedTotal += consumed;
 
             /* Even if we could parse it, check for length here as well */
-            if (consumed > MAX_FALLBACK_SIZE) {
+            if (consumed > transportConfig_->maxHeaderSize) {
+                limitViolation_ = LimitViolation::HeaderSize;
                 return {HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE, FULLPTR};
             }
 
@@ -615,7 +615,20 @@ private:
     }
 
 public:
+    explicit HttpParser(const HttpTransportConfig *transportConfig)
+        : transportConfig_(transportConfig) {}
+
+    [[nodiscard]] LimitViolation GetLimitViolation() const {
+        return limitViolation_;
+    }
+
+    [[nodiscard]] bool HasIncompleteHeaders() const {
+        return !remainingStreamingBytes && !fallback.empty();
+    }
+
     std::pair<unsigned int, void *> consumePostPadded(char *data, unsigned int length, void *user, void *reserved, MoveOnlyFunction<void *(void *, HttpRequest *)> &&requestHandler, MoveOnlyFunction<void *(void *, std::string_view, uint64_t)> &&dataHandler) {
+
+        limitViolation_ = LimitViolation::None;
 
         /* This resets BloomFilter by construction, but later we also reset it again.
          * Optimize this to skip resetting twice (req could be made global) */
@@ -659,7 +672,7 @@ public:
         } else if (fallback.length()) {
             unsigned int had = (unsigned int) fallback.length();
 
-            size_t maxCopyDistance = std::min<size_t>(MAX_FALLBACK_SIZE - fallback.length(), (size_t) length);
+            size_t maxCopyDistance = std::min<size_t>(transportConfig_->maxHeaderSize - fallback.length(), (size_t) length);
 
             /* We don't want fallback to be short string optimized, since we want to move it */
             fallback.reserve(fallback.length() + maxCopyDistance + std::max<unsigned int>(MINIMUM_HTTP_POST_PADDING, sizeof(std::string)));
@@ -714,7 +727,8 @@ public:
                 }
 
             } else {
-                if (fallback.length() == MAX_FALLBACK_SIZE) {
+                if (fallback.length() == transportConfig_->maxHeaderSize) {
+                    limitViolation_ = LimitViolation::HeaderSize;
                     return {HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE, FULLPTR};
                 }
                 return {0, user};
@@ -730,9 +744,10 @@ public:
         length -= consumed.first;
 
         if (length) {
-            if (length < MAX_FALLBACK_SIZE) {
+            if (length < transportConfig_->maxHeaderSize) {
                 fallback.append(data, length);
             } else {
+                limitViolation_ = LimitViolation::HeaderSize;
                 return {HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE, FULLPTR};
             }
         }
@@ -740,6 +755,9 @@ public:
         // added for now
         return {0, user};
     }
+
+private:
+    LimitViolation limitViolation_ = LimitViolation::None;
 };
 
 }

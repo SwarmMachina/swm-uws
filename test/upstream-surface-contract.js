@@ -140,7 +140,7 @@ export const allowedSurfaceDelta = {
           name
         )
     ),
-    extra: ['capabilities', 'createApp', 'version']
+    extra: ['RequestPrefetchPlan', 'capabilities', 'createApp', 'version']
   },
   app: {
     missing: [
@@ -153,9 +153,9 @@ export const allowedSurfaceDelta = {
       'removeChildAppDescriptor',
       'removeServerName'
     ],
-    extra: []
+    extra: ['getHttpTransportStats']
   },
-  request: { missing: [], extra: ['snapshot'] },
+  request: { missing: [], extra: ['prefetch'] },
   response: { missing: [], extra: ['endBatch'] },
   websocket: { missing: [], extra: [] }
 }

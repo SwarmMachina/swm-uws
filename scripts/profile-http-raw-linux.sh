@@ -15,10 +15,21 @@ PIPELINING=${SWM_PROFILE_PIPELINING:-10}
 SERVER_CPU=${SWM_PROFILE_SERVER_CPU:-2}
 CLIENT_CPUS=${SWM_PROFILE_CLIENT_CPUS:-3-6}
 CLIENT_WORKERS=${SWM_PROFILE_CLIENT_WORKERS:-4}
+FREQUENCY=${SWM_PROFILE_FREQUENCY:-199}
+CALL_GRAPH=${SWM_PROFILE_CALL_GRAPH:-dwarf}
 SKIP_PERF=${SWM_PROFILE_SKIP_PERF:-0}
 EVENTS=cycles,instructions,branches,branch-misses,cache-references,cache-misses
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 LOAD_GENERATOR="$ROOT/scripts/profile-http-raw-load.js"
+
+if ! [[ "$FREQUENCY" =~ ^[0-9]+$ ]] || (( FREQUENCY < 1 )); then
+  echo "SWM_PROFILE_FREQUENCY must be a positive integer" >&2
+  exit 1
+fi
+if [[ "$CALL_GRAPH" != "dwarf" && "$CALL_GRAPH" != "fp" ]]; then
+  echo "SWM_PROFILE_CALL_GRAPH must be dwarf or fp" >&2
+  exit 1
+fi
 
 required_commands=(node taskset curl realpath)
 if [[ "$SKIP_PERF" != "1" ]]; then required_commands+=(perf); fi
@@ -94,7 +105,7 @@ else
   wait "$stat_pid"
 
   if [[ -n "${FLAMEGRAPH_DIR:-}" ]]; then
-    perf record -F 999 -g --call-graph dwarf -p "$server_pid" \
+    perf record -F "$FREQUENCY" -g --call-graph "$CALL_GRAPH" -p "$server_pid" \
       -o "$PERF_DATA" -- sleep "$DURATION" &
     record_pid=$!
     taskset -c "$CLIENT_CPUS" node "$LOAD_GENERATOR" \
@@ -110,12 +121,12 @@ kill -TERM "$server_pid"
 wait "$server_pid"
 server_pid=''
 
-node --input-type=module - "$LOAD_JSON" "$STAT_CSV" "$METRICS_JSON" "$SUMMARY_JSON" "$REPORT_MD" <<'NODE'
+node --input-type=module - "$LOAD_JSON" "$STAT_CSV" "$METRICS_JSON" "$SUMMARY_JSON" "$REPORT_MD" "$FREQUENCY" "$CALL_GRAPH" <<'NODE'
 import fs from 'node:fs'
 
 import { normalizePerfCounters, parsePerfStat } from '@swarmmachina/benchkit/profiling'
 
-const [loadFile, statFile, runtimeFile, summaryFile, reportFile] = process.argv.slice(2)
+const [loadFile, statFile, runtimeFile, summaryFile, reportFile, frequency, callGraph] = process.argv.slice(2)
 const load = JSON.parse(fs.readFileSync(loadFile, 'utf8'))
 const runtime = JSON.parse(fs.readFileSync(runtimeFile, 'utf8'))
 const requests = load.requests?.total || load.requests?.average * load.duration
@@ -128,7 +139,9 @@ const summary = {
   parameters: {
     connections: load.connections,
     pipelining: load.pipelining,
-    duration: load.duration
+    duration: load.duration,
+    perfFrequencyHz: Number(frequency),
+    perfCallGraph: callGraph
   },
   requests,
   requestsPerSecond: load.requests?.average,
@@ -150,6 +163,8 @@ const report = `# Raw HTTP response profile
 | Connections | ${summary.parameters.connections} |
 | Pipelining | ${summary.parameters.pipelining} |
 | Duration | ${summary.parameters.duration}s |
+| Perf sampling frequency | ${summary.parameters.perfFrequencyHz} Hz |
+| Perf call graph | ${summary.parameters.perfCallGraph} |
 
 | Result | Value |
 | --- | ---: |

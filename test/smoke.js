@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import {
   DISABLED,
   LIBUS_LISTEN_EXCLUSIVE_PORT,
+  RequestPrefetchPlan,
   capabilities,
   createApp,
   us_listen_socket_close,
@@ -20,7 +21,8 @@ assert.equal(version(), expectedBindingVersion)
 assert.deepEqual(capabilities(), {
   beginWrite: true,
   collectBody: true,
-  requestSnapshot: true,
+  httpTransportConfig: true,
+  requestPrefetch: true,
   responseBatch: true,
   requestPause: true
 })
@@ -46,6 +48,7 @@ const requiredAppMethods = [
   'del',
   'filter',
   'get',
+  'getHttpTransportStats',
   'head',
   'listen',
   'listen_unix',
@@ -62,6 +65,8 @@ const requiredAppMethods = [
 for (const method of requiredAppMethods) {
   assert.equal(typeof app[method], 'function', `app.${method}`)
 }
+
+assert.deepEqual(new RequestPrefetchPlan({ headers: ['X-Smoke'] }).headerNames, ['x-smoke'])
 
 let completedResponse
 let filterCallCount = 0
@@ -313,14 +318,7 @@ app.post('/body', (res) => {
   )
 })
 
-app.get('/batch', (res, req) => {
-  const snapshot = req.snapshot()
-
-  assert.equal(snapshot.method, 'get')
-  assert.equal(snapshot.url, '/batch')
-  assert.equal(snapshot.query, 'mode=fast')
-  assert.equal(snapshot.headers['x-snapshot-test'], 'yes')
-  assert.equal(Object.getPrototypeOf(snapshot.headers), null)
+app.get('/batch', (res) => {
   assert.throws(() => res.endBatch('200 OK', ['bad header', 'value'], 'bad'), /invalid header/)
   assert.equal(
     res.endBatch('201 Created', ['content-type', 'application/json', 'x-batch', 'yes'], '{"batch":true}'),
@@ -608,8 +606,7 @@ async function runSelfTest() {
   assert.deepEqual(await metadataResponse.json(), { ok: false })
   assert.throws(() => completedRequest.getUrl(), /HTTP request is no longer valid/)
 
-  const batchResponse = await fetch(`http://127.0.0.1:${port}/batch?mode=fast`, {
-    headers: { 'x-snapshot-test': 'yes' },
+  const batchResponse = await fetch(`http://127.0.0.1:${port}/batch`, {
     signal: AbortSignal.timeout(5_000)
   })
 

@@ -13,3 +13,23 @@ consumes the bit and omits the duplicate CRLF.
 
 The patch is kept as a standalone diff under `vendor/patches/` and is reapplied
 after every upstream refresh.
+
+## Per-App HTTP transport policy
+
+`uwebsockets-http-transport-policy.patch` moves HTTP header limits and timeout
+policy from process-wide/static behavior into immutable data owned by each
+`App`. It adds bounded header-count parsing, phase-specific timeout handling,
+minimum request-body throughput enforcement, and per-App transport counters.
+
+The binding validates and constructs the policy synchronously. The vendored
+layer remains responsible for applying it at parser/socket lifecycle boundaries,
+including HTTP-to-WebSocket upgrades.
+
+Timeout-wheel seconds and the body-rate reset threshold are precomputed once
+when an `App` is constructed. Transport policy and counters live after router
+state in `HttpContextData`, keeping cold observability data out of the dispatch
+layout.
+
+The patch assumes `uwebsockets-begin-write-framing.patch` has already been
+applied; patch files are sorted by name by `scripts/update-vendor.js`, which
+preserves that order.

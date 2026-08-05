@@ -2,6 +2,7 @@ import uWS, {
   App,
   DISABLED,
   LIBUS_LISTEN_EXCLUSIVE_PORT,
+  RequestPrefetchPlan,
   capabilities,
   createApp,
   defineHttpHandler,
@@ -16,12 +17,15 @@ import type {
   Capabilities,
   HttpHandler,
   HttpRequest,
-  HttpRequestSnapshot,
+  HttpTransportOptions,
+  HttpTransportStats,
   HttpResponse,
   ListenHandler,
   ListenOptions,
   ListenSocket,
   NativeData,
+  RequestHeaderSelection,
+  RequestPrefetchSnapshot,
   RecognizedString,
   Socket,
   SocketContext,
@@ -43,7 +47,10 @@ type PublicTypes = [
   us_socket,
   us_socket_context_t,
   HttpRequest,
-  HttpRequestSnapshot,
+  HttpTransportOptions,
+  HttpTransportStats,
+  RequestHeaderSelection,
+  RequestPrefetchSnapshot,
   HttpResponse,
   WebSocket<object>,
   WebSocketBehavior<object>,
@@ -57,6 +64,7 @@ type PublicTypes = [
 ]
 
 const app: AppInstance = createApp()
+const prefetchPlan = new RequestPrefetchPlan({ headers: ['authorization'] })
 const handler = defineHttpHandler((res, req) => res.end(req.getUrl()))
 const behavior = defineWebSocketBehavior({
   message(ws, message, isBinary) {
@@ -67,6 +75,7 @@ const behavior = defineWebSocketBehavior({
 void app
 void handler
 void behavior
+void prefetchPlan
 void uWS
 void App
 void version
