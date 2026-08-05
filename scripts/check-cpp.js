@@ -101,6 +101,7 @@ function resolveTool(name, configured) {
   const candidates = [
     configured,
     `${name}-18`,
+    `/opt/homebrew/opt/llvm@18/bin/${name}`,
     name,
     `/opt/homebrew/opt/llvm/bin/${name}`,
     `/usr/local/opt/llvm/bin/${name}`

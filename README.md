@@ -345,8 +345,9 @@ npm run test:package
 npm run deps:check:vendor
 ```
 
-`check:cpp` requires LLVM 18+ (`clang-format` and `clang-tidy`) and checks only
-first-party `src/` files. Use `npm run fix:cpp` to apply the shared C++ format.
+`check:cpp` requires LLVM 18+ (`clang-format` and `clang-tidy`), prefers the
+versioned LLVM 18 toolchain (including Homebrew's keg-only `llvm@18`), and checks
+only first-party `src/` files. Use `npm run fix:cpp` to apply the shared C++ format.
 
 ```sh
 # Full prepublish validation

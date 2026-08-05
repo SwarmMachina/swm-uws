@@ -1,4 +1,5 @@
 ---
+# LLVM 18/libstdc++ misdiagnoses V8's custom BackingStore::operator delete.
 Checks: >
   -*,
   bugprone-*,
@@ -6,6 +7,7 @@ Checks: >
   performance-*,
   portability-*,
   modernize-use-nullptr,
+  -clang-analyzer-cplusplus.NewDelete,
   -clang-analyzer-optin.core.EnumCastOutOfRange
 WarningsAsErrors: '*'
 HeaderFilterRegex: '^.*/src/.*'
