@@ -17,6 +17,7 @@ export function rawHttpExchange(
   if (resolveOn !== 'end' && resolveOn !== 'close') {
     throw new TypeError("resolveOn must be either 'end' or 'close'")
   }
+
   if (typeof acceptResetAfterData !== 'boolean') {
     throw new TypeError('acceptResetAfterData must be a boolean')
   }

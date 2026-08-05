@@ -9,5 +9,4 @@ Checks: >
   -clang-analyzer-optin.core.EnumCastOutOfRange
 WarningsAsErrors: '*'
 HeaderFilterRegex: '^.*/src/.*'
-ExcludeHeaderFilterRegex: '^.*/vendor/.*'
 SystemHeaders: false
