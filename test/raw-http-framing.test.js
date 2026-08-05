@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict'
-import { createConnection } from 'node:net'
 import test from 'node:test'
 
-import { createApp, us_listen_socket_close, us_socket_local_port } from '../lib/index.js'
+import { createApp } from '../lib/index.js'
+import { NativeAppServer } from './helpers/native-app-server.js'
+import { rawHttpExchange } from './helpers/raw-http.js'
 
 test('raw HTTP framing remains unambiguous across fast paths and pipelining', { timeout: 15_000 }, async () => {
   const app = createApp()
-
-  let listenSocket
 
   app.get('/multi', (res) => {
     res.beginWrite()
@@ -68,17 +67,10 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
       res.end('valid')
     })
   })
-  try {
-    const port = await new Promise((resolve, reject) => {
-      app.listen('127.0.0.1', 0, (socket) => {
-        if (!socket) {
-          return reject(new Error('listen failed'))
-        }
+  const server = await NativeAppServer.listen(app)
 
-        listenSocket = socket
-        resolve(us_socket_local_port(socket))
-      })
-    })
+  try {
+    const { port } = server
 
     for (const [path, status, body, framing] of [
       ['/multi', 200, 'alpha\r\n0\r\n\r\nomega', 'chunked'],
@@ -177,11 +169,7 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
 
     assert.equal(next[0].body.toString(), 'one')
   } finally {
-    if (listenSocket) {
-      us_listen_socket_close(listenSocket)
-    }
-
-    app.close()
+    server.close()
   }
 })
 
@@ -198,20 +186,7 @@ function requestAndParse(port, chunks, expectedCount) {
 }
 
 function rawExchange(port, chunks) {
-  return new Promise((resolve, reject) => {
-    const socket = createConnection({ host: '127.0.0.1', port })
-    const response = []
-
-    socket.setTimeout(5_000, () => socket.destroy(new Error('raw exchange timed out')))
-    socket.on('connect', () => {
-      for (const chunk of chunks) {
-        socket.write(chunk)
-      }
-    })
-    socket.on('data', (chunk) => response.push(chunk))
-    socket.on('end', () => resolve(Buffer.concat(response)))
-    socket.on('error', reject)
-  })
+  return rawHttpExchange({ host: '127.0.0.1', port }, chunks)
 }
 
 function parseResponses(wire) {

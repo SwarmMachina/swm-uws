@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
 import { createConnection } from 'node:net'
 import test from 'node:test'
 
-import {
-  RequestPrefetchPlan,
-  capabilities,
-  createApp,
-  us_listen_socket_close,
-  us_socket_local_port
-} from '../lib/index.js'
+import { RequestPrefetchPlan, capabilities, createApp } from '../lib/index.js'
+import { delay, waitFor } from './helpers/async.js'
+import { NativeAppServer } from './helpers/native-app-server.js'
+import { rawHttpExchange } from './helpers/raw-http.js'
 
 test('HTTP transport options validate synchronously without coercion', () => {
   for (const http of [
@@ -91,8 +89,8 @@ test('per-App header size and count limits reject with 431 before HTTP or WebSoc
   })
   large.get('/http', (res) => res.end('large'))
 
-  const smallServer = await listen(small)
-  const largeServer = await listen(large)
+  const smallServer = await NativeAppServer.listen(small)
+  const largeServer = await NativeAppServer.listen(large)
 
   try {
     const largeHeader = 'x-long: ' + 'a'.repeat(100)
@@ -137,8 +135,8 @@ test('per-App header size and count limits reject with 431 before HTTP or WebSoc
     assert.equal(stats.headerTooLarge, 2)
     assert.equal(stats.headerCountExceeded, 1)
   } finally {
-    closeServer(small, smallServer.socket)
-    closeServer(large, largeServer.socket)
+    smallServer.close()
+    largeServer.close()
   }
 })
 
@@ -151,7 +149,7 @@ test('fragmented request heads use the same per-App size policy', async () => {
     calls++
     res.end('unexpected')
   })
-  const server = await listen(app)
+  const server = await NativeAppServer.listen(app)
 
   try {
     const response = await rawExchange(
@@ -164,7 +162,7 @@ test('fragmented request heads use the same per-App size policy', async () => {
     assert.equal(calls, 0)
     assert.equal(app.getHttpTransportStats().headerTooLarge, 1)
   } finally {
-    closeServer(app, server.socket)
+    server.close()
   }
 })
 
@@ -178,7 +176,7 @@ test('maxHeaderSize accepts N-1 and N bytes and rejects N+1 bytes', async () => 
     calls++
     res.end('ok')
   })
-  const server = await listen(app)
+  const server = await NativeAppServer.listen(app)
 
   try {
     for (const size of [maxHeaderSize - 1, maxHeaderSize]) {
@@ -199,7 +197,7 @@ test('maxHeaderSize accepts N-1 and N bytes and rejects N+1 bytes', async () => 
     assert.equal(calls, 2)
     assert.equal(app.getHttpTransportStats().headerTooLarge, 1)
   } finally {
-    closeServer(app, server.socket)
+    server.close()
   }
 })
 
@@ -211,7 +209,7 @@ test('pipelined requests reapply header policy without mixing responses', async 
     urls.push(req.getUrl())
     res.end(req.getUrl())
   })
-  const server = await listen(app)
+  const server = await NativeAppServer.listen(app)
 
   try {
     const accepted = await rawExchange(server.port, [
@@ -232,7 +230,7 @@ test('pipelined requests reapply header policy without mixing responses', async 
     assert.deepEqual(urls, ['/first', '/second', '/before-limit'])
     assert.equal(app.getHttpTransportStats().headerCountExceeded, 1)
   } finally {
-    closeServer(app, server.socket)
+    server.close()
   }
 })
 
@@ -285,7 +283,7 @@ test('selective prefetch preserves missing, empty, duplicates, wire order, and c
     res.end('rejected')
   })
 
-  const server = await listen(app)
+  const server = await NativeAppServer.listen(app)
   const request =
     'GET /selected HTTP/1.1\r\n' +
     'host: localhost\r\n' +
@@ -346,7 +344,7 @@ test('selective prefetch preserves missing, empty, duplicates, wire order, and c
 
     assert.match(clonedResult.toString('latin1'), /rejected$/)
   } finally {
-    closeServer(app, server.socket)
+    server.close()
   }
 })
 
@@ -405,10 +403,10 @@ test('header and stalled-body timeout phases increment only their own counters',
   })
 
   idleApp.get('/ping', (res) => res.end('ok'))
-  const server = await listen(app)
-  const rateServer = await listen(rateApp)
-  const writeServer = await listen(writeApp)
-  const idleServer = await listen(idleApp)
+  const server = await NativeAppServer.listen(app)
+  const rateServer = await NativeAppServer.listen(rateApp)
+  const writeServer = await NativeAppServer.listen(writeApp)
+  const idleServer = await NativeAppServer.listen(idleApp)
 
   try {
     const headerSocket = createConnection({ host: '127.0.0.1', port: server.port })
@@ -420,13 +418,13 @@ test('header and stalled-body timeout phases increment only their own counters',
     const idleSocket = createConnection({ host: '127.0.0.1', port: idleServer.port })
 
     await Promise.all([
-      onceConnected(headerSocket),
-      onceConnected(bodySocket),
-      onceConnected(nextHeaderSocket),
-      onceConnected(rateSocket),
-      onceConnected(writeSocket),
-      onceConnected(stableKeepAliveSocket),
-      onceConnected(idleSocket)
+      once(headerSocket, 'connect'),
+      once(bodySocket, 'connect'),
+      once(nextHeaderSocket, 'connect'),
+      once(rateSocket, 'connect'),
+      once(writeSocket, 'connect'),
+      once(stableKeepAliveSocket, 'connect'),
+      once(idleSocket, 'connect')
     ])
     headerSocket.write('GET / HTTP/1.1\r\nhost: localhost')
     bodySocket.write('POST /body HTTP/1.1\r\nhost: localhost\r\ncontent-length: 10\r\n\r\na')
@@ -447,7 +445,7 @@ test('header and stalled-body timeout phases increment only their own counters',
     idleSocket.write('GET /ping HTTP/1.1\r\nhost: localhost\r\n\r\n')
     assert.match((await idleResponse).toString('latin1'), /^HTTP\/1\.1 200 /)
 
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await delay(300)
     assert.equal(headerSocket.destroyed, false)
     assert.equal(bodySocket.destroyed, false)
     assert.equal(nextHeaderSocket.destroyed, false)
@@ -497,10 +495,10 @@ test('header and stalled-body timeout phases increment only their own counters',
     assert.equal(writeApp.getHttpTransportStats().responseWriteTimeouts, 1)
     assert.equal(writeAborts, 1)
   } finally {
-    closeServer(app, server.socket)
-    closeServer(rateApp, rateServer.socket)
-    closeServer(writeApp, writeServer.socket)
-    closeServer(idleApp, idleServer.socket)
+    server.close()
+    rateServer.close()
+    writeServer.close()
+    idleServer.close()
   }
 })
 
@@ -526,7 +524,7 @@ test(
       })
       res.onAborted(() => {})
     })
-    const server = await listen(app)
+    const server = await NativeAppServer.listen(app)
     const fastSocket = createConnection({ host: '127.0.0.1', port: server.port })
     const slowSocket = createConnection({ host: '127.0.0.1', port: server.port })
     const fastChunk = Buffer.alloc(100, 0x61)
@@ -538,7 +536,7 @@ test(
     let slowTimer
 
     try {
-      await Promise.all([onceConnected(fastSocket), onceConnected(slowSocket)])
+      await Promise.all([once(fastSocket, 'connect'), once(slowSocket, 'connect')])
       fastSocket.write(bodyRequestHead(bodyLength))
       slowSocket.write(bodyRequestHead(bodyLength))
 
@@ -590,7 +588,7 @@ test(
       clearInterval(slowTimer)
       fastSocket.destroy()
       slowSocket.destroy()
-      closeServer(app, server.socket)
+      server.close()
     }
   }
 )
@@ -610,11 +608,11 @@ test('activeConnections counts HTTP sockets and transfers ownership on WebSocket
       activeAtOpen = app.getHttpTransportStats().activeConnections
     }
   })
-  const server = await listen(app)
+  const server = await NativeAppServer.listen(app)
   const socket = createConnection({ host: '127.0.0.1', port: server.port })
 
   try {
-    await onceConnected(socket)
+    await once(socket, 'connect')
     await waitFor(() => app.getHttpTransportStats().activeConnections === 1, 1000)
     const upgraded = onceData(socket)
 
@@ -632,7 +630,7 @@ test('activeConnections counts HTTP sockets and transfers ownership on WebSocket
     assert.equal(app.getHttpTransportStats().activeConnections, 0)
   } finally {
     socket.destroy()
-    closeServer(app, server.socket)
+    server.close()
   }
 })
 
@@ -681,44 +679,10 @@ function bodyRequestHead(contentLength) {
   return `POST /body HTTP/1.1\r\nhost: localhost\r\ncontent-length: ${contentLength}\r\n\r\n`
 }
 
-function listen(app) {
-  return new Promise((resolve, reject) => {
-    app.listen('127.0.0.1', 0, (socket) => {
-      if (!socket) {
-        return reject(new Error('listen failed'))
-      }
-
-      resolve({ socket, port: us_socket_local_port(socket) })
-    })
-  })
-}
-
-function closeServer(app, socket) {
-  if (socket) {
-    us_listen_socket_close(socket)
-  }
-
-  app.close()
-}
-
 function rawExchange(port, chunks, delayMs = 0) {
-  return new Promise((resolve, reject) => {
-    const socket = createConnection({ host: '127.0.0.1', port })
-    const response = []
-
-    socket.setTimeout(12_000, () => socket.destroy(new Error('raw exchange timed out')))
-    socket.on('data', (chunk) => response.push(chunk))
-    socket.on('error', reject)
-    socket.on('end', () => resolve(Buffer.concat(response)))
-    socket.on('connect', async () => {
-      for (const chunk of chunks) {
-        socket.write(chunk)
-
-        if (delayMs) {
-          await delay(delayMs)
-        }
-      }
-    })
+  return rawHttpExchange({ host: '127.0.0.1', port }, chunks, {
+    delayMs,
+    timeoutMs: 12_000
   })
 }
 
@@ -731,39 +695,6 @@ function parseJsonResponse(response) {
   return JSON.parse(response.subarray(offset + 4).toString())
 }
 
-function onceConnected(socket) {
-  return new Promise((resolve, reject) => {
-    socket.once('connect', resolve)
-    socket.once('error', reject)
-  })
-}
-
 function onceData(socket) {
-  return new Promise((resolve, reject) => {
-    socket.once('data', resolve)
-    socket.once('error', reject)
-  })
-}
-
-function waitFor(predicate, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs
-    const poll = () => {
-      if (predicate()) {
-        return resolve()
-      }
-
-      if (Date.now() >= deadline) {
-        return reject(new Error('condition timed out'))
-      }
-
-      setTimeout(poll, 25)
-    }
-
-    poll()
-  })
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+  return once(socket, 'data').then(([chunk]) => chunk)
 }

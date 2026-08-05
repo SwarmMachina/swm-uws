@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createConnection } from 'node:net'
 
 import { createApp, us_listen_socket_close, us_socket_local_port } from '../../lib/index.js'
+import { rawHttpExchange } from '../helpers/raw-http.js'
 
 const scenario = process.argv[2]
 const app = createApp()
@@ -41,26 +42,14 @@ function listen() {
   })
 }
 
-function rawRequest(port, chunks) {
-  return new Promise((resolve, reject) => {
-    const socket = createConnection({ host: '127.0.0.1', port })
-    const response = []
-
-    socket.setTimeout(5_000, () => socket.destroy(new Error('raw request timed out')))
-    socket.on('connect', async () => {
-      for (const chunk of chunks) {
-        if (socket.destroyed) {
-          break
-        }
-
-        socket.write(chunk)
-        await new Promise((resolve) => setImmediate(resolve))
-      }
-    })
-    socket.on('data', (chunk) => response.push(chunk))
-    socket.on('close', () => resolve(Buffer.concat(response).toString()))
-    socket.on('error', reject)
+async function rawRequest(port, chunks) {
+  const response = await rawHttpExchange({ host: '127.0.0.1', port }, chunks, {
+    resolveOn: 'close',
+    yieldBetweenChunks: true,
+    timeoutMessage: 'raw request'
   })
+
+  return response.toString()
 }
 
 async function assertNextRequestWorks(port) {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { createConnection } from 'node:net'
 
+import { withTimeout } from './helpers/async.js'
 import { expectedBindingVersion } from './helpers/expected-version.js'
 
 const require = createRequire(import.meta.url)
@@ -273,19 +274,4 @@ function abortRequest() {
 
     socket.once('error', reject)
   })
-}
-
-async function withTimeout(promise, milliseconds, message) {
-  let timer
-
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), milliseconds)
-      })
-    ])
-  } finally {
-    clearTimeout(timer)
-  }
 }

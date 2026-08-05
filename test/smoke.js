@@ -15,7 +15,10 @@ import {
   version
 } from '../lib/index.js'
 import { resolvePrebuildTarget } from '../lib/load-native.js'
+import { withTimeout } from './helpers/async.js'
 import { expectedBindingVersion } from './helpers/expected-version.js'
+import { proxyProtocolV2Ipv4Header, rawHttpExchange } from './helpers/raw-http.js'
+import { nextWebSocketClose, nextWebSocketMessage, nextWebSocketOpen } from './helpers/websocket-events.js'
 
 assert.equal(version(), expectedBindingVersion)
 assert.deepEqual(capabilities(), {
@@ -515,13 +518,6 @@ if (serveOnly) {
   await runSelfTest()
 }
 
-function nextMessage(socket) {
-  return new Promise((resolve, reject) => {
-    socket.addEventListener('message', (event) => resolve(event.data), { once: true })
-    socket.addEventListener('error', () => reject(new Error('WebSocket error')), { once: true })
-  })
-}
-
 async function runSelfTest() {
   const response = await fetch(`http://127.0.0.1:${port}/`, {
     signal: AbortSignal.timeout(5_000)
@@ -693,37 +689,32 @@ async function runSelfTest() {
   const client = new WebSocket(`ws://127.0.0.1:${port}/ws`)
 
   client.binaryType = 'arraybuffer'
-  const greeting = nextMessage(client)
+  const greeting = nextWebSocketMessage(client, 'WebSocket error')
 
-  await new Promise((resolve, reject) => {
-    client.addEventListener('open', resolve, { once: true })
-    client.addEventListener('error', () => reject(new Error('WebSocket open failed')), {
-      once: true
-    })
-  })
+  await nextWebSocketOpen(client)
 
   assert.equal(await greeting, 'open')
   await withTimeout(pongReceived, 5_000, 'WebSocket pong callback timed out')
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(pongPayload.byteLength, 0)
 
-  const textEcho = nextMessage(client)
+  const textEcho = nextWebSocketMessage(client, 'WebSocket error')
 
   client.send('hello')
   assert.equal(await textEcho, 'hello')
 
-  const binaryEcho = nextMessage(client)
+  const binaryEcho = nextWebSocketMessage(client, 'WebSocket error')
 
   client.send(Uint8Array.from([1, 2, 3, 255]))
   assert.deepEqual(new Uint8Array(await binaryEcho), Uint8Array.from([1, 2, 3, 255]))
 
-  const fragmented = nextMessage(client)
+  const fragmented = nextWebSocketMessage(client, 'WebSocket error')
 
   client.send('fragment')
   assert.equal(await fragmented, 'fragmented')
 
   const immediateClient = await openWebSocketClient()
-  const immediateClose = nextClose(immediateClient)
+  const immediateClose = nextWebSocketClose(immediateClient)
 
   immediateClient.send('server-close')
   const immediateCloseEvent = await immediateClose
@@ -731,9 +722,9 @@ async function runSelfTest() {
   assert.equal(immediateCloseEvent.code, 1006)
 
   const limitedClient = new WebSocket(`ws://127.0.0.1:${port}/limited`)
-  const limitedClientClose = nextClose(limitedClient)
+  const limitedClientClose = nextWebSocketClose(limitedClient)
 
-  await nextOpen(limitedClient)
+  await nextWebSocketOpen(limitedClient)
   limitedClient.send('this payload is too long')
   await withTimeout(limitedClosed, 5_000, 'limited WebSocket close callback timed out')
   const limitedCloseEvent = await withTimeout(limitedClientClose, 5_000, 'limited WebSocket client close timed out')
@@ -743,9 +734,9 @@ async function runSelfTest() {
   assert.equal(limitedCloseCount, 1)
 
   const drainClient = new WebSocket(`ws://127.0.0.1:${port}/drain`)
-  const drainClientClose = nextClose(drainClient)
+  const drainClientClose = nextWebSocketClose(drainClient)
 
-  await nextOpen(drainClient)
+  await nextWebSocketOpen(drainClient)
   await withTimeout(drained, 5_000, 'WebSocket drain callback timed out')
   const drainCloseEvent = await withTimeout(drainClientClose, 5_000, 'drain WebSocket close timed out')
 
@@ -754,7 +745,7 @@ async function runSelfTest() {
   assert.equal(drainCloseEvent.code, 1000)
   assert.equal(drainCloseEvent.reason, 'drained')
 
-  const forcedClose = nextClose(client)
+  const forcedClose = nextWebSocketClose(client)
 
   assert.equal(app.close(), app)
   assert.equal(app.close(), app)
@@ -777,58 +768,40 @@ async function runSelfTest() {
 
 async function openWebSocketClient() {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`)
-  const greeting = nextMessage(socket)
+  const greeting = nextWebSocketMessage(socket, 'WebSocket error')
 
-  await new Promise((resolve, reject) => {
-    socket.addEventListener('open', resolve, { once: true })
-    socket.addEventListener('error', () => reject(new Error('WebSocket open failed')), {
-      once: true
-    })
-  })
+  await nextWebSocketOpen(socket)
 
   assert.equal(await greeting, 'open')
 
   return socket
 }
 
-function proxyRequest() {
-  return new Promise((resolve, reject) => {
-    const socket = createConnection({ host: '127.0.0.1', port })
-    const chunks = []
+async function proxyRequest() {
+  const response = await rawHttpExchange(
+    { host: '127.0.0.1', port },
+    ['GET /proxy-info HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'],
+    {
+      prefix: proxyProtocolV2Ipv4Header({
+        sourceAddress: [203, 0, 113, 7],
+        sourcePort: 45_678,
+        destinationPort: port
+      }),
+      timeoutMessage: 'PROXY request'
+    }
+  )
 
-    socket.setTimeout(5_000, () => socket.destroy(new Error('PROXY request timed out')))
-    socket.on('connect', () => {
-      const proxyHeader = Buffer.alloc(28)
-
-      Buffer.from('\r\n\r\n\0\r\nQUIT\n', 'binary').copy(proxyHeader)
-      proxyHeader[12] = 0x21
-      proxyHeader[13] = 0x11
-      proxyHeader.writeUInt16BE(12, 14)
-      Buffer.from([203, 0, 113, 7, 127, 0, 0, 1]).copy(proxyHeader, 16)
-      proxyHeader.writeUInt16BE(45_678, 24)
-      proxyHeader.writeUInt16BE(port, 26)
-      socket.write(proxyHeader)
-      socket.write('GET /proxy-info HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')
-    })
-    socket.on('data', (chunk) => chunks.push(chunk))
-    socket.on('end', () => resolve(Buffer.concat(chunks).toString()))
-    socket.on('error', reject)
-  })
+  return response.toString()
 }
 
-function rawHttpRequest(method, path, connection) {
-  return new Promise((resolve, reject) => {
-    const socket = createConnection(connection)
-    const chunks = []
+async function rawHttpRequest(method, path, connection) {
+  const response = await rawHttpExchange(
+    connection,
+    [`${method} ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`],
+    { timeoutMessage: `${method} request` }
+  )
 
-    socket.setTimeout(5_000, () => socket.destroy(new Error(`${method} request timed out`)))
-    socket.on('connect', () => {
-      socket.write(`${method} ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`)
-    })
-    socket.on('data', (chunk) => chunks.push(chunk))
-    socket.on('end', () => resolve(Buffer.concat(chunks).toString()))
-    socket.on('error', reject)
-  })
+  return response.toString()
 }
 
 async function testUnixListen() {
@@ -868,21 +841,6 @@ async function testUnixListen() {
   }
 }
 
-function nextClose(socket) {
-  return new Promise((resolve) => {
-    socket.addEventListener('close', resolve, { once: true })
-  })
-}
-
-function nextOpen(socket) {
-  return new Promise((resolve, reject) => {
-    socket.addEventListener('open', resolve, { once: true })
-    socket.addEventListener('error', () => reject(new Error('WebSocket open failed')), {
-      once: true
-    })
-  })
-}
-
 function abortRequest() {
   return new Promise((resolve, reject) => {
     const socket = createConnection({ host: '127.0.0.1', port }, () => {
@@ -895,19 +853,4 @@ function abortRequest() {
 
     socket.once('error', reject)
   })
-}
-
-async function withTimeout(promise, milliseconds, message) {
-  let timer
-
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), milliseconds)
-      })
-    ])
-  } finally {
-    clearTimeout(timer)
-  }
 }

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
-import { createConnection, createServer } from 'node:net'
 import test from 'node:test'
 
-import { createApp, us_socket_local_port } from '../lib/index.js'
+import { createApp } from '../lib/index.js'
+import { NativeAppServer } from './helpers/native-app-server.js'
+import { proxyProtocolV2Ipv4Header, rawHttpExchange } from './helpers/raw-http.js'
+import { nextWebSocketEvent } from './helpers/websocket-events.js'
 
 const READABLE_SURFACE = {
   HttpRequest: ['forEach', 'getCaseSensitiveMethod', 'getHeader', 'getMethod', 'getParameter', 'getQuery', 'getUrl'],
@@ -43,64 +45,18 @@ function arrayBuffer(bytes) {
 }
 
 function rawRequest(port, chunks, proxyHeader) {
-  return new Promise((resolve, reject) => {
-    const socket = createConnection({ host: '127.0.0.1', port })
-    const response = []
-
-    socket.setTimeout(5_000, () => socket.destroy(new Error('raw request timed out')))
-    socket.on('connect', async () => {
-      if (proxyHeader) {
-        socket.write(proxyHeader)
-      }
-
-      for (const chunk of chunks) {
-        socket.write(chunk)
-        await new Promise((resolve) => setImmediate(resolve))
-      }
-    })
-    socket.on('data', (chunk) => response.push(chunk))
-    socket.on('end', () => resolve(Buffer.concat(response).toString()))
-    socket.on('error', reject)
-  })
+  return rawHttpExchange({ host: '127.0.0.1', port }, chunks, {
+    prefix: proxyHeader,
+    yieldBetweenChunks: true,
+    timeoutMessage: 'raw request'
+  }).then((response) => response.toString())
 }
 
 function proxyV2Header(port, sourcePort = 41_234) {
-  const header = Buffer.alloc(28)
-
-  Buffer.from('\r\n\r\n\0\r\nQUIT\n', 'binary').copy(header)
-  header[12] = 0x21
-  header[13] = 0x11
-  header.writeUInt16BE(12, 14)
-  Buffer.from([203, 0, 113, 10, 127, 0, 0, 1]).copy(header, 16)
-  header.writeUInt16BE(sourcePort, 24)
-  header.writeUInt16BE(port, 26)
-
-  return header
-}
-
-function nextEvent(target, name) {
-  return new Promise((resolve, reject) => {
-    target.addEventListener(name, resolve, { once: true })
-    target.addEventListener('error', () => reject(new Error(`WebSocket ${name} failed`)), { once: true })
-  })
-}
-
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = createServer()
-
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-
-      server.close((error) => {
-        if (error) {
-          return reject(error)
-        }
-
-        resolve(address.port)
-      })
-    })
-    server.on('error', reject)
+  return proxyProtocolV2Ipv4Header({
+    sourceAddress: [203, 0, 113, 10],
+    sourcePort,
+    destinationPort: port
   })
 }
 
@@ -288,18 +244,8 @@ test('native readable surface has a functional network contract', { timeout: 15_
     }
   })
 
-  const port = await getFreePort()
-
-  await new Promise((resolve, reject) => {
-    app.listen('127.0.0.1', port, (socket) => {
-      if (!socket) {
-        return reject(new Error('listen failed'))
-      }
-
-      assert.equal(us_socket_local_port(socket), port)
-      resolve()
-    })
-  })
+  const server = await NativeAppServer.listen(app)
+  const { port } = server
 
   try {
     const body = 'split-body'
@@ -347,11 +293,11 @@ test('native readable surface has a functional network contract', { timeout: 15_
     }
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
-    const message = await nextEvent(ws, 'message')
+    const message = await nextWebSocketEvent(ws, 'message')
 
     assert.equal(message.data, 'ready')
     ws.send('close')
-    await nextEvent(ws, 'close')
+    await nextWebSocketEvent(ws, 'close')
     await new Promise((resolve) => setImmediate(resolve))
     assert.equal(subscriptionSeen, true)
     assert.deepEqual(closeSeen, { code: 1000, reason: 'done' })
@@ -369,6 +315,6 @@ test('native readable surface has a functional network contract', { timeout: 15_
       'every manifest entry must execute a functional assertion'
     )
   } finally {
-    app.close()
+    server.close()
   }
 })

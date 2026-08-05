@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 
+import { withTimeout } from './helpers/async.js'
+import { nextWebSocketEvent, nextWebSocketMessage } from './helpers/websocket-events.js'
+
 const require = createRequire(import.meta.url)
 const { App, us_listen_socket_close } = require('../build/Release/swm_uws.node')
 const port = 40_000 + (process.pid % 10_000)
@@ -81,24 +84,24 @@ await new Promise((resolve, reject) => {
 const client = new WebSocket(`ws://127.0.0.1:${port}/ws`)
 
 client.binaryType = 'arraybuffer'
-const greeting = nextMessage(client)
+const greeting = nextWebSocketMessage(client)
 
-await once(client, 'open')
+await nextWebSocketEvent(client, 'open')
 assert.equal(await greeting, 'open')
 assert.equal(openCount, 1)
 assert.deepEqual(subscriptions, [['room', 1, 0]])
 assert.equal(app.numSubscribers('room'), 1)
 
 client.send('hello')
-assert.equal(await nextMessage(client), 'hello')
+assert.equal(await nextWebSocketMessage(client), 'hello')
 assert.equal(detachedMessage.byteLength, 0)
 
-const published = nextMessage(client)
+const published = nextWebSocketMessage(client)
 
 assert.equal(app.publish('room', Uint8Array.from([1, 2, 3]), true), true)
 assert.deepEqual(new Uint8Array(await published), Uint8Array.from([1, 2, 3]))
 
-const unsubscribed = nextMessage(client)
+const unsubscribed = nextWebSocketMessage(client)
 
 client.send('unsubscribe')
 assert.equal(await unsubscribed, 'unsubscribed')
@@ -110,7 +113,7 @@ assert.equal(app.numSubscribers('room'), 0)
 assert.equal(app.publish('room', 'no subscribers'), false)
 
 client.close()
-await once(client, 'close')
+await nextWebSocketEvent(client, 'close')
 await withTimeout(closed, 5_000, 'native close callback timed out')
 assert.equal(closeCount, 1)
 assert.equal(app.numSubscribers('room'), 0)
@@ -119,32 +122,3 @@ assert.throws(() => nativeSocket.send('late'), /WebSocket is no longer valid/)
 us_listen_socket_close(listenSocket)
 app.close()
 console.log(`raw V8 WebSocket smoke ok on ${port}`)
-
-function once(target, event) {
-  return new Promise((resolve, reject) => {
-    target.addEventListener(event, resolve, { once: true })
-    target.addEventListener('error', () => reject(new Error(`WebSocket ${event} failed`)), { once: true })
-  })
-}
-
-function nextMessage(socket) {
-  return new Promise((resolve, reject) => {
-    socket.addEventListener('message', (event) => resolve(event.data), { once: true })
-    socket.addEventListener('error', () => reject(new Error('WebSocket message failed')), { once: true })
-  })
-}
-
-async function withTimeout(promise, milliseconds, message) {
-  let timer
-
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), milliseconds)
-      })
-    ])
-  } finally {
-    clearTimeout(timer)
-  }
-}

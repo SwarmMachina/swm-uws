@@ -1,10 +1,15 @@
-import { spawn } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { runHttp1Load } from '@swarmmachina/benchkit/load/http1'
+import { parseArgs } from '@swarmmachina/benchkit/orchestration'
+import { median, percentDelta } from '@swarmmachina/benchkit/statistics'
+
+import { benchmarkBlockSchedule } from './lib/benchmark-block-schedule.js'
+import { BenchmarkTargetProcess } from './lib/benchmark-target-process.js'
+import { cpuIndexOption, expandEqualsArguments, positiveIntegerOption, requiredOption } from './lib/option-values.js'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const options = parseOptions(process.argv.slice(2))
@@ -12,10 +17,8 @@ const target = await startTarget()
 const cells = options.quick ? quickCells() : fullCells()
 const results = []
 
-let messageId = 0
-
 process.stderr.write(
-  `request-prefetch benchmark: node=${process.version} target=${target.node} ` +
+  `request-prefetch benchmark: node=${process.version} target=${target.ready.node} ` +
     `connections=${options.connections} pipelining=${options.pipelining} ` +
     `warmup=${options.warmupMs}ms duration=${options.durationMs}ms ` +
     `workers=${options.workers} ABBA-blocks=${options.blocks} cells=${cells.length}\n`
@@ -23,18 +26,16 @@ process.stderr.write(
 
 try {
   for (const cell of cells) {
-    const schedule = Array.from({ length: options.blocks }, (_, block) =>
-      block % 2 === 0
-        ? [cell.baseline, cell.candidate, cell.candidate, cell.baseline]
-        : [cell.candidate, cell.baseline, cell.baseline, cell.candidate]
-    ).flat()
+    const schedule = benchmarkBlockSchedule(options.blocks, {
+      baseline: cell.baseline,
+      candidate: cell.candidate
+    })
 
-    for (let run = 0; run < schedule.length; run++) {
-      const mode = schedule[run]
-      const targetMetrics = await collectTargetMetrics(target.child, async () => {
+    for (const [run, { role, value: mode }] of schedule.entries()) {
+      const targetMetrics = await target.measure(async () => {
         return runHttp1Load({
           name: `${cell.name}:${mode}`,
-          url: `http://127.0.0.1:${target.port}/${mode}`,
+          url: `http://127.0.0.1:${target.ready.port}/${mode}`,
           headers: requestHeaders(cell),
           connections: options.connections,
           pipelining: options.pipelining,
@@ -51,7 +52,7 @@ try {
 
       results.push({
         cell: cell.name,
-        role: mode === cell.baseline ? 'baseline' : 'candidate',
+        role,
         mode,
         run,
         requestsPerSecond: result.requests.averagePerSecond,
@@ -75,7 +76,7 @@ try {
     }
   }
 } finally {
-  target.child.send({ type: 'shutdown' })
+  await target.stop({ shutdownMessage: { type: 'shutdown' } })
 }
 
 const artifact = {
@@ -83,7 +84,7 @@ const artifact = {
   generatedAt: new Date().toISOString(),
   environment: {
     loadNode: process.version,
-    targetNode: target.node,
+    targetNode: target.ready.node,
     platform: process.platform,
     arch: process.arch,
     cpus: os.cpus().map(({ model }) => model),
@@ -177,95 +178,65 @@ function requestHeaders(cell) {
 }
 
 function parseOptions(args) {
-  const values = {
-    quick: false,
-    blocks: 6,
-    connections: 100,
-    pipelining: 10,
-    workers: Math.min(4, os.availableParallelism()),
-    warmupMs: 3000,
-    durationMs: 10000,
-    serverCpu: -1,
-    output: 'benchmark/request-prefetch/results.json'
-  }
+  return parseArgs(
+    expandEqualsArguments(args),
+    {
+      quick: false,
+      blocks: 6,
+      connections: 100,
+      pipelining: 10,
+      workers: Math.min(4, os.availableParallelism()),
+      warmupMs: 3000,
+      durationMs: 10000,
+      serverCpu: -1,
+      output: 'benchmark/request-prefetch/results.json'
+    },
+    {
+      '--quick': (out) => {
+        out.quick = true
 
-  for (const argument of args) {
-    if (argument === '--quick') {
-      values.quick = true
-    } else {
-      const match = /^--([^=]+)=(.+)$/.exec(argument)
-
-      if (!match || !(match[1] in values)) {
-        throw new Error(`unknown option: ${argument}`)
+        return false
+      },
+      '--blocks': (out, value) => {
+        out.blocks = positiveIntegerOption('--blocks', value)
+      },
+      '--connections': (out, value) => {
+        out.connections = positiveIntegerOption('--connections', value)
+      },
+      '--pipelining': (out, value) => {
+        out.pipelining = positiveIntegerOption('--pipelining', value)
+      },
+      '--workers': (out, value) => {
+        out.workers = positiveIntegerOption('--workers', value)
+      },
+      '--warmupMs': (out, value) => {
+        out.warmupMs = positiveIntegerOption('--warmupMs', value)
+      },
+      '--durationMs': (out, value) => {
+        out.durationMs = positiveIntegerOption('--durationMs', value)
+      },
+      '--serverCpu': (out, value) => {
+        out.serverCpu = cpuIndexOption('--serverCpu', value)
+      },
+      '--output': (out, value) => {
+        out.output = requiredOption('--output', value)
       }
-
-      values[match[1]] = match[1] === 'output' ? match[2] : Number(match[2])
-    }
-  }
-
-  for (const name of ['blocks', 'connections', 'pipelining', 'workers', 'warmupMs', 'durationMs']) {
-    if (!Number.isInteger(values[name]) || values[name] <= 0) {
-      throw new Error(`--${name} must be a positive integer`)
-    }
-  }
-
-  if (!Number.isInteger(values.serverCpu) || values.serverCpu < -1) {
-    throw new Error('--serverCpu must be -1 or a non-negative integer')
-  }
-
-  return values
+    },
+    { strict: true, offset: 0 }
+  )
 }
 
 function startTarget() {
-  return new Promise((resolve, reject) => {
-    const targetCommand =
-      process.platform === 'linux' && options.serverCpu >= 0
-        ? ['taskset', ['-c', String(options.serverCpu), process.execPath, 'scripts/benchmark-prefetch-server.js']]
-        : [process.execPath, ['scripts/benchmark-prefetch-server.js']]
-    const child = spawn(targetCommand[0], targetCommand[1], {
-      cwd: root,
-      stdio: ['ignore', 'inherit', 'inherit', 'ipc']
-    })
+  const targetCommand =
+    process.platform === 'linux' && options.serverCpu >= 0
+      ? ['taskset', ['-c', String(options.serverCpu), process.execPath, 'scripts/benchmark-prefetch-server.js']]
+      : [process.execPath, ['scripts/benchmark-prefetch-server.js']]
 
-    child.once('error', reject)
-    child.once('exit', (code) => {
-      if (code && code !== 0) {
-        reject(new Error(`benchmark target exited ${code}`))
-      }
-    })
-    child.on('message', (message) => {
-      if (message?.type === 'ready') {
-        resolve({ child, ...message })
-      }
-    })
-  })
-}
-
-async function collectTargetMetrics(child, run) {
-  const id = ++messageId
-
-  await requestMessage(child, { type: 'metrics:start', id }, 'metrics:started')
-  const value = await run()
-  const response = await requestMessage(child, { type: 'metrics:stop', id }, 'metrics:result')
-
-  return { value, metrics: response.metrics }
-}
-
-function requestMessage(child, request, responseType) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error(`target did not answer ${request.type}`)), 5000)
-    const onMessage = (message) => {
-      if (message?.type !== responseType || message.id !== request.id) {
-        return
-      }
-
-      clearTimeout(timeout)
-      child.off('message', onMessage)
-      resolve(message)
-    }
-
-    child.on('message', onMessage)
-    child.send(request)
+  return BenchmarkTargetProcess.start({
+    command: targetCommand[0],
+    arguments_: targetCommand[1],
+    cwd: root,
+    stdio: ['ignore', 'inherit', 'inherit', 'ipc']
   })
 }
 
@@ -277,7 +248,7 @@ function renderReport(artifact) {
     const candidate = summarize(
       artifact.results.filter((result) => result.cell === cell.name && result.role === 'candidate')
     )
-    const delta = ((candidate.rps / baseline.rps - 1) * 100).toFixed(1)
+    const delta = percentDelta(candidate.rps, baseline.rps).toFixed(1)
 
     return `| ${cell.name} | ${Math.round(baseline.rps)} | ${Math.round(candidate.rps)} | ${delta}% | ${candidate.p95.toFixed(3)} | ${candidate.p99.toFixed(3)} | ${candidate.elu.toFixed(1)}% | ${candidate.rss.toFixed(1)} |`
   })
@@ -305,11 +276,4 @@ function summarize(results) {
     elu: median(results.map((result) => result.target.eluPct)),
     rss: median(results.map((result) => result.target.memMB.rssPeak))
   }
-}
-
-function median(values) {
-  const ordered = values.toSorted((left, right) => left - right)
-  const middle = Math.floor(ordered.length / 2)
-
-  return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2
 }
