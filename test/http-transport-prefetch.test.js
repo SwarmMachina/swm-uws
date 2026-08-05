@@ -168,6 +168,41 @@ test('fragmented request heads use the same per-App size policy', async () => {
   }
 })
 
+test('maxHeaderSize accepts N-1 and N bytes and rejects N+1 bytes', async () => {
+  const maxHeaderSize = 128
+  const app = createApp({ http: { maxHeaderSize } })
+
+  let calls = 0
+
+  app.get('/', (res) => {
+    calls++
+    res.end('ok')
+  })
+  const server = await listen(app)
+
+  try {
+    for (const size of [maxHeaderSize - 1, maxHeaderSize]) {
+      const request = requestHeadOfSize(size)
+      const split = Math.floor(request.length / 2)
+      const response = await rawExchange(server.port, [request.slice(0, split), request.slice(split)], 2)
+
+      assert.equal(Buffer.byteLength(request), size)
+      assert.match(response.toString('latin1'), /^HTTP\/1\.1 200 /)
+    }
+
+    const oversized = requestHeadOfSize(maxHeaderSize + 1)
+    const split = Math.floor(oversized.length / 2)
+    const rejected = await rawExchange(server.port, [oversized.slice(0, split), oversized.slice(split)], 2)
+
+    assert.equal(Buffer.byteLength(oversized), maxHeaderSize + 1)
+    assert.match(rejected.toString('latin1'), /^HTTP\/1\.1 431 /)
+    assert.equal(calls, 2)
+    assert.equal(app.getHttpTransportStats().headerTooLarge, 1)
+  } finally {
+    closeServer(app, server.socket)
+  }
+})
+
 test('pipelined requests reapply header policy without mixing responses', async () => {
   const app = createApp({ http: { maxHeaderCount: 3 } })
   const urls = []
@@ -469,6 +504,97 @@ test('header and stalled-body timeout phases increment only their own counters',
   }
 })
 
+test(
+  'minimum body rate keeps an above-threshold stream and rejects a sustained below-threshold stream',
+  {
+    timeout: 20_000
+  },
+  async () => {
+    const bodyLength = 100_000
+    const app = createApp({
+      http: {
+        bodyIdleTimeoutMs: 250,
+        minBodyRateBytesPerSec: 400
+      }
+    })
+
+    app.post('/body', (res) => {
+      res.onData((_chunk, isLast) => {
+        if (isLast) {
+          res.end('ok')
+        }
+      })
+      res.onAborted(() => {})
+    })
+    const server = await listen(app)
+    const fastSocket = createConnection({ host: '127.0.0.1', port: server.port })
+    const slowSocket = createConnection({ host: '127.0.0.1', port: server.port })
+    const fastChunk = Buffer.alloc(100, 0x61)
+    const slowChunk = Buffer.alloc(1, 0x62)
+
+    let fastSent = 0
+    let slowSent = 0
+    let fastTimer
+    let slowTimer
+
+    try {
+      await Promise.all([onceConnected(fastSocket), onceConnected(slowSocket)])
+      fastSocket.write(bodyRequestHead(bodyLength))
+      slowSocket.write(bodyRequestHead(bodyLength))
+
+      const writeFast = () => {
+        if (fastSocket.destroyed) {
+          return
+        }
+
+        fastSocket.write(fastChunk)
+        fastSent += fastChunk.length
+      }
+      const writeSlow = () => {
+        if (slowSocket.destroyed) {
+          return
+        }
+
+        slowSocket.write(slowChunk)
+        slowSent += slowChunk.length
+      }
+
+      writeFast()
+      writeSlow()
+      fastTimer = setInterval(writeFast, 100)
+      slowTimer = setInterval(writeSlow, 500)
+
+      await waitFor(() => app.getHttpTransportStats().bodyRateViolations === 1, 12_000)
+      clearInterval(fastTimer)
+      clearInterval(slowTimer)
+      fastTimer = undefined
+      slowTimer = undefined
+
+      await waitFor(() => slowSocket.destroyed, 1_000)
+      assert.equal(slowSocket.destroyed, true)
+      assert.equal(fastSocket.destroyed, false)
+      assert.ok(fastSent >= 100)
+      assert.ok(slowSent > 1, 'below-threshold client must keep sending until rejected')
+
+      const response = onceData(fastSocket)
+
+      fastSocket.write(Buffer.alloc(bodyLength - fastSent, 0x61))
+      assert.match((await response).toString('latin1'), /^HTTP\/1\.1 200 /)
+
+      const stats = app.getHttpTransportStats()
+
+      assert.equal(stats.bodyRateViolations, 1)
+      assert.equal(stats.bodyTimeouts, 0)
+    } finally {
+      clearInterval(fastTimer)
+      clearInterval(slowTimer)
+      fastSocket.destroy()
+      slowSocket.destroy()
+      closeServer(app, server.socket)
+    }
+  }
+)
+
 test('capabilities negotiate both native fast paths', () => {
   assert.equal(capabilities().httpTransportConfig, true)
   assert.equal(capabilities().requestPrefetch, true)
@@ -539,6 +665,20 @@ function emptyStats() {
     bodyRateViolations: 0,
     responseWriteTimeouts: 0
   }
+}
+
+function requestHeadOfSize(size) {
+  const prefix = 'GET / HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\nx-fill: '
+  const suffix = '\r\n\r\n'
+  const fillerLength = size - Buffer.byteLength(prefix) - Buffer.byteLength(suffix)
+
+  assert.ok(fillerLength >= 0)
+
+  return prefix + 'a'.repeat(fillerLength) + suffix
+}
+
+function bodyRequestHead(contentLength) {
+  return `POST /body HTTP/1.1\r\nhost: localhost\r\ncontent-length: ${contentLength}\r\n\r\n`
 }
 
 function listen(app) {
