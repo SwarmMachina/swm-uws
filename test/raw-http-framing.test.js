@@ -88,6 +88,7 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
       )
 
       assert.equal(responses[0].status, status)
+      assert.equal(responses[0].headers.has('uwebsockets'), false)
       assert.equal(responses[0].body.toString(), body)
       assert.equal(responses[0].framing, framing)
     }
@@ -168,6 +169,28 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
     const next = await requestAndParse(port, ['GET /one HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'], 1)
 
     assert.equal(next[0].body.toString(), 'one')
+  } finally {
+    server.close()
+  }
+})
+
+test('server header is suppressed without replacing automatic parser errors', async () => {
+  const app = createApp({ http: { maxHeaderSize: 96 } })
+  const server = await NativeAppServer.listen(app)
+
+  try {
+    for (const [request, status] of [
+      ['GET / HTTP/1.1\r\nHost localhost\r\nConnection: close\r\n\r\n', 400],
+      [`GET / HTTP/1.1\r\nHost: localhost\r\nX-Long: ${'a'.repeat(96)}\r\nConnection: close\r\n\r\n`, 431],
+      ['GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n', 505]
+    ]) {
+      const response = (await rawExchange(server.port, [request])).toString('latin1')
+      const [head, body] = response.split('\r\n\r\n')
+
+      assert.match(head, new RegExp(`^HTTP/1\\.1 ${status} `))
+      assert.doesNotMatch(head, /^uWebSockets:/im)
+      assert.match(body, /uWebSockets\/20 Server/)
+    }
   } finally {
     server.close()
   }
