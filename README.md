@@ -21,7 +21,7 @@ and [TypeScript API](lib/index.d.ts).
 - TypeScript declarations with typed standalone callback helpers.
 - Zero-copy streaming and bounded native body collection.
 - Per-App native HTTP limits, phase-specific timeouts, and transport counters.
-- Generated responses omit the upstream server header while retaining automatic parser errors.
+- Generated responses omit the upstream fingerprint from headers and automatic parser errors.
 - Compiled selective request-header prefetch with owned lazy snapshots.
 - Batched responses and explicit capability detection.
 - Platform-specific prebuilds with no runtime dependencies.

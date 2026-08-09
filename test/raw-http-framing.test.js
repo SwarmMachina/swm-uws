@@ -174,7 +174,7 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
   }
 })
 
-test('server header is suppressed without replacing automatic parser errors', async () => {
+test('server fingerprint is suppressed in headers and automatic parser errors', async () => {
   const app = createApp({ http: { maxHeaderSize: 96 } })
   const server = await NativeAppServer.listen(app)
 
@@ -189,7 +189,7 @@ test('server header is suppressed without replacing automatic parser errors', as
 
       assert.match(head, new RegExp(`^HTTP/1\\.1 ${status} `))
       assert.doesNotMatch(head, /^uWebSockets:/im)
-      assert.match(body, /uWebSockets\/20 Server/)
+      assert.equal(body, '')
     }
   } finally {
     server.close()

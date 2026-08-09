@@ -9,8 +9,7 @@ void InitializeModule(v8::Local<v8::Object> exports,
     using namespace swm::binding;
 
     v8::Isolate *isolate = context->GetIsolate();
-    uWS::Loop *loop = uWS::Loop::get(node::GetCurrentEventLoop(isolate));
-    loop->setSilent(true);
+    uWS::Loop::get(node::GetCurrentEventLoop(isolate));
 
     auto *environment = new BindingEnvironment(isolate);
     v8::Local<v8::External> environmentExternal = v8::External::New(isolate, environment);
