@@ -289,6 +289,7 @@ protected:
     static inline bool isFin(char *frame) {return *((unsigned char *) frame) & 128;}
     static inline unsigned char getOpCode(char *frame) {return *((unsigned char *) frame) & 15;}
     static inline unsigned char payloadLength(char *frame) {return ((unsigned char *) frame)[1] & 127;}
+    static inline bool isMasked(char *frame) {return ((unsigned char *) frame)[1] & 128;}
     static inline bool rsv23(char *frame) {return *((unsigned char *) frame) & 48;}
     static inline bool rsv1(char *frame) {return *((unsigned char *) frame) & 64;}
 
@@ -482,7 +483,18 @@ public:
         }
         if (wState->state.wantsHead) {
             parseNext:
-            while (length >= SHORT_MESSAGE_HEADER) {
+            while (length >= 2) {
+
+                /* RFC 6455 5.1: every frame sent from a client to a server is masked. */
+                if constexpr (isServer) {
+                    if (!isMasked(src)) {
+                        Impl::forceClose(wState, user, ERR_PROTOCOL);
+                        return;
+                    }
+                    if (length < SHORT_MESSAGE_HEADER) {
+                        break;
+                    }
+                }
 
                 // invalid reserved bits / invalid opcodes / invalid control frames / set compressed frame
                 if ((rsv1(src) && !Impl::setCompressed(wState, user)) || rsv23(src) || (getOpCode(src) > 2 && getOpCode(src) < 8) ||

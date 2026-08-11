@@ -25,6 +25,89 @@
 #include <string_view>
 
 namespace uWS {
+    inline bool asciiCaseInsensitiveEqual(std::string_view left, std::string_view right) {
+        if (left.length() != right.length()) {
+            return false;
+        }
+
+        for (size_t i = 0; i < left.length(); i++) {
+            unsigned char leftCharacter = (unsigned char) left[i];
+            unsigned char rightCharacter = (unsigned char) right[i];
+
+            if (leftCharacter >= 'A' && leftCharacter <= 'Z') {
+                leftCharacter = (unsigned char) (leftCharacter + ('a' - 'A'));
+            }
+            if (rightCharacter >= 'A' && rightCharacter <= 'Z') {
+                rightCharacter = (unsigned char) (rightCharacter + ('a' - 'A'));
+            }
+            if (leftCharacter != rightCharacter) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    inline bool hasAsciiCaseInsensitiveToken(std::string_view value, std::string_view expectedToken) {
+        for (size_t offset = 0; offset <= value.length(); ) {
+            size_t delimiter = value.find(',', offset);
+            size_t end = delimiter == std::string_view::npos ? value.length() : delimiter;
+
+            while (offset < end && (value[offset] == ' ' || value[offset] == '\t')) {
+                offset++;
+            }
+            while (end > offset && (value[end - 1] == ' ' || value[end - 1] == '\t')) {
+                end--;
+            }
+
+            if (asciiCaseInsensitiveEqual(value.substr(offset, end - offset), expectedToken)) {
+                return true;
+            }
+            if (delimiter == std::string_view::npos) {
+                break;
+            }
+            offset = delimiter + 1;
+        }
+
+        return false;
+    }
+
+    inline int base64Value(unsigned char character) {
+        if (character >= 'A' && character <= 'Z') {
+            return character - 'A';
+        }
+        if (character >= 'a' && character <= 'z') {
+            return character - 'a' + 26;
+        }
+        if (character >= '0' && character <= '9') {
+            return character - '0' + 52;
+        }
+        if (character == '+') {
+            return 62;
+        }
+        if (character == '/') {
+            return 63;
+        }
+
+        return -1;
+    }
+
+    inline bool isValidWebSocketKey(std::string_view key) {
+        /* A 16-byte nonce has 22 base64 characters and exactly two padding characters. */
+        if (key.length() != 24 || key[22] != '=' || key[23] != '=') {
+            return false;
+        }
+
+        for (size_t i = 0; i < 22; i++) {
+            if (base64Value((unsigned char) key[i]) == -1) {
+                return false;
+            }
+        }
+
+        /* The four unused pad bits must be zero for canonical RFC 4648 base64. */
+        return !(base64Value((unsigned char) key[21]) & 15);
+    }
+
     /* Safari 15.0 - 15.3 has a completely broken compression implementation (client_no_context_takeover not
      * properly implemented) - so we fully disable compression for this browser :-(
      * see https://github.com/uNetworking/uWebSockets/issues/1347 */
@@ -58,6 +141,37 @@ namespace uWS {
 #include "PerMessageDeflate.h"
 
 namespace uWS {
+
+    inline bool isValidDefaultWebSocketUpgrade(HttpRequest *req, std::string_view &secWebSocketKey) {
+        bool hasConnectionUpgradeToken = false;
+        bool hasWebSocketUpgradeToken = false;
+        unsigned int secWebSocketKeyCount = 0;
+        unsigned int secWebSocketVersionCount = 0;
+        std::string_view secWebSocketVersion;
+
+        for (auto [name, value] : *req) {
+            if (name == "sec-websocket-key") {
+                secWebSocketKey = value;
+                secWebSocketKeyCount++;
+            } else if (name == "sec-websocket-version") {
+                secWebSocketVersion = value;
+                secWebSocketVersionCount++;
+            } else if (name == "connection") {
+                hasConnectionUpgradeToken = hasConnectionUpgradeToken ||
+                    hasAsciiCaseInsensitiveToken(value, "upgrade");
+            } else if (name == "upgrade") {
+                hasWebSocketUpgradeToken = hasWebSocketUpgradeToken ||
+                    hasAsciiCaseInsensitiveToken(value, "websocket");
+            }
+        }
+
+        return secWebSocketKeyCount == 1 &&
+            secWebSocketVersionCount == 1 &&
+            isValidWebSocketKey(secWebSocketKey) &&
+            secWebSocketVersion == "13" &&
+            hasConnectionUpgradeToken &&
+            hasWebSocketUpgradeToken;
+    }
 
     /* This one matches us_socket_context_options_t but has default values */
     struct SocketContextOptions {
@@ -236,8 +350,8 @@ public:
 
         /* Register default handler for 404 (can be overridden by user) */
         this->any("/*", [](auto *res, auto */*req*/) {
-            res->writeStatus("404 File Not Found");
-            res->end("<html><body><h1>File Not Found</h1><hr><i>uWebSockets/20 Server</i></body></html>");
+            res->writeStatus("404 Not Found");
+            res->end("Not Found");
         });
     }
 
@@ -432,12 +546,11 @@ public:
 
         httpContext->onHttp("GET", pattern, [webSocketContext, behavior = std::move(behavior)](auto *res, auto *req) mutable {
 
-            /* If we have this header set, it's a websocket */
             std::string_view secWebSocketKey = req->getHeader("sec-websocket-key");
-            if (secWebSocketKey.length() == 24) {
 
-                /* Emit upgrade handler */
-                if (behavior.upgrade) {
+            /* A custom upgrade handler intentionally owns validation for compatibility. */
+            if (behavior.upgrade) {
+                if (secWebSocketKey.length() == 24) {
 
                     /* Nasty, ugly Safari 15 hack */
                     if (hasBrokenCompression(req->getHeader("user-agent"))) {
@@ -447,22 +560,23 @@ public:
 
                     behavior.upgrade(res, req, (struct us_socket_context_t *) webSocketContext);
                 } else {
-                    /* Default handler upgrades to WebSocket */
-                    std::string_view secWebSocketProtocol = req->getHeader("sec-websocket-protocol");
-                    std::string_view secWebSocketExtensions = req->getHeader("sec-websocket-extensions");
-
-                    /* Safari 15 hack */
-                    if (hasBrokenCompression(req->getHeader("user-agent"))) {
-                        secWebSocketExtensions = "";
-                    }
-
-                    res->template upgrade<UserData>({}, secWebSocketKey, secWebSocketProtocol, secWebSocketExtensions, (struct us_socket_context_t *) webSocketContext);
+                    req->setYield(true);
                 }
+            } else if (isValidDefaultWebSocketUpgrade(req, secWebSocketKey)) {
+                /* Default handler upgrades only a complete RFC 6455 handshake. */
+                std::string_view secWebSocketProtocol = req->getHeader("sec-websocket-protocol");
+                std::string_view secWebSocketExtensions = req->getHeader("sec-websocket-extensions");
+
+                /* Safari 15 hack */
+                if (hasBrokenCompression(req->getHeader("user-agent"))) {
+                    secWebSocketExtensions = "";
+                }
+
+                res->template upgrade<UserData>({}, secWebSocketKey, secWebSocketProtocol, secWebSocketExtensions, (struct us_socket_context_t *) webSocketContext);
 
                 /* We are going to get uncorked by the Http get return */
 
                 /* We do not need to check for any close or shutdown here as we immediately return from get handler */
-
             } else {
                 /* Tell the router that we did not handle this request */
                 req->setYield(true);

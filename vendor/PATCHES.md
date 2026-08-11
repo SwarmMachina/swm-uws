@@ -47,3 +47,31 @@ be dispatched.
 The same pre-handler framing step records whether the request had an explicit
 `Content-Length`, including zero. The native binding uses that metadata for
 `collectBodyWithLength()` without performing another header lookup.
+
+## HTTP/WebSocket security hardening
+
+`uwebsockets-security-hardening.patch` is applied after the transport-policy
+and request-framing patches. It contains the security changes that intentionally
+diverge from the pinned upstream revision:
+
+- replace the permissive chunk decoder with a byte-split-safe state machine
+  that validates hexadecimal sizes, chunk extensions, data CRLF, trailers, and
+  the terminal CRLF before accepting a request;
+- require a complete RFC 6455 default WebSocket handshake, a canonical
+  16-byte nonce in `Sec-WebSocket-Key`, version 13, and masked client frames;
+- add an explicit trusted `X-Forwarded-For` or `X-Real-IP` mode with a
+  configured hop count; duplicate, malformed, and non-IP values fail closed.
+  The mode disables the legacy binary PROXY v2 parser only for the configured
+  `App`, preserving the historical PROXY v2 address and port contract when no
+  trusted HTTP header is set;
+- cap explicit HTTP timeouts to the representable uSockets timeout wheel,
+  handle a disabled WebSocket idle timeout without unsigned underflow, and
+  preserve the forced-close deadline while shutdown backpressure drains;
+- avoid reserving an entire declared fragmented-message payload up front and
+  release unusually large retained fragment buffers after delivery or shutdown
+  without invalidating views held by an active callback; and
+- replace the default branded 404 body with a minimal generic response.
+
+The patch is generated as the exact diff from the committed vendored tree to
+the hardened tree. Replaying it on a clean `HEAD` copy must reproduce every
+file byte-for-byte, including the added `src/ForwardedAddress.h`.

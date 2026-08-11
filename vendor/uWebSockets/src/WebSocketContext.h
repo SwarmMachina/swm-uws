@@ -103,10 +103,6 @@ private:
                     }
                 }
             } else {
-                /* Allocate fragment buffer up front first time */
-                if (!webSocketData->fragmentBuffer.length()) {
-                    webSocketData->fragmentBuffer.reserve(length + remainingBytes);
-                }
                 /* Fragments forming a big message are not caught until appending them */
                 if (refusePayloadLength(length + webSocketData->fragmentBuffer.length(), webSocketState, s)) {
                     forceClose(webSocketState, s, ERR_TOO_BIG_MESSAGE);
@@ -162,14 +158,18 @@ private:
 
                     /* Emit message and check for shutdown or close */
                     if (webSocketContextData->messageHandler) {
+                        webSocketData->beginFragmentBufferView();
                         webSocketContextData->messageHandler((WebSocket<SSL, isServer, USERDATA> *) s, std::string_view(data, length), (OpCode) opCode);
-                        if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
+                        if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
                             return true;
                         }
+                        webSocketData->endFragmentBufferView();
                     }
-
-                    /* If we shutdown or closed, this will be taken care of elsewhere */
-                    webSocketData->fragmentBuffer.clear();
+                    bool isShuttingDown = webSocketData->isShuttingDown;
+                    webSocketData->clearFragmentBuffer();
+                    if (isShuttingDown) {
+                        return true;
+                    }
                 }
             }
         } else {
@@ -208,21 +208,37 @@ private:
                     char *controlBuffer = (char *) webSocketData->fragmentBuffer.data() + webSocketData->fragmentBuffer.length() - webSocketData->controlTipLength;
                     if (opCode == CLOSE) {
                         protocol::CloseFrame closeFrame = protocol::parseClosePayload(controlBuffer, webSocketData->controlTipLength);
+                        webSocketData->beginFragmentBufferView();
                         webSocket->end(closeFrame.code, std::string_view(closeFrame.message, closeFrame.length));
+                        if (!us_socket_is_closed(SSL, (us_socket_t *) s)) {
+                            webSocketData->endFragmentBufferView();
+                        }
                         return true;
                     } else {
                         if (opCode == PING) {
                             webSocket->send(std::string_view(controlBuffer, webSocketData->controlTipLength), (OpCode) OpCode::PONG);
                             if (webSocketContextData->pingHandler) {
+                                webSocketData->beginFragmentBufferView();
                                 webSocketContextData->pingHandler(webSocket, std::string_view(controlBuffer, webSocketData->controlTipLength));
-                                if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
+                                if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
+                                    return true;
+                                }
+                                bool isShuttingDown = webSocketData->isShuttingDown;
+                                webSocketData->endFragmentBufferView();
+                                if (isShuttingDown) {
                                     return true;
                                 }
                             }
                         } else if (opCode == PONG) {
                             if (webSocketContextData->pongHandler) {
+                                webSocketData->beginFragmentBufferView();
                                 webSocketContextData->pongHandler(webSocket, std::string_view(controlBuffer, webSocketData->controlTipLength));
-                                if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
+                                if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
+                                    return true;
+                                }
+                                bool isShuttingDown = webSocketData->isShuttingDown;
+                                webSocketData->endFragmentBufferView();
+                                if (isShuttingDown) {
                                     return true;
                                 }
                             }
@@ -348,7 +364,9 @@ private:
             /* Also reset timeout if we came here with 0 backpressure */
             if (!backpressure || backpressure > asyncSocket->getBufferedAmount()) {
                 auto *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
-                asyncSocket->timeout(webSocketContextData->idleTimeoutComponents.first);
+                asyncSocket->timeout(webSocketData->isShuttingDown
+                    ? webSocketContextData->idleTimeoutComponents.second
+                    : webSocketContextData->idleTimeoutComponents.first);
                 webSocketData->hasTimedOut = false;
             }
 

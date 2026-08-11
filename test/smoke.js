@@ -17,7 +17,7 @@ import {
 import { resolvePrebuildTarget } from '../lib/load-native.js'
 import { withTimeout } from './helpers/async.js'
 import { expectedBindingVersion } from './helpers/expected-version.js'
-import { proxyProtocolV2Ipv4Header, rawHttpExchange } from './helpers/raw-http.js'
+import { rawHttpExchange } from './helpers/raw-http.js'
 import { nextWebSocketClose, nextWebSocketMessage, nextWebSocketOpen } from './helpers/websocket-events.js'
 
 assert.equal(version(), expectedBindingVersion)
@@ -41,7 +41,9 @@ assert.equal(LIBUS_LISTEN_EXCLUSIVE_PORT, 1)
 const serveOnly = process.argv.includes('--serve')
 const port = serveOnly ? Number(process.env.PORT || 3000) : 30_000 + (process.pid % 10_000)
 const host = serveOnly ? '0.0.0.0' : '127.0.0.1'
-const app = createApp()
+const app = createApp({
+  http: { trustedProxy: { header: 'x-forwarded-for', hops: 1 } }
+})
 const sharedRoute = new SharedArrayBuffer('/shared-route'.length)
 
 new Uint8Array(sharedRoute).set(Buffer.from('/shared-route'))
@@ -234,7 +236,7 @@ app.get('/parameter/:name', (res, req) => {
 app.get('/proxy-info', (res) => {
   assert.deepEqual([...new Uint8Array(res.getProxiedRemoteAddress())], [203, 0, 113, 7])
   assert.equal(Buffer.from(res.getProxiedRemoteAddressAsText()).toString(), '203.0.113.7')
-  assert.equal(res.getProxiedRemotePort(), 45_678)
+  assert.equal(res.getProxiedRemotePort(), 0)
   res.end('proxy')
 })
 
@@ -783,14 +785,12 @@ async function openWebSocketClient() {
 async function proxyRequest() {
   const response = await rawHttpExchange(
     { host: '127.0.0.1', port },
-    ['GET /proxy-info HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'],
+    [
+      'GET /proxy-info HTTP/1.1\r\nHost: localhost\r\n' +
+        'X-Forwarded-For: 198.51.100.7, 203.0.113.7\r\nConnection: close\r\n\r\n'
+    ],
     {
-      prefix: proxyProtocolV2Ipv4Header({
-        sourceAddress: [203, 0, 113, 7],
-        sourcePort: 45_678,
-        destinationPort: port
-      }),
-      timeoutMessage: 'PROXY request'
+      timeoutMessage: 'trusted proxy request'
     }
   )
 

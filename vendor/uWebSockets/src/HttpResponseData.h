@@ -125,12 +125,12 @@ private:
     HttpTransportStats *transportStats;
     HttpTransportPhase transportPhase = HttpTransportPhase::HeadersReading;
 
+    /* Used only when the App retains the legacy PROXY v2 transport mode. */
+    ProxyParser proxyParser;
+
     /* Current state (content-length sent, status sent, write called, etc */
     int state = 0;
 
-#ifdef UWS_WITH_PROXY
-    ProxyParser proxyParser;
-#endif
 };
 
 }

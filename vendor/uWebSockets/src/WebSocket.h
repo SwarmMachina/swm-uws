@@ -227,6 +227,7 @@ public:
 
         /* We postpone any FIN sending to either drainage or uncorking */
         webSocketData->isShuttingDown = true;
+        webSocketData->requestFragmentBufferClear();
 
         /* Format and send the close frame */
         static const int MAX_CLOSE_PAYLOAD = 123;

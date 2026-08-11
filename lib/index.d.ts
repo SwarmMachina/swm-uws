@@ -257,13 +257,13 @@ export interface HttpResponse {
   /** Returns the peer TCP port in host representation. */
   getRemotePort(): number
 
-  /** Returns the PROXY Protocol source IP in binary form. */
+  /** Returns the IP selected from the configured trusted HTTP proxy header, or an empty buffer. */
   getProxiedRemoteAddress(): ArrayBuffer
 
-  /** Returns the PROXY Protocol source IP encoded as textual bytes. */
+  /** Returns the trusted HTTP proxy IP encoded as textual bytes, or an empty buffer. */
   getProxiedRemoteAddressAsText(): ArrayBuffer
 
-  /** Returns the PROXY Protocol source port in host representation. */
+  /** Always returns `0`; trusted HTTP address headers do not authenticate a source port. */
   getProxiedRemotePort(): number
 
   /**
@@ -303,7 +303,7 @@ export interface HttpResponse {
    * `maxSize` is an integer byte limit for this request only, not a process
    * memory budget. Parallel requests allocate independently.
    *
-   * @param maxSize Integer byte limit from `0` through `1 GiB`.
+   * @param maxSize Integer byte limit from `0` through `64 MiB`.
    * @param handler Receives the complete body, or `null` after a limit breach.
    */
   collectBody(maxSize: number, handler: (body: ArrayBuffer | null) => void): this
@@ -417,10 +417,10 @@ export interface WebSocketBehavior<UserData = unknown> {
    */
   compression?: typeof DISABLED
 
-  /** Maximum accepted message payload in bytes. */
+  /** Maximum accepted message payload in bytes, from `1` through `64 MiB`. */
   maxPayloadLength?: number
 
-  /** Idle timeout in seconds, from `0` through `960`. */
+  /** Idle timeout in seconds; `0` disables it, otherwise use `8` through `960`. */
   idleTimeout?: number
 
   /** Maximum queued outbound bytes for each socket. */
@@ -512,6 +512,15 @@ export function defineWebSocketBehavior<
   const Behavior extends WebSocketBehavior<UserData> = WebSocketBehavior<UserData>
 >(behavior: Behavior): Behavior
 
+/** Explicit trust boundary for an HTTP listener reached only through known reverse proxies. */
+export interface TrustedProxyOptions {
+  /** Header written or sanitized by the trusted proxy. */
+  header: 'x-forwarded-for' | 'x-real-ip'
+
+  /** Address selected from the right of `X-Forwarded-For`; `1` is the rightmost entry. */
+  hops?: number
+}
+
 /** Per-application HTTP parser and lifecycle policy. */
 export interface HttpTransportOptions {
   /** Maximum bytes in the request line and all request header fields. */
@@ -520,20 +529,28 @@ export interface HttpTransportOptions {
   /** Maximum number of request header fields, excluding parser sentinel slots. */
   maxHeaderCount?: number
 
-  /** Maximum time allowed to receive a complete request head. */
+  /** Maximum time allowed to receive a complete request head, up to `956000` ms. */
   headersTimeoutMs?: number
 
-  /** Maximum wait for the next request on an idle HTTP keep-alive socket. */
+  /** Maximum wait for the next request on an idle HTTP keep-alive socket, up to `956000` ms. */
   keepAliveTimeoutMs?: number
 
-  /** Idle timeout while receiving a request body. */
+  /** Idle timeout while receiving a request body, up to `956000` ms. */
   bodyIdleTimeoutMs?: number
 
   /** Minimum sustained body receive rate; `null` disables rate enforcement. */
   minBodyRateBytesPerSec?: number | null
 
-  /** Timeout while a response remains blocked by outbound backpressure. */
+  /** Timeout while a response remains blocked by outbound backpressure, up to `956000` ms. */
   responseWriteTimeoutMs?: number
+
+  /**
+   * Trusts one forwarded-address header for this listener.
+   *
+   * Leave unset on public listeners. The nearest proxy must overwrite or
+   * sanitize the configured header before forwarding the request.
+   */
+  trustedProxy?: TrustedProxyOptions
 }
 
 /** Application construction options. Unknown top-level fields are ignored. */

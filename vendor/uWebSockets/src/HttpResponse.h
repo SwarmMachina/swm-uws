@@ -255,10 +255,12 @@ private:
     }
 
 public:
-    /* If we have proxy support; returns the proxed source address as reported by the proxy. */
-#ifdef UWS_WITH_PROXY
+    /* Uses a trusted HTTP header when configured, otherwise preserves legacy PROXY v2 behavior. */
     std::string_view getProxiedRemoteAddress() {
-        return getHttpResponseData()->proxyParser.getSourceAddress();
+        if (getHttpResponseData()->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
+            return getHttpResponseData()->proxyParser.getSourceAddress();
+        }
+        return getHttpResponseData()->trustedProxyAddress();
     }
 
     std::string_view getProxiedRemoteAddressAsText() {
@@ -266,9 +268,12 @@ public:
     }
 
     unsigned int getProxiedRemotePort() {
-        return getHttpResponseData()->proxyParser.getSourcePort();
+        if (getHttpResponseData()->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
+            return getHttpResponseData()->proxyParser.getSourcePort();
+        }
+        /* Forwarded HTTP address headers do not carry a trustworthy source port. */
+        return 0;
     }
-#endif
 
     /* Manually upgrade to WebSocket. Typically called in upgrade handler. Immediately calls open handler.
      * NOTE: Will invalidate 'this' as socket might change location in memory. Throw away after use. */

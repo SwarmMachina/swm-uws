@@ -510,11 +510,7 @@ void ResponseGetProxiedRemotePort(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(args.GetIsolate(), "res.getProxiedRemotePort() does not accept arguments");
         return;
     }
-    // The vendored ProxyParser stores the two network-order bytes verbatim.
-    uint16_t networkPort = static_cast<uint16_t>(response->getProxiedRemotePort());
-    const auto *bytes = reinterpret_cast<const uint8_t *>(&networkPort);
-    uint16_t hostPort = static_cast<uint16_t>((bytes[0] << 8) | bytes[1]);
-    args.GetReturnValue().Set(Number::New(args.GetIsolate(), hostPort));
+    args.GetReturnValue().Set(Number::New(args.GetIsolate(), response->getProxiedRemotePort()));
 }
 
 void ResponseUpgrade(const FunctionCallbackInfo<Value> &args) {
@@ -620,14 +616,14 @@ void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool retur
 
     Isolate *isolate = args.GetIsolate();
     const double maxSizeNumber = args[0]->NumberValue(isolate->GetCurrentContext()).FromMaybe(-1);
-    constexpr double MaxCollectBodySize = 1024.0 * 1024.0 * 1024.0;
+    constexpr double MaxCollectBodySize = 64.0 * 1024.0 * 1024.0;
     if (!std::isfinite(maxSizeNumber) || maxSizeNumber < 0 || maxSizeNumber > MaxCollectBodySize ||
         std::floor(maxSizeNumber) != maxSizeNumber) {
         ThrowTypeError(isolate,
                        returnBodyLength ? "res.collectBodyWithLength(maxSize, handler) maxSize "
-                                          "must be an integer between 0 and 1 GiB"
+                                          "must be an integer between 0 and 64 MiB"
                                         : "res.collectBody(maxSize, handler) maxSize must be an "
-                                          "integer between 0 and 1 GiB");
+                                          "integer between 0 and 64 MiB");
         return;
     }
 
@@ -666,10 +662,6 @@ void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool retur
             return;
         }
 
-        if (collection->bytes.empty() && maxRemainingBodyLength <= maxSize - chunk.size()) {
-            collection->bytes.reserve(chunk.size() +
-                                      static_cast<std::size_t>(maxRemainingBodyLength));
-        }
         collection->bytes.insert(collection->bytes.end(), chunk.begin(), chunk.end());
         if (maxRemainingBodyLength != 0) return;
 

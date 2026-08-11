@@ -22,7 +22,18 @@ test('HTTP transport options validate synchronously without coercion', () => {
     { keepAliveTimeoutMs: Number.NaN },
     { bodyIdleTimeoutMs: Number.POSITIVE_INFINITY },
     { minBodyRateBytesPerSec: 0 },
-    { responseWriteTimeoutMs: 2 ** 32 }
+    { responseWriteTimeoutMs: 2 ** 32 },
+    { headersTimeoutMs: 956_001 },
+    { keepAliveTimeoutMs: 956_001 },
+    { bodyIdleTimeoutMs: 956_001 },
+    { responseWriteTimeoutMs: 956_001 },
+    { trustedProxy: null },
+    { trustedProxy: {} },
+    { trustedProxy: { header: 'forwarded' } },
+    { trustedProxy: { header: 'x-forwarded-for', hops: 0 } },
+    { trustedProxy: { header: 'x-forwarded-for', hops: 33 } },
+    { trustedProxy: { header: 'x-real-ip', hops: 2 } },
+    { trustedProxy: { header: 'x-real-ip', unknown: true } }
   ]) {
     assert.throws(() => createApp({ http }), TypeError)
   }
@@ -41,6 +52,17 @@ test('HTTP transport options validate synchronously without coercion', () => {
 
   assert.deepEqual(app.getHttpTransportStats(), emptyStats())
   app.close()
+
+  const maxTimeout = createApp({
+    http: {
+      headersTimeoutMs: 956_000,
+      keepAliveTimeoutMs: 956_000,
+      bodyIdleTimeoutMs: 956_000,
+      responseWriteTimeoutMs: 956_000
+    }
+  })
+
+  maxTimeout.close()
 })
 
 test('UWS_HTTP_MAX_HEADERS_SIZE is a strict deprecated fallback and App option wins', () => {

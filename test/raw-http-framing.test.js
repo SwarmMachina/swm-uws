@@ -89,10 +89,10 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
       assert.throws(() => res.collectBodyWithLength(value, () => {}), /expects a size|integer between/)
     }
 
-    assert.throws(() => res.collectBody(1024 ** 3 + 1, () => {}), /integer between/)
-    assert.throws(() => res.collectBodyWithLength(1024 ** 3 + 1, () => {}), /integer between/)
+    assert.throws(() => res.collectBody(64 * 1024 ** 2 + 1, () => {}), /integer between/)
+    assert.throws(() => res.collectBodyWithLength(64 * 1024 ** 2 + 1, () => {}), /integer between/)
     assert.throws(() => res.discardBody(1), /does not accept arguments/)
-    res.collectBody(1024 ** 3, (body) => {
+    res.collectBody(64 * 1024 ** 2, (body) => {
       assert.equal(body.byteLength, 0)
       res.end('valid')
     })
@@ -479,6 +479,14 @@ test('server fingerprint is suppressed in headers and automatic parser errors', 
       assert.doesNotMatch(head, /^uWebSockets:/im)
       assert.equal(body, '')
     }
+
+    const notFound = (
+      await rawExchange(server.port, ['GET /missing HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'])
+    ).toString('latin1')
+
+    assert.match(notFound, /^HTTP\/1\.1 404 Not Found\r\n/)
+    assert.match(notFound, /\r\n\r\nNot Found$/)
+    assert.doesNotMatch(notFound, /uWebSockets/i)
   } finally {
     server.close()
   }

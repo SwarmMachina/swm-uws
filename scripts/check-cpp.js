@@ -30,6 +30,7 @@ const compilerArguments = [
   '-DLIBUS_NO_SSL=1',
   '-DUWS_WITH_PROXY=1',
   '-DUWS_NO_ZLIB=1',
+  '-DUWS_HTTPRESPONSE_NO_WRITEMARK=1',
   `-DSWM_UWS_VERSION="${packageMetadata.version}"`,
   `-DSWM_UWS_UPSTREAM_VERSION="${packageMetadata.upstream.uWebSocketsJs}"`,
   '-DBUILDING_NODE_EXTENSION',

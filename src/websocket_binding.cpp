@@ -2,6 +2,8 @@
 
 namespace swm::binding {
 
+constexpr unsigned int MAX_WEBSOCKET_PAYLOAD_LENGTH = 64U * 1024U * 1024U;
+
 SocketState *GetSocketState(const FunctionCallbackInfo<Value> &args) {
     auto *state = static_cast<SocketState *>(GetInternalPointer(args.This()));
     if (!state || !state->Socket()) {
@@ -561,7 +563,7 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
                             options,
                             "maxPayloadLength",
                             1,
-                            std::numeric_limits<unsigned int>::max(),
+                            MAX_WEBSOCKET_PAYLOAD_LENGTH,
                             &behavior.maxPayloadLength) ||
         !ReadUnsignedOption(isolate, options, "idleTimeout", 0, 960, &idleTimeout) ||
         !ReadUnsignedOption(isolate,

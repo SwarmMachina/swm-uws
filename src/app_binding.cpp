@@ -376,6 +376,8 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
         uWS::HttpTransportConfig::DEFAULT_MIN_BODY_RATE_BYTES_PER_SEC;
     std::uint32_t responseWriteTimeoutMs =
         uWS::HttpTransportConfig::DEFAULT_RESPONSE_WRITE_TIMEOUT_MS;
+    uWS::TrustedProxyHeader trustedProxyHeader = uWS::TrustedProxyHeader::None;
+    std::uint8_t trustedProxyHops = 1;
     bool optionHasMaxHeaderSize = false;
     bool headersTimeoutExplicit = false;
     bool keepAliveTimeoutExplicit = false;
@@ -405,7 +407,7 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
     }
 
     if (!http.IsEmpty()) {
-        constexpr std::array<std::string_view, 7> allowedFields = {
+        constexpr std::array<std::string_view, 8> allowedFields = {
             "maxHeaderSize",
             "maxHeaderCount",
             "headersTimeoutMs",
@@ -413,6 +415,7 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
             "bodyIdleTimeoutMs",
             "minBodyRateBytesPerSec",
             "responseWriteTimeoutMs",
+            "trustedProxy",
         };
         Local<Array> propertyNames;
         if (!http->GetOwnPropertyNames(context).ToLocal(&propertyNames)) {
@@ -470,19 +473,28 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
         if (http->HasOwnProperty(context, NewString(isolate, "maxHeaderCount")).FromMaybe(false)) {
             maxHeaderCount = static_cast<std::uint16_t>(parsed);
         }
-        if (!readInteger("headersTimeoutMs", UINT32_MAX, &parsed, &headersTimeoutExplicit)) {
+        if (!readInteger("headersTimeoutMs",
+                         uWS::HttpTransportConfig::MAX_EXPLICIT_TIMEOUT_MS,
+                         &parsed,
+                         &headersTimeoutExplicit)) {
             return std::nullopt;
         }
         if (headersTimeoutExplicit) {
             headersTimeoutMs = static_cast<std::uint32_t>(parsed);
         }
-        if (!readInteger("keepAliveTimeoutMs", UINT32_MAX, &parsed, &keepAliveTimeoutExplicit)) {
+        if (!readInteger("keepAliveTimeoutMs",
+                         uWS::HttpTransportConfig::MAX_EXPLICIT_TIMEOUT_MS,
+                         &parsed,
+                         &keepAliveTimeoutExplicit)) {
             return std::nullopt;
         }
         if (keepAliveTimeoutExplicit) {
             keepAliveTimeoutMs = static_cast<std::uint32_t>(parsed);
         }
-        if (!readInteger("bodyIdleTimeoutMs", UINT32_MAX, &parsed, &bodyIdleTimeoutExplicit)) {
+        if (!readInteger("bodyIdleTimeoutMs",
+                         uWS::HttpTransportConfig::MAX_EXPLICIT_TIMEOUT_MS,
+                         &parsed,
+                         &bodyIdleTimeoutExplicit)) {
             return std::nullopt;
         }
         if (bodyIdleTimeoutExplicit) {
@@ -504,12 +516,106 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
             }
         }
 
-        if (!readInteger(
-                "responseWriteTimeoutMs", UINT32_MAX, &parsed, &responseWriteTimeoutExplicit)) {
+        if (!readInteger("responseWriteTimeoutMs",
+                         uWS::HttpTransportConfig::MAX_EXPLICIT_TIMEOUT_MS,
+                         &parsed,
+                         &responseWriteTimeoutExplicit)) {
             return std::nullopt;
         }
         if (responseWriteTimeoutExplicit) {
             responseWriteTimeoutMs = static_cast<std::uint32_t>(parsed);
+        }
+
+        const Local<String> trustedProxyKey = NewString(isolate, "trustedProxy");
+        const bool hasTrustedProxy =
+            http->HasOwnProperty(context, trustedProxyKey).FromMaybe(false);
+        if (isolate->IsExecutionTerminating()) return std::nullopt;
+        if (hasTrustedProxy) {
+            Local<Value> trustedProxyValue;
+            if (!http->Get(context, trustedProxyKey).ToLocal(&trustedProxyValue)) {
+                return std::nullopt;
+            }
+            if (!trustedProxyValue->IsObject() || trustedProxyValue->IsNull() ||
+                trustedProxyValue->IsArray() || trustedProxyValue->IsFunction()) {
+                ThrowTypeError(isolate, "HTTP trustedProxy must be an object");
+                return std::nullopt;
+            }
+
+            Local<Object> trustedProxy = trustedProxyValue.As<Object>();
+            constexpr std::array<std::string_view, 2> allowedTrustedProxyFields = {
+                "header",
+                "hops",
+            };
+            Local<Array> trustedProxyPropertyNames;
+            if (!trustedProxy->GetOwnPropertyNames(context).ToLocal(&trustedProxyPropertyNames)) {
+                return std::nullopt;
+            }
+            for (std::uint32_t index = 0; index < trustedProxyPropertyNames->Length(); index++) {
+                Local<Value> value;
+                if (!trustedProxyPropertyNames->Get(context, index).ToLocal(&value)) {
+                    return std::nullopt;
+                }
+                NativeBytes propertyName(isolate, value);
+                if (!propertyName.IsValid() ||
+                    std::find(allowedTrustedProxyFields.begin(),
+                              allowedTrustedProxyFields.end(),
+                              propertyName.View()) == allowedTrustedProxyFields.end()) {
+                    ThrowTypeError(isolate, "unknown field in HTTP trustedProxy");
+                    return std::nullopt;
+                }
+            }
+
+            const Local<String> headerKey = NewString(isolate, "header");
+            if (!trustedProxy->HasOwnProperty(context, headerKey).FromMaybe(false)) {
+                ThrowTypeError(isolate, "HTTP trustedProxy.header is required");
+                return std::nullopt;
+            }
+            Local<Value> headerValue;
+            if (!trustedProxy->Get(context, headerKey).ToLocal(&headerValue)) {
+                return std::nullopt;
+            }
+            if (!headerValue->IsString()) {
+                ThrowTypeError(isolate,
+                               "HTTP trustedProxy.header must be x-forwarded-for or x-real-ip");
+                return std::nullopt;
+            }
+            NativeBytes header(isolate, headerValue);
+            if (!header.IsValid()) return std::nullopt;
+            if (header.View() == "x-forwarded-for") {
+                trustedProxyHeader = uWS::TrustedProxyHeader::XForwardedFor;
+            } else if (header.View() == "x-real-ip") {
+                trustedProxyHeader = uWS::TrustedProxyHeader::XRealIp;
+            } else {
+                ThrowTypeError(isolate,
+                               "HTTP trustedProxy.header must be x-forwarded-for or x-real-ip");
+                return std::nullopt;
+            }
+
+            const Local<String> hopsKey = NewString(isolate, "hops");
+            const bool hasHops = trustedProxy->HasOwnProperty(context, hopsKey).FromMaybe(false);
+            if (isolate->IsExecutionTerminating()) return std::nullopt;
+            if (hasHops) {
+                Local<Value> hopsValue;
+                if (!trustedProxy->Get(context, hopsKey).ToLocal(&hopsValue)) {
+                    return std::nullopt;
+                }
+                if (!hopsValue->IsNumber()) {
+                    ThrowTypeError(isolate,
+                                   "HTTP trustedProxy.hops must be an integer between 1 and 32");
+                    return std::nullopt;
+                }
+                const double hops = hopsValue.As<Number>()->Value();
+                if (!std::isfinite(hops) || std::floor(hops) != hops || hops < 1 || hops > 32) {
+                    ThrowTypeError(isolate,
+                                   "HTTP trustedProxy.hops must be an integer between 1 and 32");
+                    return std::nullopt;
+                }
+                trustedProxyHops = static_cast<std::uint8_t>(hops);
+            }
+            if (trustedProxyHeader == uWS::TrustedProxyHeader::XRealIp && trustedProxyHops != 1) {
+                ThrowTypeError(isolate, "HTTP x-real-ip trustedProxy.hops must be 1");
+                return std::nullopt;
+            }
         }
     }
 
@@ -546,6 +652,8 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
                                     bodyIdleTimeoutMs,
                                     minBodyRateBytesPerSec,
                                     responseWriteTimeoutMs,
+                                    trustedProxyHeader,
+                                    trustedProxyHops,
                                     headersTimeoutExplicit,
                                     keepAliveTimeoutExplicit,
                                     bodyIdleTimeoutExplicit,

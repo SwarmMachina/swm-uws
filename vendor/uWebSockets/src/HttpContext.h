@@ -160,10 +160,11 @@ private:
             // clients need to know the cursor after http parse, not servers!
             // how far did we read then? we need to know to continue with websocket parsing data? or?
 
+            /* An explicit trusted HTTP header replaces the legacy binary PROXY v2 mode. */
             void *proxyParser = nullptr;
-#ifdef UWS_WITH_PROXY
-            proxyParser = &httpResponseData->proxyParser;
-#endif
+            if (httpResponseData->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
+                proxyParser = &httpResponseData->proxyParser;
+            }
 
             /* The return value is entirely up to us to interpret. The HttpParser only care for whether the returned value is DIFFERENT or not from passed user */
             auto [err, returnedSocket] = httpResponseData->consumePostPadded(data, (unsigned int) length, s, proxyParser, [httpContextData](void *s, HttpRequest *httpRequest) -> void * {

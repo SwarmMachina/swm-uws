@@ -149,7 +149,8 @@ const app = uWS.App({
     keepAliveTimeoutMs: 5_000,
     bodyIdleTimeoutMs: 10_000,
     minBodyRateBytesPerSec: 16 * 1024,
-    responseWriteTimeoutMs: 10_000
+    responseWriteTimeoutMs: 10_000,
+    trustedProxy: { header: 'x-forwarded-for', hops: 1 }
   }
 })
 ```
@@ -159,7 +160,45 @@ Values are positive finite safe integers without coercion; `0` is rejected and
 rate check. Unknown `http` fields throw synchronously during `App()`.
 `UWS_HTTP_MAX_HEADERS_SIZE` remains a deprecated fallback when
 `maxHeaderSize` is omitted. Explicit timeouts use the coarse four-second
-uSockets wheel and never expire before the configured deadline.
+uSockets wheel, never expire before the configured deadline, and are limited
+to `956_000` ms so the wheel cannot wrap to a much shorter timeout.
+
+`trustedProxy` is an explicit listener trust boundary for ordinary nginx-style
+HTTP proxying. It is disabled by default. Enable it only when clients cannot
+reach the listener without passing through proxies that overwrite or sanitize
+the selected header. `x-forwarded-for` selects `hops` entries from the right
+(`1` is the rightmost value); `x-real-ip` accepts exactly one address and only
+`hops: 1`. Invalid or duplicate trusted headers receive `400`. Configuring a
+trusted HTTP header disables binary PROXY v2 parsing for that `App`. The
+compatibility methods
+`getProxiedRemoteAddress()` and `getProxiedRemoteAddressAsText()` expose the
+selected address; `getProxiedRemotePort()` returns `0` because these HTTP
+headers do not authenticate a source port. When `trustedProxy` is omitted, the
+listener preserves legacy binary PROXY v2 behavior, including its source
+address and port accessors. Use that legacy mode only on a listener unreachable
+except through a trusted PROXY-protocol peer.
+
+For a single nginx hop, bind the native listener to loopback or a private
+network, overwrite the address header at nginx, and trust only that header:
+
+```nginx
+location / {
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For "";
+    proxy_pass http://127.0.0.1:3000;
+}
+```
+
+```js
+const app = uWS.App({
+  http: { trustedProxy: { header: 'x-real-ip' } }
+})
+```
+
+For a fixed proxy chain, use `x-forwarded-for` with the exact number of
+trusted hops. Do not enable either mode on a listener that clients can reach
+directly; an HTTP header is trustworthy only because the ingress proxy
+replaces or sanitizes it.
 
 Header limit failures return `431` before HTTP or WebSocket handlers run.
 Read inexpensive per-App counters when exporting metrics:
@@ -253,8 +292,8 @@ res.collectBody(maxBodyBytes, (body) => {
 ```
 
 ```text
-maxSize: integer bytes, 0..1 GiB, per request
-native body memory ≈ concurrent collections × maxSize + overhead
+maxSize: integer bytes, 0..64 MiB, per request
+native body memory grows with bytes actually received, not declared Content-Length
 ```
 
 Use application-level admission control for a global memory limit.

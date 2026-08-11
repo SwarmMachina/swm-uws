@@ -30,6 +30,7 @@
 #include <map>
 #include "MoveOnlyFunction.h"
 #include "ChunkedEncoding.h"
+#include "ForwardedAddress.h"
 
 #include "BloomFilter.h"
 #include "ProxyParser.h"
@@ -193,10 +194,23 @@ public:
 
 private:
     const HttpTransportConfig *transportConfig_;
+    ForwardedAddress forwardedAddress_;
     std::string fallback;
     /* This guy really has only 30 bits since we reserve two highest bits to chunked encoding parsing state */
     uint64_t remainingStreamingBytes = 0;
     bool hasDeclaredBodyLength_ = false;
+
+    [[nodiscard]] std::string_view trustedProxyHeaderName() const noexcept {
+        switch (transportConfig_->trustedProxyHeader) {
+        case TrustedProxyHeader::XForwardedFor:
+            return "x-forwarded-for";
+        case TrustedProxyHeader::XRealIp:
+            return "x-real-ip";
+        case TrustedProxyHeader::None:
+            return {};
+        }
+        return {};
+    }
 
     /* Returns UINT64_MAX on error. Content-Length is exposed to JavaScript as a
      * Number, so reject values above its largest exactly representable integer. */
@@ -383,25 +397,26 @@ private:
         char *preliminaryKey, *preliminaryValue, *start = postPaddedBuffer;
 
         #ifdef UWS_WITH_PROXY
-            /* ProxyParser is passed as reserved parameter */
-            ProxyParser *pp = (ProxyParser *) reserved;
-
-            /* Parse PROXY protocol */
-            auto [done, offset] = pp->parse({postPaddedBuffer, (size_t) (end - postPaddedBuffer)});
-            if (!done) {
-                /* We do not reset the ProxyParser (on filure) since it is tied to this
-                * connection, which is really only supposed to ever get one PROXY frame
-                * anyways. We do however allow multiple PROXY frames to be sent (overwrites former). */
-                return 0;
-            } else {
-                /* We have consumed this data so skip it */
+            if (reserved) {
+                /* Parse PROXY protocol only in legacy mode. */
+                ProxyParser *pp = (ProxyParser *) reserved;
+                auto [done, offset] = pp->parse({postPaddedBuffer, (size_t) (end - postPaddedBuffer)});
+                if (!done) {
+                    return 0;
+                }
                 postPaddedBuffer += offset;
             }
         #else
-            /* This one is unused */
             (void) reserved;
             (void) end;
         #endif
+
+        /* A trusted-header App intentionally does not accept binary PROXY v2. */
+        if (!reserved && end - postPaddedBuffer >= 4 &&
+            !memcmp(postPaddedBuffer, "\r\n\r\n", 4)) {
+            err = HTTP_ERROR_400_BAD_REQUEST;
+            return 0;
+        }
 
         /* It is critical for fallback buffering logic that we only return with success
          * if we managed to parse a complete HTTP request (minus data). Returning success
@@ -532,8 +547,11 @@ private:
             bool hasHost = false;
             bool hasContentLength = false;
             bool hasTransferEncoding = false;
+            bool hasTrustedProxyHeader = false;
             std::string_view contentLengthString;
             std::string_view transferEncodingString;
+            std::string_view trustedProxyValue;
+            forwardedAddress_.reset();
             for (HttpRequest::Header *h = req->headers; (++h)->key.length(); ) {
                 if (h->key == "host") {
                     if (hasHost) [[unlikely]] {
@@ -553,7 +571,23 @@ private:
                     hasTransferEncoding = true;
                     transferEncodingString = h->value;
                 }
+                if (transportConfig_->trustedProxyHeader != TrustedProxyHeader::None &&
+                    h->key == trustedProxyHeaderName()) {
+                    if (hasTrustedProxyHeader) [[unlikely]] {
+                        return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+                    }
+                    hasTrustedProxyHeader = true;
+                    trustedProxyValue = h->value;
+                }
                 req->bf.add(h->key);
+            }
+
+            if (hasTrustedProxyHeader &&
+                !forwardedAddress_.assign(
+                    transportConfig_->trustedProxyHeader,
+                    transportConfig_->trustedProxyHops,
+                    trustedProxyValue)) [[unlikely]] {
+                return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
             }
             
             /* Break if no host header (but we can have empty string which is different from nullptr) */
@@ -682,6 +716,10 @@ public:
      * framing and requests without a body-length declaration. */
     [[nodiscard]] bool hasDeclaredBodyLength() const {
         return hasDeclaredBodyLength_;
+    }
+
+    [[nodiscard]] std::string_view trustedProxyAddress() const noexcept {
+        return forwardedAddress_.bytes();
     }
 
     [[nodiscard]] LimitViolation GetLimitViolation() const {

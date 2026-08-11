@@ -25,6 +25,12 @@ enum class HttpTransportPhase : std::uint8_t {
     KeepAliveIdle,
 };
 
+enum class TrustedProxyHeader : std::uint8_t {
+    None,
+    XForwardedFor,
+    XRealIp,
+};
+
 class HttpTransportConfig final {
 public:
     static constexpr std::size_t DEFAULT_MAX_HEADER_SIZE = 4096;
@@ -34,6 +40,13 @@ public:
     static constexpr std::uint32_t DEFAULT_BODY_IDLE_TIMEOUT_MS = 10000;
     static constexpr std::uint32_t DEFAULT_MIN_BODY_RATE_BYTES_PER_SEC = 16384;
     static constexpr std::uint32_t DEFAULT_RESPONSE_WRITE_TIMEOUT_MS = 10000;
+    /*
+     * The uSockets short timeout wheel has 240 four-second slots. Explicit
+     * millisecond deadlines add one full slot before rounding so they cannot
+     * expire early. 956 seconds is therefore the largest requested deadline
+     * that remains representable without wrapping the wheel.
+     */
+    static constexpr std::uint32_t MAX_EXPLICIT_TIMEOUT_MS = 956000;
 
     HttpTransportConfig(
         std::size_t maxHeaderSize = DEFAULT_MAX_HEADER_SIZE,
@@ -44,6 +57,8 @@ public:
         std::optional<std::uint32_t> minBodyRateBytesPerSec =
             DEFAULT_MIN_BODY_RATE_BYTES_PER_SEC,
         std::uint32_t responseWriteTimeoutMs = DEFAULT_RESPONSE_WRITE_TIMEOUT_MS,
+        TrustedProxyHeader trustedProxyHeader = TrustedProxyHeader::None,
+        std::uint8_t trustedProxyHops = 1,
         bool headersTimeoutExplicit = false,
         bool keepAliveTimeoutExplicit = false,
         bool bodyIdleTimeoutExplicit = false,
@@ -55,6 +70,8 @@ public:
           bodyIdleTimeoutMs(bodyIdleTimeoutMs),
           minBodyRateBytesPerSec(minBodyRateBytesPerSec),
           responseWriteTimeoutMs(responseWriteTimeoutMs),
+          trustedProxyHeader(trustedProxyHeader),
+          trustedProxyHops(trustedProxyHops),
           headersTimeoutSeconds(
               ComputeTimeoutSeconds(headersTimeoutMs, headersTimeoutExplicit)),
           keepAliveTimeoutSeconds(
@@ -77,6 +94,8 @@ public:
     const std::uint32_t bodyIdleTimeoutMs;
     const std::optional<std::uint32_t> minBodyRateBytesPerSec;
     const std::uint32_t responseWriteTimeoutMs;
+    const TrustedProxyHeader trustedProxyHeader;
+    const std::uint8_t trustedProxyHops;
     const unsigned int headersTimeoutSeconds;
     const unsigned int keepAliveTimeoutSeconds;
     const unsigned int bodyIdleTimeoutSeconds;

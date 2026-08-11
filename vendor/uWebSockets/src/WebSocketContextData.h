@@ -84,6 +84,12 @@ public:
 
     /* This is run once on start-up */
     void calculateIdleTimeoutCompnents(unsigned short idleTimeout) {
+        if (!idleTimeout) {
+            /* Disable idle pings/timeouts while retaining the short shutdown
+             * deadline used after an explicit WebSocket end(). */
+            idleTimeoutComponents = {0, 4};
+            return;
+        }
         unsigned short margin = 4;
         /* 4, 8 or 16 seconds margin based on idleTimeout */
         while ((int) idleTimeout - margin * 2 >= margin * 2 && margin < 16) {

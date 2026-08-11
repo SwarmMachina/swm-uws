@@ -1,0 +1,1454 @@
+diff --git a/vendor/uWebSockets/src/App.h b/vendor/uWebSockets/src/App.h
+index 0ddbf62..ae43030 100644
+--- a/vendor/uWebSockets/src/App.h
++++ b/vendor/uWebSockets/src/App.h
+@@ -25,6 +25,89 @@
+ #include <string_view>
+ 
+ namespace uWS {
++    inline bool asciiCaseInsensitiveEqual(std::string_view left, std::string_view right) {
++        if (left.length() != right.length()) {
++            return false;
++        }
++
++        for (size_t i = 0; i < left.length(); i++) {
++            unsigned char leftCharacter = (unsigned char) left[i];
++            unsigned char rightCharacter = (unsigned char) right[i];
++
++            if (leftCharacter >= 'A' && leftCharacter <= 'Z') {
++                leftCharacter = (unsigned char) (leftCharacter + ('a' - 'A'));
++            }
++            if (rightCharacter >= 'A' && rightCharacter <= 'Z') {
++                rightCharacter = (unsigned char) (rightCharacter + ('a' - 'A'));
++            }
++            if (leftCharacter != rightCharacter) {
++                return false;
++            }
++        }
++
++        return true;
++    }
++
++    inline bool hasAsciiCaseInsensitiveToken(std::string_view value, std::string_view expectedToken) {
++        for (size_t offset = 0; offset <= value.length(); ) {
++            size_t delimiter = value.find(',', offset);
++            size_t end = delimiter == std::string_view::npos ? value.length() : delimiter;
++
++            while (offset < end && (value[offset] == ' ' || value[offset] == '\t')) {
++                offset++;
++            }
++            while (end > offset && (value[end - 1] == ' ' || value[end - 1] == '\t')) {
++                end--;
++            }
++
++            if (asciiCaseInsensitiveEqual(value.substr(offset, end - offset), expectedToken)) {
++                return true;
++            }
++            if (delimiter == std::string_view::npos) {
++                break;
++            }
++            offset = delimiter + 1;
++        }
++
++        return false;
++    }
++
++    inline int base64Value(unsigned char character) {
++        if (character >= 'A' && character <= 'Z') {
++            return character - 'A';
++        }
++        if (character >= 'a' && character <= 'z') {
++            return character - 'a' + 26;
++        }
++        if (character >= '0' && character <= '9') {
++            return character - '0' + 52;
++        }
++        if (character == '+') {
++            return 62;
++        }
++        if (character == '/') {
++            return 63;
++        }
++
++        return -1;
++    }
++
++    inline bool isValidWebSocketKey(std::string_view key) {
++        /* A 16-byte nonce has 22 base64 characters and exactly two padding characters. */
++        if (key.length() != 24 || key[22] != '=' || key[23] != '=') {
++            return false;
++        }
++
++        for (size_t i = 0; i < 22; i++) {
++            if (base64Value((unsigned char) key[i]) == -1) {
++                return false;
++            }
++        }
++
++        /* The four unused pad bits must be zero for canonical RFC 4648 base64. */
++        return !(base64Value((unsigned char) key[21]) & 15);
++    }
++
+     /* Safari 15.0 - 15.3 has a completely broken compression implementation (client_no_context_takeover not
+      * properly implemented) - so we fully disable compression for this browser :-(
+      * see https://github.com/uNetworking/uWebSockets/issues/1347 */
+@@ -59,6 +142,37 @@ namespace uWS {
+ 
+ namespace uWS {
+ 
++    inline bool isValidDefaultWebSocketUpgrade(HttpRequest *req, std::string_view &secWebSocketKey) {
++        bool hasConnectionUpgradeToken = false;
++        bool hasWebSocketUpgradeToken = false;
++        unsigned int secWebSocketKeyCount = 0;
++        unsigned int secWebSocketVersionCount = 0;
++        std::string_view secWebSocketVersion;
++
++        for (auto [name, value] : *req) {
++            if (name == "sec-websocket-key") {
++                secWebSocketKey = value;
++                secWebSocketKeyCount++;
++            } else if (name == "sec-websocket-version") {
++                secWebSocketVersion = value;
++                secWebSocketVersionCount++;
++            } else if (name == "connection") {
++                hasConnectionUpgradeToken = hasConnectionUpgradeToken ||
++                    hasAsciiCaseInsensitiveToken(value, "upgrade");
++            } else if (name == "upgrade") {
++                hasWebSocketUpgradeToken = hasWebSocketUpgradeToken ||
++                    hasAsciiCaseInsensitiveToken(value, "websocket");
++            }
++        }
++
++        return secWebSocketKeyCount == 1 &&
++            secWebSocketVersionCount == 1 &&
++            isValidWebSocketKey(secWebSocketKey) &&
++            secWebSocketVersion == "13" &&
++            hasConnectionUpgradeToken &&
++            hasWebSocketUpgradeToken;
++    }
++
+     /* This one matches us_socket_context_options_t but has default values */
+     struct SocketContextOptions {
+         const char *key_file_name = nullptr;
+@@ -236,8 +350,8 @@ public:
+ 
+         /* Register default handler for 404 (can be overridden by user) */
+         this->any("/*", [](auto *res, auto */*req*/) {
+-            res->writeStatus("404 File Not Found");
+-            res->end("<html><body><h1>File Not Found</h1><hr><i>uWebSockets/20 Server</i></body></html>");
++            res->writeStatus("404 Not Found");
++            res->end("Not Found");
+         });
+     }
+ 
+@@ -432,12 +546,11 @@ public:
+ 
+         httpContext->onHttp("GET", pattern, [webSocketContext, behavior = std::move(behavior)](auto *res, auto *req) mutable {
+ 
+-            /* If we have this header set, it's a websocket */
+             std::string_view secWebSocketKey = req->getHeader("sec-websocket-key");
+-            if (secWebSocketKey.length() == 24) {
+ 
+-                /* Emit upgrade handler */
+-                if (behavior.upgrade) {
++            /* A custom upgrade handler intentionally owns validation for compatibility. */
++            if (behavior.upgrade) {
++                if (secWebSocketKey.length() == 24) {
+ 
+                     /* Nasty, ugly Safari 15 hack */
+                     if (hasBrokenCompression(req->getHeader("user-agent"))) {
+@@ -447,22 +560,23 @@ public:
+ 
+                     behavior.upgrade(res, req, (struct us_socket_context_t *) webSocketContext);
+                 } else {
+-                    /* Default handler upgrades to WebSocket */
+-                    std::string_view secWebSocketProtocol = req->getHeader("sec-websocket-protocol");
+-                    std::string_view secWebSocketExtensions = req->getHeader("sec-websocket-extensions");
+-
+-                    /* Safari 15 hack */
+-                    if (hasBrokenCompression(req->getHeader("user-agent"))) {
+-                        secWebSocketExtensions = "";
+-                    }
+-
+-                    res->template upgrade<UserData>({}, secWebSocketKey, secWebSocketProtocol, secWebSocketExtensions, (struct us_socket_context_t *) webSocketContext);
++                    req->setYield(true);
+                 }
++            } else if (isValidDefaultWebSocketUpgrade(req, secWebSocketKey)) {
++                /* Default handler upgrades only a complete RFC 6455 handshake. */
++                std::string_view secWebSocketProtocol = req->getHeader("sec-websocket-protocol");
++                std::string_view secWebSocketExtensions = req->getHeader("sec-websocket-extensions");
++
++                /* Safari 15 hack */
++                if (hasBrokenCompression(req->getHeader("user-agent"))) {
++                    secWebSocketExtensions = "";
++                }
++
++                res->template upgrade<UserData>({}, secWebSocketKey, secWebSocketProtocol, secWebSocketExtensions, (struct us_socket_context_t *) webSocketContext);
+ 
+                 /* We are going to get uncorked by the Http get return */
+ 
+                 /* We do not need to check for any close or shutdown here as we immediately return from get handler */
+-
+             } else {
+                 /* Tell the router that we did not handle this request */
+                 req->setYield(true);
+diff --git a/vendor/uWebSockets/src/ChunkedEncoding.h b/vendor/uWebSockets/src/ChunkedEncoding.h
+index 5b959ad..2b8fdb5 100644
+--- a/vendor/uWebSockets/src/ChunkedEncoding.h
++++ b/vendor/uWebSockets/src/ChunkedEncoding.h
+@@ -20,218 +20,499 @@
+ 
+ /* Independent chunked encoding parser, used by HttpParser. */
+ 
+-#include <string>
+-#include <cstring>
+-#include <cstdlib>
+ #include <algorithm>
+-#include <string_view>
+-#include "MoveOnlyFunction.h"
++#include <cstdint>
++#include <cstdlib>
+ #include <optional>
++#include <string_view>
+ 
+ namespace uWS {
+ 
+-    constexpr uint64_t STATE_HAS_SIZE = 1ull << (sizeof(uint64_t) * 8 - 1);//0x80000000;
+-    constexpr uint64_t STATE_IS_CHUNKED = 1ull << (sizeof(uint64_t) * 8 - 2);//0x40000000;
+-    constexpr uint64_t STATE_SIZE_MASK = ~(3ull << (sizeof(uint64_t) * 8 - 2));//0x3FFFFFFF;
+-    constexpr uint64_t STATE_IS_ERROR = ~0ull;//0xFFFFFFFF;
+-    constexpr uint64_t STATE_SIZE_OVERFLOW = 0x0Full << (sizeof(uint64_t) * 8 - 8);//0x0F000000;
++/* The high nibble stores the parser phase while the low 60 bits store
++ * either the parsed chunk size, the remaining chunk data, or a small
++ * trailer sub-state. This preserves the previous maximum chunk size. */
++constexpr uint64_t STATE_VALUE_MASK = 0x0FFFFFFFFFFFFFFFull;
++constexpr uint64_t STATE_PHASE_MASK = ~STATE_VALUE_MASK;
++
++constexpr uint64_t STATE_SIZE_START = 0x1000000000000000ull;
++constexpr uint64_t STATE_SIZE = 0x2000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_SEPARATOR = 0x3000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_NAME_START = 0x4000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_NAME = 0x5000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_AFTER_NAME = 0x6000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_VALUE_START = 0x7000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_TOKEN_VALUE = 0x8000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_AFTER_VALUE = 0x9000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_QUOTED_VALUE = 0xA000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_QUOTED_PAIR = 0xB000000000000000ull;
++constexpr uint64_t STATE_SIZE_LF = 0xC000000000000000ull;
++constexpr uint64_t STATE_DATA = 0xD000000000000000ull;
++constexpr uint64_t STATE_DATA_CRLF = 0xE000000000000000ull;
++constexpr uint64_t STATE_TRAILER = 0xF000000000000000ull;
++
++/* HttpParser initializes chunked parsing with this public sentinel. */
++constexpr uint64_t STATE_IS_CHUNKED = STATE_SIZE_START;
++constexpr uint64_t STATE_IS_ERROR = ~0ull;
++
++constexpr uint64_t TRAILER_LINE_START = 0;
++constexpr uint64_t TRAILER_NAME = 1;
++constexpr uint64_t TRAILER_VALUE = 2;
++constexpr uint64_t TRAILER_LINE_LF = 3;
++constexpr uint64_t TRAILER_END_LF = 4;
++
++inline uint64_t chunkSize(uint64_t state) {
++    return state & STATE_VALUE_MASK;
++}
++
++inline uint64_t parserPhase(uint64_t state) {
++    return state & STATE_PHASE_MASK;
++}
+ 
+-    inline uint64_t chunkSize(uint64_t state) {
+-        return state & STATE_SIZE_MASK;
++inline bool isHexDigit(unsigned char c) {
++    return ((c >= '0') & (c <= '9')) | ((c >= 'A') & (c <= 'F')) | ((c >= 'a') & (c <= 'f'));
++}
++
++inline unsigned int hexDigitValue(unsigned char c) {
++    if (c <= '9') {
++        return (unsigned int)c - (unsigned int)'0';
+     }
++    return ((unsigned int)c | 32u) - (unsigned int)'a' + 10u;
++}
+ 
+-    /* Reads hex number until CR or out of data to consume. Updates state. Returns bytes consumed. */
+-    inline void consumeHexNumber(std::string_view &data, uint64_t &state) {
+-        /* Consume everything higher than 32 */
+-        while (data.length() && data.data()[0] > 32) {
++/* RFC 9110 Section 5.6.2, token = 1*tchar. */
++inline bool isTokenCharacter(unsigned char c) {
++    if (((c >= 'a') & (c <= 'z')) | ((c >= 'A') & (c <= 'Z')) | ((c >= '0') & (c <= '9'))) {
++        return true;
++    }
+ 
+-            unsigned char digit = (unsigned char)data.data()[0];
+-            if (digit >= 'a') {
+-                digit = (unsigned char) (digit - ('a' - ':'));
+-            } else if (digit >= 'A') {
+-                digit = (unsigned char) (digit - ('A' - ':'));
+-            }
++    switch (c) {
++    case '!':
++    case '#':
++    case '$':
++    case '%':
++    case '&':
++    case '\'':
++    case '*':
++    case '+':
++    case '-':
++    case '.':
++    case '^':
++    case '_':
++    case '`':
++    case '|':
++    case '~':
++        return true;
++    default:
++        return false;
++    }
++}
+ 
+-            unsigned int number = ((unsigned int) digit - (unsigned int) '0');
++inline bool isBadWhitespace(unsigned char c) {
++    return (c == ' ') | (c == '\t');
++}
+ 
+-            if (number > 16 || (chunkSize(state) & STATE_SIZE_OVERFLOW)) {
+-                state = STATE_IS_ERROR;
+-                return;
+-            }
++/* RFC 9110 Section 5.6.4, qdtext. DQUOTE and backslash are handled by
++ * the quoted-string state machine itself. */
++inline bool isQuotedText(unsigned char c) {
++    return (c == '\t') | (c == ' ') | (c == '!') | ((c >= '#') & (c <= '[')) |
++           ((c >= ']') & (c <= '~')) | (c >= 0x80);
++}
+ 
+-            // extract state bits
+-            uint64_t bits = /*state &*/ STATE_IS_CHUNKED;
++/* RFC 9110 Section 5.6.4, quoted-pair payload. */
++inline bool isQuotedPairCharacter(unsigned char c) {
++    return (c == '\t') | ((c >= ' ') & (c <= '~')) | (c >= 0x80);
++}
+ 
+-            state = (state & STATE_SIZE_MASK) * 16ull + number;
++/* field-line values can contain HTAB, SP, VCHAR, and obs-text. CRLF is
++ * parsed separately and all other controls, including NUL and DEL, fail. */
++inline bool isFieldValueCharacter(unsigned char c) {
++    return (c == '\t') | ((c >= ' ') & (c <= '~')) | (c >= 0x80);
++}
+ 
+-            state |= bits;
+-            data.remove_prefix(1);
+-        }
+-        /* Consume everything not /n */
+-        while (data.length() && data.data()[0] != '\n') {
+-            data.remove_prefix(1);
+-        }
+-        /* Now we stand on \n so consume it and enable size */
+-        if (data.length()) {
+-            state += 2; // include the two last /r/n
+-            state |= STATE_HAS_SIZE | STATE_IS_CHUNKED;
+-            data.remove_prefix(1);
+-        }
+-    }
++inline void failChunkedEncoding(uint64_t &state) {
++    state = STATE_IS_ERROR;
++}
+ 
+-    inline void decChunkSize(uint64_t &state, unsigned int by) {
++/* Are we in the middle of parsing chunked encoding? */
++inline bool isParsingChunkedEncoding(uint64_t state) {
++    return (state & STATE_PHASE_MASK) != 0;
++}
+ 
+-        //unsigned int bits = state & STATE_IS_CHUNKED;
++inline bool isParsingInvalidChunkedEncoding(uint64_t state) {
++    return state == STATE_IS_ERROR;
++}
+ 
+-        state = (state & ~STATE_SIZE_MASK) | (chunkSize(state) - by);
++/* Returns the next decoded data span. An empty span is returned only once
++ * the last-chunk, optional trailers, and final CRLF have all been validated.
++ * nullopt means that more input is required or parsing has completed. */
++static std::optional<std::string_view>
++getNextChunk(std::string_view &data, uint64_t &state, bool trailer = false) {
++    (void)trailer;
+ 
+-        //state |= bits;
++    if (!state || isParsingInvalidChunkedEncoding(state)) {
++        return std::nullopt;
+     }
+ 
+-    inline bool hasChunkSize(uint64_t state) {
+-        return state & STATE_HAS_SIZE;
+-    }
++    while (data.length()) {
++        unsigned char c = (unsigned char)data[0];
++        uint64_t phase = parserPhase(state);
++        uint64_t value = chunkSize(state);
+ 
+-    /* Are we in the middle of parsing chunked encoding? */
+-    inline bool isParsingChunkedEncoding(uint64_t state) {
+-        return state & ~STATE_SIZE_MASK;
+-    }
++        if (phase == STATE_SIZE_START) {
++            if (!isHexDigit(c)) [[unlikely]] {
++                failChunkedEncoding(state);
++                return std::nullopt;
++            }
+ 
+-    inline bool isParsingInvalidChunkedEncoding(uint64_t state) {
+-        return state == STATE_IS_ERROR;
+-    }
++            state = STATE_SIZE | hexDigitValue(c);
++            data.remove_prefix(1);
++            continue;
++        }
+ 
+-    /* Returns next chunk (empty or not), or if all data was consumed, nullopt is returned. */
+-    static std::optional<std::string_view> getNextChunk(std::string_view &data, uint64_t &state, bool trailer = false) {
++        if (phase == STATE_SIZE) {
++            if (isHexDigit(c)) [[likely]] {
++                unsigned int digit = hexDigitValue(c);
+ 
+-        while (data.length()) {
++                if (value > (STATE_VALUE_MASK - digit) / 16ull) [[unlikely]] {
++                    failChunkedEncoding(state);
++                    return std::nullopt;
++                }
++
++                state = STATE_SIZE | (value * 16ull + digit);
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '\r') [[likely]] {
++                state = STATE_SIZE_LF | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isBadWhitespace(c)) {
++                state = STATE_EXTENSION_SEPARATOR | value;
++                data.remove_prefix(1);
++                continue;
++            }
+ 
+-            // if in "drop trailer mode", just drop up to what we have as size
+-            if (((state & STATE_IS_CHUNKED) == 0) && hasChunkSize(state) && chunkSize(state)) {
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-                //printf("Parsing trailer now\n");
++        if (phase == STATE_EXTENSION_SEPARATOR) {
++            if (isBadWhitespace(c)) {
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
+ 
+-                while(data.length() && chunkSize(state)) {
+-                    data.remove_prefix(1);
+-                    decChunkSize(state, 1);
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-                    if (chunkSize(state) == 0) {
++        if (phase == STATE_EXTENSION_NAME_START) {
++            if (isBadWhitespace(c)) {
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isTokenCharacter(c)) {
++                state = STATE_EXTENSION_NAME | value;
++                data.remove_prefix(1);
++                continue;
++            }
+ 
+-                        /* This is an actual place where we need 0 as state */
+-                        state = 0;
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-                        /* The parser MUST stop consuming here */
+-                        return std::nullopt;
+-                    }
+-                }
++        if (phase == STATE_EXTENSION_NAME) {
++            if (isTokenCharacter(c)) [[likely]] {
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '=') {
++                state = STATE_EXTENSION_VALUE_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '\r') {
++                state = STATE_SIZE_LF | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isBadWhitespace(c)) {
++                state = STATE_EXTENSION_AFTER_NAME | value;
++                data.remove_prefix(1);
+                 continue;
+             }
+ 
+-            if (!hasChunkSize(state)) {
+-                consumeHexNumber(data, state);
+-                if (isParsingInvalidChunkedEncoding(state)) {
+-                    return std::nullopt;
+-                }
+-                if (hasChunkSize(state) && chunkSize(state) == 2) {
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-                    //printf("Setting state to trailer-parsing and emitting empty chunk\n");
++        if (phase == STATE_EXTENSION_AFTER_NAME) {
++            if (isBadWhitespace(c)) {
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '=') {
++                state = STATE_EXTENSION_VALUE_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
+ 
+-                    // set trailer state and increase size to 4
+-                    if (trailer) {
+-                        state = 4 /*| STATE_IS_CHUNKED*/ | STATE_HAS_SIZE;
+-                    } else {
+-                        state = 2 /*| STATE_IS_CHUNKED*/ | STATE_HAS_SIZE;
+-                    }
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-                    return std::string_view(nullptr, 0);
+-                }
++        if (phase == STATE_EXTENSION_VALUE_START) {
++            if (isBadWhitespace(c)) {
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isTokenCharacter(c)) {
++                state = STATE_EXTENSION_TOKEN_VALUE | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '"') {
++                state = STATE_EXTENSION_QUOTED_VALUE | value;
++                data.remove_prefix(1);
+                 continue;
+             }
+ 
+-            // do we have data to emit all?
+-            if (data.length() >= chunkSize(state)) {
+-                // emit all but 2 bytes then reset state to 0 and goto beginning
+-                // not fin
+-                std::string_view emitSoon;
+-                bool shouldEmit = false;
+-                if (chunkSize(state) > 2) {
+-                    emitSoon = std::string_view(data.data(), chunkSize(state) - 2);
+-                    shouldEmit = true;
+-                }
+-                data.remove_prefix(chunkSize(state));
+-                state = STATE_IS_CHUNKED;
+-                if (shouldEmit) {
+-                    return emitSoon;
+-                }
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
++
++        if (phase == STATE_EXTENSION_TOKEN_VALUE) {
++            if (isTokenCharacter(c)) [[likely]] {
++                data.remove_prefix(1);
+                 continue;
+-            } else {
+-                /* We will consume all our input data */
+-                std::string_view emitSoon;
+-                if (chunkSize(state) > 2) {
+-                    uint64_t maximalAppEmit = chunkSize(state) - 2;
+-                    if (data.length() > maximalAppEmit) {
+-                        emitSoon = data.substr(0, maximalAppEmit);
+-                    } else {
+-                        //cb(data);
+-                        emitSoon = data;
+-                    }
+-                }
+-                decChunkSize(state, (unsigned int) data.length());
+-                state |= STATE_IS_CHUNKED;
+-                // new: decrease data by its size (bug)
+-                data.remove_prefix(data.length()); // ny bug fix för getNextChunk
+-                if (emitSoon.length()) {
+-                    return emitSoon;
+-                } else {
+-                    return std::nullopt;
+-                }
+             }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '\r') {
++                state = STATE_SIZE_LF | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isBadWhitespace(c)) {
++                state = STATE_EXTENSION_AFTER_VALUE | value;
++                data.remove_prefix(1);
++                continue;
++            }
++
++            failChunkedEncoding(state);
++            return std::nullopt;
+         }
+ 
+-        return std::nullopt;
+-    }
++        if (phase == STATE_EXTENSION_AFTER_VALUE) {
++            if (isBadWhitespace(c)) {
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '\r') {
++                state = STATE_SIZE_LF | value;
++                data.remove_prefix(1);
++                continue;
++            }
+ 
+-    /* This is really just a wrapper for convenience */
+-    struct ChunkIterator {
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-        std::string_view *data;
+-        std::optional<std::string_view> chunk;
+-        uint64_t *state;
+-        bool trailer;
++        if (phase == STATE_EXTENSION_QUOTED_VALUE) {
++            if (c == '"') {
++                state = STATE_EXTENSION_AFTER_VALUE | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '\\') {
++                state = STATE_EXTENSION_QUOTED_PAIR | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isQuotedText(c)) {
++                data.remove_prefix(1);
++                continue;
++            }
+ 
+-        ChunkIterator(std::string_view *data, uint64_t *state, bool trailer = false) : data(data), state(state), trailer(trailer) {
+-            chunk = uWS::getNextChunk(*data, *state, trailer);
++            failChunkedEncoding(state);
++            return std::nullopt;
+         }
+ 
+-        ChunkIterator() {
++        if (phase == STATE_EXTENSION_QUOTED_PAIR) {
++            if (!isQuotedPairCharacter(c)) [[unlikely]] {
++                failChunkedEncoding(state);
++                return std::nullopt;
++            }
+ 
++            state = STATE_EXTENSION_QUOTED_VALUE | value;
++            data.remove_prefix(1);
++            continue;
+         }
+ 
+-        ChunkIterator begin() {
+-            return *this;
++        if (phase == STATE_SIZE_LF) {
++            if (c != '\n') [[unlikely]] {
++                failChunkedEncoding(state);
++                return std::nullopt;
++            }
++
++            state = value ? STATE_DATA | value : STATE_TRAILER | TRAILER_LINE_START;
++            data.remove_prefix(1);
++            continue;
+         }
+ 
+-        ChunkIterator end() {
+-            return ChunkIterator();
++        if (phase == STATE_DATA) {
++            size_t emittable = (size_t)std::min<uint64_t>(value, data.length());
++            std::string_view emitSoon = data.substr(0, emittable);
++
++            data.remove_prefix(emittable);
++            state = emittable == value ? STATE_DATA_CRLF : STATE_DATA | (value - emittable);
++            return emitSoon;
+         }
+ 
+-        std::string_view operator*() {
+-            if (!chunk.has_value()) {
+-                std::abort();
++        if (phase == STATE_DATA_CRLF) {
++            if (value == 0) {
++                if (c != '\r') [[unlikely]] {
++                    failChunkedEncoding(state);
++                    return std::nullopt;
++                }
++
++                state = STATE_DATA_CRLF | 1;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c != '\n') [[unlikely]] {
++                failChunkedEncoding(state);
++                return std::nullopt;
+             }
+-            return chunk.value();
+-        }
+ 
+-        bool operator!=(const ChunkIterator &other) const {
+-            return other.chunk.has_value() != chunk.has_value();
++            state = STATE_SIZE_START;
++            data.remove_prefix(1);
++            continue;
+         }
+ 
+-        ChunkIterator &operator++() {
+-            chunk = uWS::getNextChunk(*data, *state, trailer);
+-            return *this;
++        if (phase == STATE_TRAILER) {
++            if (value == TRAILER_LINE_START) {
++                if (c == '\r') {
++                    state = STATE_TRAILER | TRAILER_END_LF;
++                    data.remove_prefix(1);
++                    continue;
++                }
++                if (isTokenCharacter(c)) {
++                    state = STATE_TRAILER | TRAILER_NAME;
++                    data.remove_prefix(1);
++                    continue;
++                }
++            } else if (value == TRAILER_NAME) {
++                if (isTokenCharacter(c)) [[likely]] {
++                    data.remove_prefix(1);
++                    continue;
++                }
++                if (c == ':') {
++                    state = STATE_TRAILER | TRAILER_VALUE;
++                    data.remove_prefix(1);
++                    continue;
++                }
++            } else if (value == TRAILER_VALUE) {
++                if (c == '\r') {
++                    state = STATE_TRAILER | TRAILER_LINE_LF;
++                    data.remove_prefix(1);
++                    continue;
++                }
++                if (isFieldValueCharacter(c)) {
++                    data.remove_prefix(1);
++                    continue;
++                }
++            } else if (value == TRAILER_LINE_LF) {
++                if (c == '\n') {
++                    state = STATE_TRAILER | TRAILER_LINE_START;
++                    data.remove_prefix(1);
++                    continue;
++                }
++            } else if (value == TRAILER_END_LF && c == '\n') {
++                state = 0;
++                data.remove_prefix(1);
++                return std::string_view(nullptr, 0);
++            }
++
++            failChunkedEncoding(state);
++            return std::nullopt;
+         }
+ 
+-    };
++        failChunkedEncoding(state);
++        return std::nullopt;
++    }
++
++    return std::nullopt;
+ }
+ 
++/* This is really just a wrapper for convenience */
++struct ChunkIterator {
++
++    std::string_view *data;
++    std::optional<std::string_view> chunk;
++    uint64_t *state;
++    bool trailer;
++
++    ChunkIterator(std::string_view *data, uint64_t *state, bool trailer = false)
++        : data(data), state(state), trailer(trailer) {
++        chunk = uWS::getNextChunk(*data, *state, trailer);
++    }
++
++    ChunkIterator() {}
++
++    ChunkIterator begin() {
++        return *this;
++    }
++
++    ChunkIterator end() {
++        return ChunkIterator();
++    }
++
++    std::string_view operator*() {
++        if (!chunk.has_value()) {
++            std::abort();
++        }
++        return chunk.value();
++    }
++
++    bool operator!=(const ChunkIterator &other) const {
++        return other.chunk.has_value() != chunk.has_value();
++    }
++
++    ChunkIterator &operator++() {
++        chunk = uWS::getNextChunk(*data, *state, trailer);
++        return *this;
++    }
++};
++} // namespace uWS
++
+ #endif // UWS_CHUNKEDENCODING_H
+diff --git a/vendor/uWebSockets/src/ForwardedAddress.h b/vendor/uWebSockets/src/ForwardedAddress.h
+new file mode 100644
+index 0000000..fad6099
+--- /dev/null
++++ b/vendor/uWebSockets/src/ForwardedAddress.h
+@@ -0,0 +1,117 @@
++/*
++ * SwarmMachina trusted-ingress forwarded-address parser.
++ *
++ * Licensed under the Apache License, Version 2.0.
++ */
++
++#ifndef UWS_FORWARDEDADDRESS_H
++#define UWS_FORWARDEDADDRESS_H
++
++#ifdef _WIN32
++#include <ws2tcpip.h>
++#else
++#include <arpa/inet.h>
++#endif
++
++#include <array>
++#include <cstddef>
++#include <cstring>
++#include <string_view>
++
++#include "HttpTransportConfig.h"
++
++namespace uWS {
++
++class ForwardedAddress final {
++public:
++    void reset() noexcept {
++        length_ = 0;
++    }
++
++    [[nodiscard]] bool assign(
++        TrustedProxyHeader header,
++        unsigned int hops,
++        std::string_view value) noexcept {
++        reset();
++
++        if (header == TrustedProxyHeader::None) {
++            return true;
++        }
++
++        if (header == TrustedProxyHeader::XRealIp) {
++            return parseAddress(trimOws(value));
++        }
++
++        std::string_view remaining = value;
++        for (unsigned int hop = 1; hop <= hops; hop++) {
++            remaining = trimOws(remaining);
++            if (remaining.empty()) {
++                return false;
++            }
++
++            const std::size_t comma = remaining.rfind(',');
++            const std::string_view candidate = trimOws(
++                comma == std::string_view::npos
++                    ? remaining
++                    : remaining.substr(comma + 1));
++
++            /* Every skipped entry is a nearer trusted hop and must itself be valid. */
++            if (!parseAddress(candidate)) {
++                return false;
++            }
++            if (hop == hops) {
++                return true;
++            }
++            if (comma == std::string_view::npos) {
++                return false;
++            }
++            remaining = remaining.substr(0, comma);
++        }
++
++        return false;
++    }
++
++    [[nodiscard]] std::string_view bytes() const noexcept {
++        return {reinterpret_cast<const char *>(bytes_.data()), length_};
++    }
++
++private:
++    [[nodiscard]] static std::string_view trimOws(std::string_view value) noexcept {
++        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
++            value.remove_prefix(1);
++        }
++        while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) {
++            value.remove_suffix(1);
++        }
++        return value;
++    }
++
++    [[nodiscard]] bool parseAddress(std::string_view value) noexcept {
++        /* Longest RFC 4291 text form is 45 bytes, excluding the terminator. */
++        std::array<char, 46> text{};
++        if (value.empty() || value.size() >= text.size()) {
++            return false;
++        }
++        std::memcpy(text.data(), value.data(), value.size());
++
++        std::array<unsigned char, 16> parsed{};
++        if (inet_pton(AF_INET, text.data(), parsed.data()) == 1) {
++            bytes_ = parsed;
++            length_ = 4;
++            return true;
++        }
++        if (inet_pton(AF_INET6, text.data(), parsed.data()) == 1) {
++            bytes_ = parsed;
++            length_ = 16;
++            return true;
++        }
++        return false;
++    }
++
++    std::array<unsigned char, 16> bytes_{};
++    std::size_t length_ = 0;
++};
++
++}  // namespace uWS
++
++#endif  // UWS_FORWARDEDADDRESS_H
+diff --git a/vendor/uWebSockets/src/HttpContext.h b/vendor/uWebSockets/src/HttpContext.h
+index 798133d..93207a5 100644
+--- a/vendor/uWebSockets/src/HttpContext.h
++++ b/vendor/uWebSockets/src/HttpContext.h
+@@ -160,10 +160,11 @@ private:
+             // clients need to know the cursor after http parse, not servers!
+             // how far did we read then? we need to know to continue with websocket parsing data? or?
+ 
++            /* An explicit trusted HTTP header replaces the legacy binary PROXY v2 mode. */
+             void *proxyParser = nullptr;
+-#ifdef UWS_WITH_PROXY
+-            proxyParser = &httpResponseData->proxyParser;
+-#endif
++            if (httpResponseData->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
++                proxyParser = &httpResponseData->proxyParser;
++            }
+ 
+             /* The return value is entirely up to us to interpret. The HttpParser only care for whether the returned value is DIFFERENT or not from passed user */
+             auto [err, returnedSocket] = httpResponseData->consumePostPadded(data, (unsigned int) length, s, proxyParser, [httpContextData](void *s, HttpRequest *httpRequest) -> void * {
+diff --git a/vendor/uWebSockets/src/HttpParser.h b/vendor/uWebSockets/src/HttpParser.h
+index e338c12..a26043b 100644
+--- a/vendor/uWebSockets/src/HttpParser.h
++++ b/vendor/uWebSockets/src/HttpParser.h
+@@ -30,6 +30,7 @@
+ #include <map>
+ #include "MoveOnlyFunction.h"
+ #include "ChunkedEncoding.h"
++#include "ForwardedAddress.h"
+ 
+ #include "BloomFilter.h"
+ #include "ProxyParser.h"
+@@ -193,11 +194,24 @@ public:
+ 
+ private:
+     const HttpTransportConfig *transportConfig_;
++    ForwardedAddress forwardedAddress_;
+     std::string fallback;
+     /* This guy really has only 30 bits since we reserve two highest bits to chunked encoding parsing state */
+     uint64_t remainingStreamingBytes = 0;
+     bool hasDeclaredBodyLength_ = false;
+ 
++    [[nodiscard]] std::string_view trustedProxyHeaderName() const noexcept {
++        switch (transportConfig_->trustedProxyHeader) {
++        case TrustedProxyHeader::XForwardedFor:
++            return "x-forwarded-for";
++        case TrustedProxyHeader::XRealIp:
++            return "x-real-ip";
++        case TrustedProxyHeader::None:
++            return {};
++        }
++        return {};
++    }
++
+     /* Returns UINT64_MAX on error. Content-Length is exposed to JavaScript as a
+      * Number, so reject values above its largest exactly representable integer. */
+     static uint64_t toUnsignedInteger(std::string_view str) {
+@@ -383,26 +397,27 @@ private:
+         char *preliminaryKey, *preliminaryValue, *start = postPaddedBuffer;
+ 
+         #ifdef UWS_WITH_PROXY
+-            /* ProxyParser is passed as reserved parameter */
+-            ProxyParser *pp = (ProxyParser *) reserved;
+-
+-            /* Parse PROXY protocol */
+-            auto [done, offset] = pp->parse({postPaddedBuffer, (size_t) (end - postPaddedBuffer)});
+-            if (!done) {
+-                /* We do not reset the ProxyParser (on filure) since it is tied to this
+-                * connection, which is really only supposed to ever get one PROXY frame
+-                * anyways. We do however allow multiple PROXY frames to be sent (overwrites former). */
+-                return 0;
+-            } else {
+-                /* We have consumed this data so skip it */
++            if (reserved) {
++                /* Parse PROXY protocol only in legacy mode. */
++                ProxyParser *pp = (ProxyParser *) reserved;
++                auto [done, offset] = pp->parse({postPaddedBuffer, (size_t) (end - postPaddedBuffer)});
++                if (!done) {
++                    return 0;
++                }
+                 postPaddedBuffer += offset;
+             }
+         #else
+-            /* This one is unused */
+             (void) reserved;
+             (void) end;
+         #endif
+ 
++        /* A trusted-header App intentionally does not accept binary PROXY v2. */
++        if (!reserved && end - postPaddedBuffer >= 4 &&
++            !memcmp(postPaddedBuffer, "\r\n\r\n", 4)) {
++            err = HTTP_ERROR_400_BAD_REQUEST;
++            return 0;
++        }
++
+         /* It is critical for fallback buffering logic that we only return with success
+          * if we managed to parse a complete HTTP request (minus data). Returning success
+          * for PROXY means we can end up succeeding, yet leaving bytes in the fallback buffer
+@@ -532,8 +547,11 @@ private:
+             bool hasHost = false;
+             bool hasContentLength = false;
+             bool hasTransferEncoding = false;
++            bool hasTrustedProxyHeader = false;
+             std::string_view contentLengthString;
+             std::string_view transferEncodingString;
++            std::string_view trustedProxyValue;
++            forwardedAddress_.reset();
+             for (HttpRequest::Header *h = req->headers; (++h)->key.length(); ) {
+                 if (h->key == "host") {
+                     if (hasHost) [[unlikely]] {
+@@ -553,8 +571,24 @@ private:
+                     hasTransferEncoding = true;
+                     transferEncodingString = h->value;
+                 }
++                if (transportConfig_->trustedProxyHeader != TrustedProxyHeader::None &&
++                    h->key == trustedProxyHeaderName()) {
++                    if (hasTrustedProxyHeader) [[unlikely]] {
++                        return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++                    }
++                    hasTrustedProxyHeader = true;
++                    trustedProxyValue = h->value;
++                }
+                 req->bf.add(h->key);
+             }
++
++            if (hasTrustedProxyHeader &&
++                !forwardedAddress_.assign(
++                    transportConfig_->trustedProxyHeader,
++                    transportConfig_->trustedProxyHops,
++                    trustedProxyValue)) [[unlikely]] {
++                return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++            }
+             
+             /* Break if no host header (but we can have empty string which is different from nullptr) */
+             if (!hasHost) {
+@@ -684,6 +718,10 @@ public:
+         return hasDeclaredBodyLength_;
+     }
+ 
++    [[nodiscard]] std::string_view trustedProxyAddress() const noexcept {
++        return forwardedAddress_.bytes();
++    }
++
+     [[nodiscard]] LimitViolation GetLimitViolation() const {
+         return limitViolation_;
+     }
+diff --git a/vendor/uWebSockets/src/HttpResponse.h b/vendor/uWebSockets/src/HttpResponse.h
+index c3d472a..04d1bd4 100644
+--- a/vendor/uWebSockets/src/HttpResponse.h
++++ b/vendor/uWebSockets/src/HttpResponse.h
+@@ -255,10 +255,12 @@ private:
+     }
+ 
+ public:
+-    /* If we have proxy support; returns the proxed source address as reported by the proxy. */
+-#ifdef UWS_WITH_PROXY
++    /* Uses a trusted HTTP header when configured, otherwise preserves legacy PROXY v2 behavior. */
+     std::string_view getProxiedRemoteAddress() {
+-        return getHttpResponseData()->proxyParser.getSourceAddress();
++        if (getHttpResponseData()->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
++            return getHttpResponseData()->proxyParser.getSourceAddress();
++        }
++        return getHttpResponseData()->trustedProxyAddress();
+     }
+ 
+     std::string_view getProxiedRemoteAddressAsText() {
+@@ -266,9 +268,12 @@ public:
+     }
+ 
+     unsigned int getProxiedRemotePort() {
+-        return getHttpResponseData()->proxyParser.getSourcePort();
++        if (getHttpResponseData()->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
++            return getHttpResponseData()->proxyParser.getSourcePort();
++        }
++        /* Forwarded HTTP address headers do not carry a trustworthy source port. */
++        return 0;
+     }
+-#endif
+ 
+     /* Manually upgrade to WebSocket. Typically called in upgrade handler. Immediately calls open handler.
+      * NOTE: Will invalidate 'this' as socket might change location in memory. Throw away after use. */
+diff --git a/vendor/uWebSockets/src/HttpResponseData.h b/vendor/uWebSockets/src/HttpResponseData.h
+index f309976..d66fec1 100644
+--- a/vendor/uWebSockets/src/HttpResponseData.h
++++ b/vendor/uWebSockets/src/HttpResponseData.h
+@@ -125,12 +125,12 @@ private:
+     HttpTransportStats *transportStats;
+     HttpTransportPhase transportPhase = HttpTransportPhase::HeadersReading;
+ 
++    /* Used only when the App retains the legacy PROXY v2 transport mode. */
++    ProxyParser proxyParser;
++
+     /* Current state (content-length sent, status sent, write called, etc */
+     int state = 0;
+ 
+-#ifdef UWS_WITH_PROXY
+-    ProxyParser proxyParser;
+-#endif
+ };
+ 
+ }
+diff --git a/vendor/uWebSockets/src/HttpTransportConfig.h b/vendor/uWebSockets/src/HttpTransportConfig.h
+index 7691049..9790771 100644
+--- a/vendor/uWebSockets/src/HttpTransportConfig.h
++++ b/vendor/uWebSockets/src/HttpTransportConfig.h
+@@ -25,6 +25,12 @@ enum class HttpTransportPhase : std::uint8_t {
+     KeepAliveIdle,
+ };
+ 
++enum class TrustedProxyHeader : std::uint8_t {
++    None,
++    XForwardedFor,
++    XRealIp,
++};
++
+ class HttpTransportConfig final {
+ public:
+     static constexpr std::size_t DEFAULT_MAX_HEADER_SIZE = 4096;
+@@ -34,6 +40,13 @@ public:
+     static constexpr std::uint32_t DEFAULT_BODY_IDLE_TIMEOUT_MS = 10000;
+     static constexpr std::uint32_t DEFAULT_MIN_BODY_RATE_BYTES_PER_SEC = 16384;
+     static constexpr std::uint32_t DEFAULT_RESPONSE_WRITE_TIMEOUT_MS = 10000;
++    /*
++     * The uSockets short timeout wheel has 240 four-second slots. Explicit
++     * millisecond deadlines add one full slot before rounding so they cannot
++     * expire early. 956 seconds is therefore the largest requested deadline
++     * that remains representable without wrapping the wheel.
++     */
++    static constexpr std::uint32_t MAX_EXPLICIT_TIMEOUT_MS = 956000;
+ 
+     HttpTransportConfig(
+         std::size_t maxHeaderSize = DEFAULT_MAX_HEADER_SIZE,
+@@ -44,6 +57,8 @@ public:
+         std::optional<std::uint32_t> minBodyRateBytesPerSec =
+             DEFAULT_MIN_BODY_RATE_BYTES_PER_SEC,
+         std::uint32_t responseWriteTimeoutMs = DEFAULT_RESPONSE_WRITE_TIMEOUT_MS,
++        TrustedProxyHeader trustedProxyHeader = TrustedProxyHeader::None,
++        std::uint8_t trustedProxyHops = 1,
+         bool headersTimeoutExplicit = false,
+         bool keepAliveTimeoutExplicit = false,
+         bool bodyIdleTimeoutExplicit = false,
+@@ -55,6 +70,8 @@ public:
+           bodyIdleTimeoutMs(bodyIdleTimeoutMs),
+           minBodyRateBytesPerSec(minBodyRateBytesPerSec),
+           responseWriteTimeoutMs(responseWriteTimeoutMs),
++          trustedProxyHeader(trustedProxyHeader),
++          trustedProxyHops(trustedProxyHops),
+           headersTimeoutSeconds(
+               ComputeTimeoutSeconds(headersTimeoutMs, headersTimeoutExplicit)),
+           keepAliveTimeoutSeconds(
+@@ -77,6 +94,8 @@ public:
+     const std::uint32_t bodyIdleTimeoutMs;
+     const std::optional<std::uint32_t> minBodyRateBytesPerSec;
+     const std::uint32_t responseWriteTimeoutMs;
++    const TrustedProxyHeader trustedProxyHeader;
++    const std::uint8_t trustedProxyHops;
+     const unsigned int headersTimeoutSeconds;
+     const unsigned int keepAliveTimeoutSeconds;
+     const unsigned int bodyIdleTimeoutSeconds;
+diff --git a/vendor/uWebSockets/src/ProxyParser.h b/vendor/uWebSockets/src/ProxyParser.h
+index ffe4bf6..6e71bdc 100644
+--- a/vendor/uWebSockets/src/ProxyParser.h
++++ b/vendor/uWebSockets/src/ProxyParser.h
+@@ -104,10 +104,10 @@ public:
+ 
+         if ((family & 0xf0) >> 4 == 1) {
+             /* Family 1 is INET4 */
+-            return addr.ipv4_addr.src_port;
++            return _cond_byte_swap<uint16_t>(addr.ipv4_addr.src_port);
+         } else {
+             /* Family 2 is INET6 */
+-            return addr.ipv6_addr.src_port;
++            return _cond_byte_swap<uint16_t>(addr.ipv6_addr.src_port);
+         }
+     }
+ 
+diff --git a/vendor/uWebSockets/src/WebSocket.h b/vendor/uWebSockets/src/WebSocket.h
+index 00da781..5134e16 100644
+--- a/vendor/uWebSockets/src/WebSocket.h
++++ b/vendor/uWebSockets/src/WebSocket.h
+@@ -227,6 +227,7 @@ public:
+ 
+         /* We postpone any FIN sending to either drainage or uncorking */
+         webSocketData->isShuttingDown = true;
++        webSocketData->requestFragmentBufferClear();
+ 
+         /* Format and send the close frame */
+         static const int MAX_CLOSE_PAYLOAD = 123;
+diff --git a/vendor/uWebSockets/src/WebSocketContext.h b/vendor/uWebSockets/src/WebSocketContext.h
+index d8b3fd0..8c9f699 100644
+--- a/vendor/uWebSockets/src/WebSocketContext.h
++++ b/vendor/uWebSockets/src/WebSocketContext.h
+@@ -103,10 +103,6 @@ private:
+                     }
+                 }
+             } else {
+-                /* Allocate fragment buffer up front first time */
+-                if (!webSocketData->fragmentBuffer.length()) {
+-                    webSocketData->fragmentBuffer.reserve(length + remainingBytes);
+-                }
+                 /* Fragments forming a big message are not caught until appending them */
+                 if (refusePayloadLength(length + webSocketData->fragmentBuffer.length(), webSocketState, s)) {
+                     forceClose(webSocketState, s, ERR_TOO_BIG_MESSAGE);
+@@ -162,14 +158,18 @@ private:
+ 
+                     /* Emit message and check for shutdown or close */
+                     if (webSocketContextData->messageHandler) {
++                        webSocketData->beginFragmentBufferView();
+                         webSocketContextData->messageHandler((WebSocket<SSL, isServer, USERDATA> *) s, std::string_view(data, length), (OpCode) opCode);
+-                        if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
++                        if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
+                             return true;
+                         }
++                        webSocketData->endFragmentBufferView();
++                    }
++                    bool isShuttingDown = webSocketData->isShuttingDown;
++                    webSocketData->clearFragmentBuffer();
++                    if (isShuttingDown) {
++                        return true;
+                     }
+-
+-                    /* If we shutdown or closed, this will be taken care of elsewhere */
+-                    webSocketData->fragmentBuffer.clear();
+                 }
+             }
+         } else {
+@@ -208,21 +208,37 @@ private:
+                     char *controlBuffer = (char *) webSocketData->fragmentBuffer.data() + webSocketData->fragmentBuffer.length() - webSocketData->controlTipLength;
+                     if (opCode == CLOSE) {
+                         protocol::CloseFrame closeFrame = protocol::parseClosePayload(controlBuffer, webSocketData->controlTipLength);
++                        webSocketData->beginFragmentBufferView();
+                         webSocket->end(closeFrame.code, std::string_view(closeFrame.message, closeFrame.length));
++                        if (!us_socket_is_closed(SSL, (us_socket_t *) s)) {
++                            webSocketData->endFragmentBufferView();
++                        }
+                         return true;
+                     } else {
+                         if (opCode == PING) {
+                             webSocket->send(std::string_view(controlBuffer, webSocketData->controlTipLength), (OpCode) OpCode::PONG);
+                             if (webSocketContextData->pingHandler) {
++                                webSocketData->beginFragmentBufferView();
+                                 webSocketContextData->pingHandler(webSocket, std::string_view(controlBuffer, webSocketData->controlTipLength));
+-                                if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
++                                if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
++                                    return true;
++                                }
++                                bool isShuttingDown = webSocketData->isShuttingDown;
++                                webSocketData->endFragmentBufferView();
++                                if (isShuttingDown) {
+                                     return true;
+                                 }
+                             }
+                         } else if (opCode == PONG) {
+                             if (webSocketContextData->pongHandler) {
++                                webSocketData->beginFragmentBufferView();
+                                 webSocketContextData->pongHandler(webSocket, std::string_view(controlBuffer, webSocketData->controlTipLength));
+-                                if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
++                                if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
++                                    return true;
++                                }
++                                bool isShuttingDown = webSocketData->isShuttingDown;
++                                webSocketData->endFragmentBufferView();
++                                if (isShuttingDown) {
+                                     return true;
+                                 }
+                             }
+@@ -348,7 +364,9 @@ private:
+             /* Also reset timeout if we came here with 0 backpressure */
+             if (!backpressure || backpressure > asyncSocket->getBufferedAmount()) {
+                 auto *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
+-                asyncSocket->timeout(webSocketContextData->idleTimeoutComponents.first);
++                asyncSocket->timeout(webSocketData->isShuttingDown
++                    ? webSocketContextData->idleTimeoutComponents.second
++                    : webSocketContextData->idleTimeoutComponents.first);
+                 webSocketData->hasTimedOut = false;
+             }
+ 
+diff --git a/vendor/uWebSockets/src/WebSocketContextData.h b/vendor/uWebSockets/src/WebSocketContextData.h
+index 7f04aa6..277bf3b 100644
+--- a/vendor/uWebSockets/src/WebSocketContextData.h
++++ b/vendor/uWebSockets/src/WebSocketContextData.h
+@@ -84,6 +84,12 @@ public:
+ 
+     /* This is run once on start-up */
+     void calculateIdleTimeoutCompnents(unsigned short idleTimeout) {
++        if (!idleTimeout) {
++            /* Disable idle pings/timeouts while retaining the short shutdown
++             * deadline used after an explicit WebSocket end(). */
++            idleTimeoutComponents = {0, 4};
++            return;
++        }
+         unsigned short margin = 4;
+         /* 4, 8 or 16 seconds margin based on idleTimeout */
+         while ((int) idleTimeout - margin * 2 >= margin * 2 && margin < 16) {
+diff --git a/vendor/uWebSockets/src/WebSocketData.h b/vendor/uWebSockets/src/WebSocketData.h
+index 21e96a7..df443fc 100644
+--- a/vendor/uWebSockets/src/WebSocketData.h
++++ b/vendor/uWebSockets/src/WebSocketData.h
+@@ -34,8 +34,13 @@ struct WebSocketData : AsyncSocketData<false>, WebSocketState<true> {
+     template <bool, bool, typename> friend struct WebSocket;
+     template <bool> friend struct HttpContext;
+ private:
++    /* Retain buffers through the 16-bit payload range, but do not pin large-message peaks per socket. */
++    static constexpr size_t MAX_RETAINED_FRAGMENT_BUFFER_CAPACITY = 64 * 1024;
++
+     std::string fragmentBuffer;
+     unsigned int controlTipLength = 0;
++    bool fragmentBufferClearPending = false;
++    bool fragmentBufferViewActive = false;
+     bool isShuttingDown = 0;
+     bool hasTimedOut = false;
+     enum CompressionStatus : char {
+@@ -51,6 +56,38 @@ private:
+ 
+     /* We could be a subscriber */
+     Subscriber *subscriber = nullptr;
++
++    void clearFragmentBuffer() {
++        fragmentBufferClearPending = false;
++        controlTipLength = 0;
++        if (fragmentBuffer.capacity() > MAX_RETAINED_FRAGMENT_BUFFER_CAPACITY) [[unlikely]] {
++            std::string empty;
++            fragmentBuffer.swap(empty);
++            return;
++        }
++
++        fragmentBuffer.clear();
++    }
++
++    void beginFragmentBufferView() {
++        fragmentBufferViewActive = true;
++    }
++
++    void endFragmentBufferView() {
++        fragmentBufferViewActive = false;
++        if (fragmentBufferClearPending) {
++            clearFragmentBuffer();
++        }
++    }
++
++    void requestFragmentBufferClear() {
++        if (fragmentBufferViewActive) {
++            fragmentBufferClearPending = true;
++            return;
++        }
++
++        clearFragmentBuffer();
++    }
+ public:
+     WebSocketData(bool perMessageDeflate, CompressOptions compressOptions, BackPressure &&backpressure) : AsyncSocketData<false>(std::move(backpressure)), WebSocketState<true>() {
+         compressionStatus = perMessageDeflate ? ENABLED : DISABLED;
+diff --git a/vendor/uWebSockets/src/WebSocketProtocol.h b/vendor/uWebSockets/src/WebSocketProtocol.h
+index a6c1730..18ebc92 100644
+--- a/vendor/uWebSockets/src/WebSocketProtocol.h
++++ b/vendor/uWebSockets/src/WebSocketProtocol.h
+@@ -289,6 +289,7 @@ protected:
+     static inline bool isFin(char *frame) {return *((unsigned char *) frame) & 128;}
+     static inline unsigned char getOpCode(char *frame) {return *((unsigned char *) frame) & 15;}
+     static inline unsigned char payloadLength(char *frame) {return ((unsigned char *) frame)[1] & 127;}
++    static inline bool isMasked(char *frame) {return ((unsigned char *) frame)[1] & 128;}
+     static inline bool rsv23(char *frame) {return *((unsigned char *) frame) & 48;}
+     static inline bool rsv1(char *frame) {return *((unsigned char *) frame) & 64;}
+ 
+@@ -482,7 +483,18 @@ public:
+         }
+         if (wState->state.wantsHead) {
+             parseNext:
+-            while (length >= SHORT_MESSAGE_HEADER) {
++            while (length >= 2) {
++
++                /* RFC 6455 5.1: every frame sent from a client to a server is masked. */
++                if constexpr (isServer) {
++                    if (!isMasked(src)) {
++                        Impl::forceClose(wState, user, ERR_PROTOCOL);
++                        return;
++                    }
++                    if (length < SHORT_MESSAGE_HEADER) {
++                        break;
++                    }
++                }
+ 
+                 // invalid reserved bits / invalid opcodes / invalid control frames / set compressed frame
+                 if ((rsv1(src) && !Impl::setCompressed(wState, user)) || rsv23(src) || (getOpCode(src) > 2 && getOpCode(src) < 8) ||

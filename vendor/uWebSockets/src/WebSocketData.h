@@ -34,8 +34,13 @@ struct WebSocketData : AsyncSocketData<false>, WebSocketState<true> {
     template <bool, bool, typename> friend struct WebSocket;
     template <bool> friend struct HttpContext;
 private:
+    /* Retain buffers through the 16-bit payload range, but do not pin large-message peaks per socket. */
+    static constexpr size_t MAX_RETAINED_FRAGMENT_BUFFER_CAPACITY = 64 * 1024;
+
     std::string fragmentBuffer;
     unsigned int controlTipLength = 0;
+    bool fragmentBufferClearPending = false;
+    bool fragmentBufferViewActive = false;
     bool isShuttingDown = 0;
     bool hasTimedOut = false;
     enum CompressionStatus : char {
@@ -51,6 +56,38 @@ private:
 
     /* We could be a subscriber */
     Subscriber *subscriber = nullptr;
+
+    void clearFragmentBuffer() {
+        fragmentBufferClearPending = false;
+        controlTipLength = 0;
+        if (fragmentBuffer.capacity() > MAX_RETAINED_FRAGMENT_BUFFER_CAPACITY) [[unlikely]] {
+            std::string empty;
+            fragmentBuffer.swap(empty);
+            return;
+        }
+
+        fragmentBuffer.clear();
+    }
+
+    void beginFragmentBufferView() {
+        fragmentBufferViewActive = true;
+    }
+
+    void endFragmentBufferView() {
+        fragmentBufferViewActive = false;
+        if (fragmentBufferClearPending) {
+            clearFragmentBuffer();
+        }
+    }
+
+    void requestFragmentBufferClear() {
+        if (fragmentBufferViewActive) {
+            fragmentBufferClearPending = true;
+            return;
+        }
+
+        clearFragmentBuffer();
+    }
 public:
     WebSocketData(bool perMessageDeflate, CompressOptions compressOptions, BackPressure &&backpressure) : AsyncSocketData<false>(std::move(backpressure)), WebSocketState<true>() {
         compressionStatus = perMessageDeflate ? ENABLED : DISABLED;

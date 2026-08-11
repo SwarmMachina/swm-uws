@@ -104,10 +104,10 @@ public:
 
         if ((family & 0xf0) >> 4 == 1) {
             /* Family 1 is INET4 */
-            return addr.ipv4_addr.src_port;
+            return _cond_byte_swap<uint16_t>(addr.ipv4_addr.src_port);
         } else {
             /* Family 2 is INET6 */
-            return addr.ipv6_addr.src_port;
+            return _cond_byte_swap<uint16_t>(addr.ipv6_addr.src_port);
         }
     }
 
