@@ -33,3 +33,11 @@ layout.
 The patch assumes `uwebsockets-begin-write-framing.patch` has already been
 applied; patch files are sorted by name by `scripts/update-vendor.js`, which
 preserves that order.
+
+## Request framing validation
+
+`uwebsockets-request-framing.patch` rejects duplicate `Content-Length` and
+`Transfer-Encoding` fields, rejects requests containing both fields, accepts
+only a single case-insensitive `chunked` transfer-coding token, and validates
+`Content-Length` before the route handler runs. Parser errors return one `400`
+and close the connection before any pipelined bytes can be dispatched.

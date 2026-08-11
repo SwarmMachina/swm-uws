@@ -1,0 +1,141 @@
+diff --git a/src/HttpParser.h b/src/HttpParser.h
+index ac4a1f9..f32d608 100644
+--- a/src/HttpParser.h
++++ b/src/HttpParser.h
+@@ -199,6 +199,7 @@ private:
+ 
+-    /* Returns UINT64_MAX on error. Maximum 999999999 is allowed. */
++    /* Returns UINT64_MAX on error. At most 18 decimal digits are accepted so
++     * fixed-length framing never overlaps the reserved chunk-parser states. */
+     static uint64_t toUnsignedInteger(std::string_view str) {
+         /* We assume at least 64-bit integer giving us safely 999999999999999999 (18 number of 9s) */
+-        if (str.length() > 18) {
++        if (!str.length() || str.length() > 18) {
+             return UINT64_MAX;
+@@ -216,2 +217,24 @@ private:
+     }
++
++    static bool isChunkedTransferEncoding(std::string_view value) {
++        static constexpr std::string_view chunked = "chunked";
++
++        if (value.length() != chunked.length()) {
++            return false;
++        }
++
++        for (size_t i = 0; i < chunked.length(); i++) {
++            unsigned char c = (unsigned char) value[i];
++
++            if (c >= 'A' && c <= 'Z') {
++                c |= 32;
++            }
++
++            if (c != (unsigned char) chunked[i]) {
++                return false;
++            }
++        }
++
++        return true;
++    }
+     
+@@ -500,10 +523,28 @@ private:
+ 
+-            /* Add all headers to bloom filter */
++            /* Add all headers to bloom filter and reject request framing fields
++             * that cannot be combined safely by downstream HTTP hops. */
+             req->bf.reset();
++            bool hasHost = false;
++            bool hasContentLength = false;
++            bool hasTransferEncoding = false;
++            std::string_view contentLengthString;
++            std::string_view transferEncodingString;
+             for (HttpRequest::Header *h = req->headers; (++h)->key.length(); ) {
+-                if (req->bf.mightHave(h->key)) [[unlikely]] {
+-                    /* Host header is not allowed twice */
+-                    if (h->key == "host" && req->getHeader("host").data()) {
++                if (h->key == "host") {
++                    if (hasHost) [[unlikely]] {
++                        return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++                    }
++                    hasHost = true;
++                } else if (h->key == "content-length") {
++                    if (hasContentLength) [[unlikely]] {
+                         return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+                     }
++                    hasContentLength = true;
++                    contentLengthString = h->value;
++                } else if (h->key == "transfer-encoding") {
++                    if (hasTransferEncoding) [[unlikely]] {
++                        return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++                    }
++                    hasTransferEncoding = true;
++                    transferEncodingString = h->value;
+                 }
+@@ -513,3 +554,3 @@ private:
+             /* Break if no host header (but we can have empty string which is different from nullptr) */
+-            if (!req->getHeader("host").data()) {
++            if (!hasHost) {
+                 return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+@@ -522,5 +563,3 @@ private:
+             * ought to be handled as an error. */
+-            std::string_view transferEncodingString = req->getHeader("transfer-encoding");
+-            std::string_view contentLengthString = req->getHeader("content-length");
+-            if (transferEncodingString.length() && contentLengthString.length()) {
++            if (hasTransferEncoding && hasContentLength) {
+                 /* Returning fullptr is the same as calling the errorHandler */
+@@ -531,2 +570,9 @@ private:
+ 
++            /* This parser only implements chunked transfer coding. Accepting any
++             * other value as chunked creates a different request boundary than a
++             * conforming proxy and enables request smuggling. */
++            if (hasTransferEncoding && !isChunkedTransferEncoding(transferEncodingString)) {
++                return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++            }
++
+             /* Parse query */
+@@ -535,2 +581,14 @@ private:
+ 
++            /* Resolve request framing before the route handler. */
++            if (hasTransferEncoding) {
++                remainingStreamingBytes = STATE_IS_CHUNKED;
++            } else if (hasContentLength) {
++                remainingStreamingBytes = toUnsignedInteger(contentLengthString);
++                if (remainingStreamingBytes == UINT64_MAX) {
++                    return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++                }
++            } else {
++                remainingStreamingBytes = 0;
++            }
++
+             /* If returned socket is not what we put in we need
+@@ -546,3 +604,3 @@ private:
+              * If both content-length and transfer-encoding then invalid message; must break.
+-             * If has transfer-encoding then must be chunked regardless of value.
++             * If transfer-encoding is present, its only supported value is chunked.
+              * If content-length then fixed length even if 0.
+@@ -553,7 +611,3 @@ private:
+              * the Transfer-Encoding overrides the Content-Length. */
+-            if (transferEncodingString.length()) {
+-
+-                /* If a proxy sent us the transfer-encoding header that 100% means it must be chunked or else the proxy is
+-                 * not RFC 9112 compliant. Therefore it is always better to assume this is the case, since that entirely eliminates 
+-                 * all forms of transfer-encoding obfuscation tricks. We just rely on the header. */
++            if (hasTransferEncoding) {
+ 
+@@ -564,6 +618,2 @@ private:
+ 
+-                /* In this case we fail later by having the wrong interpretation (assuming chunked).
+-                 * This could be made stricter but makes no difference either way, unless forwarding the identical message as a proxy. */
+-
+-                remainingStreamingBytes = STATE_IS_CHUNKED;
+                 /* If consume minimally, we do not want to consume anything but we want to mark this as being chunked */
+@@ -583,9 +633,3 @@ private:
+                 }
+-            } else if (contentLengthString.length()) {
+-                remainingStreamingBytes = toUnsignedInteger(contentLengthString);
+-                if (remainingStreamingBytes == UINT64_MAX) {
+-                    /* Parser error */
+-                    return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+-                }
+-
++            } else if (hasContentLength) {
+                 if (!CONSUME_MINIMALLY) {

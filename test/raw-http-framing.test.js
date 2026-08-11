@@ -174,6 +174,114 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
   }
 })
 
+test('ambiguous request framing is rejected before any route handler runs', { timeout: 15_000 }, async () => {
+  const app = createApp()
+
+  let victimHandled = 0
+  let smuggledHandled = 0
+
+  app.post('/victim', (res) => {
+    victimHandled++
+    res.end('victim')
+  })
+  app.get('/smuggled', (res) => {
+    smuggledHandled++
+    res.end('smuggled')
+  })
+  const server = await NativeAppServer.listen(app)
+
+  try {
+    const smuggled = 'GET /smuggled HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'
+    const invalidRequests = [
+      [
+        'conflicting Content-Length fields',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nContent-Length: 0\r\n\r\nfour' + smuggled
+      ],
+      [
+        'identical Content-Length fields',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n' + smuggled
+      ],
+      [
+        'empty duplicate Content-Length fields',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length:\r\nContent-Length:\r\n\r\n' + smuggled
+      ],
+      [
+        'duplicate Transfer-Encoding fields',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n' +
+          smuggled
+      ],
+      [
+        'empty duplicate Transfer-Encoding fields',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding:\r\nTransfer-Encoding:\r\n\r\n' + smuggled
+      ],
+      [
+        'identity Transfer-Encoding',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: identity\r\n\r\n0\r\n\r\n' + smuggled
+      ],
+      [
+        'gzip Transfer-Encoding',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: gzip\r\n\r\n0\r\n\r\n' + smuggled
+      ],
+      [
+        'gzip then chunked Transfer-Encoding',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n' + smuggled
+      ],
+      [
+        'repeated chunked transfer coding',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked, chunked\r\n\r\n0\r\n\r\n' + smuggled
+      ],
+      ['empty Transfer-Encoding', 'POST /victim HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding:\r\n\r\n' + smuggled],
+      ['empty Content-Length', 'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length:\r\n\r\n' + smuggled],
+      [
+        'signed positive Content-Length',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: +4\r\n\r\nfour' + smuggled
+      ],
+      ['negative Content-Length', 'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: -1\r\n\r\n' + smuggled],
+      [
+        'suffixed Content-Length',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4x\r\n\r\nfour' + smuggled
+      ],
+      [
+        'comma-separated Content-Length',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4, 4\r\n\r\nfour' + smuggled
+      ],
+      [
+        'overflowing Content-Length',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: 9999999999999999999\r\n\r\n' + smuggled
+      ],
+      [
+        'Content-Length plus Transfer-Encoding',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n' +
+          smuggled
+      ]
+    ]
+
+    for (const [name, request] of invalidRequests) {
+      const response = (await rawExchange(server.port, [request], { resolveOn: 'close' })).toString('latin1')
+
+      assert.match(response, /^HTTP\/1\.1 400 Bad Request\r\n/, name)
+      assert.equal(countOccurrences(Buffer.from(response, 'latin1'), Buffer.from('HTTP/1.1 ')), 1, name)
+      assert.equal(victimHandled, 0, `${name}: victim handler ran`)
+      assert.equal(smuggledHandled, 0, `${name}: smuggled handler ran`)
+    }
+
+    const valid = await requestAndParse(
+      server.port,
+      [
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding:\t ChUnKeD \t\r\nConnection: close\r\n\r\n0\r\n\r\n'
+      ],
+      1
+    )
+
+    assert.equal(valid[0].status, 200)
+    assert.equal(valid[0].body.toString(), 'victim')
+    assert.equal(victimHandled, 1)
+    assert.equal(smuggledHandled, 0)
+  } finally {
+    server.close()
+  }
+})
+
 test('server fingerprint is suppressed in headers and automatic parser errors', async () => {
   const app = createApp({ http: { maxHeaderSize: 96 } })
   const server = await NativeAppServer.listen(app)
@@ -208,8 +316,8 @@ function requestAndParse(port, chunks, expectedCount) {
   })
 }
 
-function rawExchange(port, chunks) {
-  return rawHttpExchange({ host: '127.0.0.1', port }, chunks)
+function rawExchange(port, chunks, options) {
+  return rawHttpExchange({ host: '127.0.0.1', port }, chunks, options)
 }
 
 function parseResponses(wire) {
