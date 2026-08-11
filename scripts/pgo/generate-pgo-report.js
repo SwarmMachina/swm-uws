@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { pairedComparison } from '@swarmmachina/benchkit/statistics'
 import { format } from 'prettier'
 
-let directory = new URL('../benchmark/profiles/pgo-balanced-linux/', import.meta.url)
+let directory = new URL('../../benchmark/profiles/pgo-balanced-linux/', import.meta.url)
 let check = false
 
 const arguments_ = process.argv.slice(2)

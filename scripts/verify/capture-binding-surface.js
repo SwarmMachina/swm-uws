@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { captureBindingSurface } from '../test/helpers/capture-binding-surface.js'
+import { captureBindingSurface } from '../../test/helpers/capture-binding-surface.js'
 
 function bindingSpecifier(value) {
   if (isAbsolute(value) || value.startsWith('.')) {

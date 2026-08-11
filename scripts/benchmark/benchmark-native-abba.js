@@ -19,7 +19,7 @@ import {
   requiredOption
 } from './lib/option-values.js'
 
-const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
+const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const options = parseOptions(process.argv.slice(2))
 const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'swm-uws-native-abba-'))
 const results = []
@@ -62,8 +62,8 @@ async function runSide({ binding, role, block, position }) {
   const metrics = path.join(temporaryDirectory, `${block}-${position}-${role}.json`)
   const serverCommand =
     process.platform === 'linux' && options.serverCpu >= 0
-      ? ['taskset', ['-c', String(options.serverCpu), process.execPath, 'scripts/profile-http-raw-server.js']]
-      : [process.execPath, ['scripts/profile-http-raw-server.js']]
+      ? ['taskset', ['-c', String(options.serverCpu), process.execPath, 'scripts/pgo/profile-http-raw-server.js']]
+      : [process.execPath, ['scripts/pgo/profile-http-raw-server.js']]
   const target = await BenchmarkTargetProcess.start({
     command: serverCommand[0],
     arguments_: serverCommand[1],

@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 
 import { verifyReleasePrebuilds } from './release-artifacts.js'
 
-const root = fileURLToPath(new URL('..', import.meta.url))
+const root = fileURLToPath(new URL('../..', import.meta.url))
 const releaseRoot = process.argv[2] ? resolve(process.argv[2]) : root
 
 try {

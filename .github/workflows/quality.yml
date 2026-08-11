@@ -121,4 +121,4 @@ jobs:
         env:
           SWM_PARSER_FUZZ_CXX: clang++-18
           SWM_PARSER_FUZZ_SECONDS: 30
-        run: bash scripts/run-parser-fuzz.sh
+        run: bash scripts/verify/run-parser-fuzz.sh

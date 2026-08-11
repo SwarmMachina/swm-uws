@@ -12,7 +12,7 @@ import {
   expectedPrebuilds,
   verifyCandidateManifest,
   verifyReleasePrebuilds
-} from '../scripts/release-artifacts.js'
+} from '../scripts/release/release-artifacts.js'
 
 const environment = {
   GITHUB_REPOSITORY: 'SwarmMachina/swm-uws',

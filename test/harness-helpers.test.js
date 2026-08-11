@@ -2,15 +2,15 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:net'
 import test from 'node:test'
 
-import { benchmarkBlockSchedule } from '../scripts/lib/benchmark-block-schedule.js'
-import { BenchmarkTargetProcess } from '../scripts/lib/benchmark-target-process.js'
+import { benchmarkBlockSchedule } from '../scripts/benchmark/lib/benchmark-block-schedule.js'
+import { BenchmarkTargetProcess } from '../scripts/benchmark/lib/benchmark-target-process.js'
 import {
   cpuIndexOption,
   expandEqualsArguments,
   nonNegativeIntegerOption,
   positiveIntegerOption,
   requiredOption
-} from '../scripts/lib/option-values.js'
+} from '../scripts/benchmark/lib/option-values.js'
 import { waitFor, withTimeout } from './helpers/async.js'
 import { proxyProtocolV2Ipv4Header, rawHttpExchange } from './helpers/raw-http.js'
 import { nextWebSocketClose, nextWebSocketMessage, nextWebSocketOpen } from './helpers/websocket-events.js'

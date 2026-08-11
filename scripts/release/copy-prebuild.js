@@ -2,7 +2,7 @@ import { copyFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = fileURLToPath(new URL('..', import.meta.url))
+const root = fileURLToPath(new URL('../..', import.meta.url))
 const source = join(root, 'build', 'Release', 'swm_uws.node')
 const targetDirectories = new Map([
   ['linux/x64', 'linux-x64-glibc'],

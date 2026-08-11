@@ -189,7 +189,7 @@ jobs:
           export SWM_RELEASE_NPM_VERSION
           SWM_RELEASE_NODE_VERSION="$(docker run --rm --platform linux/amd64 "$node_image" node --version)"
           SWM_RELEASE_NPM_VERSION="$(docker run --rm --platform linux/amd64 "$node_image" npm --version)"
-          node scripts/release-artifacts.js create-prebuild
+          node scripts/release/release-artifacts.js create-prebuild
 
       - name: Upload ABI prebuild
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -258,7 +258,7 @@ jobs:
           if (Test-Path node_modules/node-gyp) {
             throw "node-gyp leaked into the runtime installation"
           }
-          npm test
+          node test/installed-smoke.js
 
       - name: Verify prebuild
         run: |
@@ -275,7 +275,7 @@ jobs:
           SWM_RELEASE_BUILDER: GitHub Actions self-hosted Windows x64
           SWM_RELEASE_COMPILER: MSVC via node-gyp
           SWM_RELEASE_PROFILE: release
-        run: node scripts/release-artifacts.js create-prebuild
+        run: node scripts/release/release-artifacts.js create-prebuild
 
       - name: Upload ABI prebuild
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -349,7 +349,7 @@ jobs:
           npm ci --omit=dev
           test ! -d node_modules/@swarmmachina/standards
           test ! -d node_modules/node-gyp
-          npm test
+          node test/installed-smoke.js
 
       - name: Verify prebuild
         run: |
@@ -365,7 +365,7 @@ jobs:
           SWM_RELEASE_BUILDER: GitHub Actions ${{ matrix.runner }}
           SWM_RELEASE_COMPILER: Apple Clang via node-gyp
           SWM_RELEASE_PROFILE: release
-        run: node scripts/release-artifacts.js create-prebuild
+        run: node scripts/release/release-artifacts.js create-prebuild
 
       - name: Upload ABI prebuild
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -523,7 +523,7 @@ jobs:
         run: npm ci
 
       - name: Verify and assemble release manifest
-        run: node scripts/release-artifacts.js assemble
+        run: node scripts/release/release-artifacts.js assemble
 
       - name: Validate release prebuild formats and digests
         run: npm run check:release
@@ -532,7 +532,7 @@ jobs:
         run: |
           mkdir -p dist
           npm pack --pack-destination dist
-          node scripts/release-artifacts.js create-candidate
+          node scripts/release/release-artifacts.js create-candidate
 
       - name: Upload combined prebuilds
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -594,7 +594,7 @@ jobs:
           path: dist
 
       - name: Verify tested release candidate digest and contents
-        run: node scripts/release-artifacts.js verify-candidate
+        run: node scripts/release/release-artifacts.js verify-candidate
 
       - name: Install and smoke-test packed package on Bookworm
         if: runner.os == 'Linux'
@@ -670,7 +670,7 @@ jobs:
           path: dist
 
       - name: Verify tested release candidate digest and contents
-        run: node scripts/release-artifacts.js verify-candidate
+        run: node scripts/release/release-artifacts.js verify-candidate
 
       - name: Install and smoke-test packed package
         shell: bash
@@ -732,7 +732,7 @@ jobs:
           path: dist
 
       - name: Verify tested release candidate digest and contents
-        run: node scripts/release-artifacts.js verify-candidate
+        run: node scripts/release/release-artifacts.js verify-candidate
 
       - name: Check whether the exact package is already published
         id: registry

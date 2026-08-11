@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const PACKAGE_NAME = '@swarmmachina/swm-uws'
 const MANIFEST_VERSION = 1
-const root = fileURLToPath(new URL('..', import.meta.url))
+const root = fileURLToPath(new URL('../..', import.meta.url))
 
 export const expectedPrebuilds = Object.freeze([
   artifact('prebuilds/linux-x64-glibc/node-v127.node', 'ELF', 'linux', 'x64', '22', '127', [0x7f, 0x45, 0x4c, 0x46]),
@@ -556,7 +556,7 @@ function runCli(command) {
   }
 
   throw new Error(
-    'Usage: node scripts/release-artifacts.js <create-prebuild|assemble|create-candidate|verify-candidate>'
+    'Usage: node scripts/release/release-artifacts.js <create-prebuild|assemble|create-candidate|verify-candidate>'
   )
 }
 

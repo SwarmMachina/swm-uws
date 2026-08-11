@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
+const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const fix = process.argv.slice(2).includes('--fix')
 const format = resolveTool('clang-format', process.env.CLANG_FORMAT)
 const tidy = resolveTool('clang-tidy', process.env.CLANG_TIDY)

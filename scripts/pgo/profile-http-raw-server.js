@@ -6,7 +6,7 @@ import { performance } from 'node:perf_hooks'
 
 import { ProcessMemorySampler } from '@swarmmachina/benchkit/measurement'
 
-const modulePath = process.env.SWM_PROFILE_BINDING || new URL('../lib/index.js', import.meta.url).href
+const modulePath = process.env.SWM_PROFILE_BINDING || new URL('../../lib/index.js', import.meta.url).href
 const metricsPath = process.env.SWM_PROFILE_METRICS
 const port = Number(process.env.SWM_PROFILE_PORT || 3000)
 

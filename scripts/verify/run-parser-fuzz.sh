@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fuzz_seconds="${SWM_PARSER_FUZZ_SECONDS:-15}"
 parser_fuzz_cxx="${SWM_PARSER_FUZZ_CXX:-}"
 

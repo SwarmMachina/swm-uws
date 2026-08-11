@@ -11,7 +11,7 @@ import { benchmarkBlockSchedule } from './lib/benchmark-block-schedule.js'
 import { BenchmarkTargetProcess } from './lib/benchmark-target-process.js'
 import { cpuIndexOption, expandEqualsArguments, positiveIntegerOption, requiredOption } from './lib/option-values.js'
 
-const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
+const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const options = parseOptions(process.argv.slice(2))
 const target = await startTarget()
 const cells = options.quick ? quickCells() : fullCells()
@@ -229,8 +229,11 @@ function parseOptions(args) {
 function startTarget() {
   const targetCommand =
     process.platform === 'linux' && options.serverCpu >= 0
-      ? ['taskset', ['-c', String(options.serverCpu), process.execPath, 'scripts/benchmark-prefetch-server.js']]
-      : [process.execPath, ['scripts/benchmark-prefetch-server.js']]
+      ? [
+          'taskset',
+          ['-c', String(options.serverCpu), process.execPath, 'scripts/benchmark/benchmark-prefetch-server.js']
+        ]
+      : [process.execPath, ['scripts/benchmark/benchmark-prefetch-server.js']]
 
   return BenchmarkTargetProcess.start({
     command: targetCommand[0],

@@ -5,11 +5,11 @@ import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
+const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const tag = process.argv[2]
 
 if (!/^v20\.\d+\.0$/.test(tag || '')) {
-  throw new Error('Usage: node scripts/update-vendor.js v20.x.0')
+  throw new Error('Usage: node scripts/vendor/update-vendor.js v20.x.0')
 }
 
 const temp = mkdtempSync(join(tmpdir(), 'swm-uws-vendor-'))

@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
+const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const manifest = readFileSync(resolve(root, 'vendor/FILES.sha256'), 'utf8').trim().split('\n')
 const declaredFiles = new Set()
 

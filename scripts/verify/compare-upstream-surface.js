@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-import { bindingSurfaceDelta } from '../test/helpers/capture-binding-surface.js'
-import { allowedSurfaceDelta, upstreamSurface } from '../test/upstream-surface-contract.js'
+import { bindingSurfaceDelta } from '../../test/helpers/capture-binding-surface.js'
+import { allowedSurfaceDelta, upstreamSurface } from '../../test/upstream-surface-contract.js'
 
 function captureSurface(bindingName) {
   const result = spawnSync(
@@ -38,7 +38,7 @@ assert.deepEqual(
   'Installed uwebsockets.js surface does not match the pinned v20.69.0 contract'
 )
 
-const localSurface = captureSurface(fileURLToPath(new URL('../lib/index.js', import.meta.url)))
+const localSurface = captureSurface(fileURLToPath(new URL('../../lib/index.js', import.meta.url)))
 
 assert.deepEqual(
   bindingSurfaceDelta(referenceSurface, localSurface),
