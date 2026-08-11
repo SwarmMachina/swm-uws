@@ -562,6 +562,13 @@ public:
         return httpResponseData->maxRemainingBodyLength();
     }
 
+    /* Whether this request was framed by an explicit Content-Length header. */
+    bool hasDeclaredBodyLength() {
+        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+
+        return httpResponseData->hasDeclaredBodyLength();
+    }
+
     /* If you are messing around with sendfile you might want to override the offset. */
     void overrideWriteOffset(uintmax_t offset) {
         HttpResponseData<SSL> *httpResponseData = getHttpResponseData();

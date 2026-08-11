@@ -10,6 +10,8 @@ const READABLE_SURFACE = {
   HttpRequest: ['forEach', 'getCaseSensitiveMethod', 'getHeader', 'getMethod', 'getParameter', 'getQuery', 'getUrl'],
   HttpResponse: [
     'collectBody',
+    'collectBodyWithLength',
+    'discardBody',
     'getProxiedRemoteAddress',
     'getProxiedRemoteAddressAsText',
     'getProxiedRemotePort',
@@ -30,7 +32,14 @@ const READABLE_SURFACE = {
     'isSubscribed'
   ]
 }
-const explicitReaders = new Set(['collectBody', 'forEach', 'onData', 'onDataV2'])
+const explicitReaders = new Set([
+  'collectBody',
+  'collectBodyWithLength',
+  'discardBody',
+  'forEach',
+  'onData',
+  'onDataV2'
+])
 
 function prototypeReaders(value) {
   return Object.getOwnPropertyNames(Object.getPrototypeOf(value))
@@ -170,6 +179,31 @@ test('native readable surface has a functional network contract', { timeout: 15_
     })
   })
 
+  app.post('/collect-with-length', (res) => {
+    const declaredLength = res.collectBodyWithLength(64, (body) => {
+      cover('HttpResponse', 'collectBodyWithLength')
+      assert.ok(body instanceof ArrayBuffer)
+      bodyResults.set('collect-with-length', Buffer.from(body))
+      res.end(String(declaredLength))
+    })
+  })
+
+  app.post('/discard', (res) => {
+    res.collectBody(64, () => callbackErrors.push(new Error('discarded collector callback ran')))
+    cover('HttpResponse', 'discardBody')
+    assert.equal(res.discardBody(), undefined)
+    let aborted = false
+
+    res.onAborted(() => {
+      aborted = true
+    })
+    setImmediate(() => {
+      if (!aborted) {
+        res.end('discard')
+      }
+    })
+  })
+
   app.get('/proxy', (res) => {
     assert.deepEqual([...new Uint8Array(res.getProxiedRemoteAddress())], [203, 0, 113, 10])
     assert.equal(Buffer.from(res.getProxiedRemoteAddressAsText()).toString(), '203.0.113.10')
@@ -261,7 +295,9 @@ test('native readable surface has a functional network contract', { timeout: 15_
     for (const [path, payload, expected] of [
       ['/data-v2', 'fragmented-v2', 'v2'],
       ['/collect', '', 'collect'],
-      ['/collect-overflow', 'too-large', 'overflow']
+      ['/collect-overflow', 'too-large', 'overflow'],
+      ['/collect-with-length', 'length-aware', String('length-aware'.length)],
+      ['/discard', 'discarded', 'discard']
     ]) {
       const response = await rawRequest(port, [
         `POST ${path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: ${payload.length}\r\nConnection: close\r\n\r\n`,
@@ -273,6 +309,7 @@ test('native readable surface has a functional network contract', { timeout: 15_
 
     assert.equal(bodyResults.get('onDataV2').toString(), 'fragmented-v2')
     assert.equal(bodyResults.get('collect').byteLength, 0)
+    assert.equal(bodyResults.get('collect-with-length').toString(), 'length-aware')
 
     const proxyResponse = await rawRequest(
       port,

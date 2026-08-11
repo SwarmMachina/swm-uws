@@ -196,22 +196,27 @@ private:
     std::string fallback;
     /* This guy really has only 30 bits since we reserve two highest bits to chunked encoding parsing state */
     uint64_t remainingStreamingBytes = 0;
+    bool hasDeclaredBodyLength_ = false;
 
-    /* Returns UINT64_MAX on error. At most 18 decimal digits are accepted so
-     * fixed-length framing never overlaps the reserved chunk-parser states. */
+    /* Returns UINT64_MAX on error. Content-Length is exposed to JavaScript as a
+     * Number, so reject values above its largest exactly representable integer. */
     static uint64_t toUnsignedInteger(std::string_view str) {
-        /* We assume at least 64-bit integer giving us safely 999999999999999999 (18 number of 9s) */
-        if (!str.length() || str.length() > 18) {
+        static constexpr uint64_t MAX_SAFE_CONTENT_LENGTH = 9007199254740991ull;
+
+        if (!str.length()) {
             return UINT64_MAX;
         }
 
         uint64_t unsignedIntegerValue = 0;
         for (char c : str) {
-            /* As long as the letter is 0-9 we cannot overflow. */
             if (c < '0' || c > '9') {
                 return UINT64_MAX;
             }
-            unsignedIntegerValue = unsignedIntegerValue * 10ull + ((unsigned int) c - (unsigned int) '0');
+            const uint64_t digit = (unsigned int) c - (unsigned int) '0';
+            if (unsignedIntegerValue > (MAX_SAFE_CONTENT_LENGTH - digit) / 10ull) {
+                return UINT64_MAX;
+            }
+            unsignedIntegerValue = unsignedIntegerValue * 10ull + digit;
         }
         return unsignedIntegerValue;
     }
@@ -579,15 +584,19 @@ private:
             const char *querySeparatorPtr = (const char *) memchr(req->headers->value.data(), '?', req->headers->value.length());
             req->querySeparator = (unsigned int) ((querySeparatorPtr ? querySeparatorPtr : req->headers->value.data() + req->headers->value.length()) - req->headers->value.data());
 
-            /* Resolve request framing before the route handler. */
+            /* Resolve request framing before the route handler so native bindings can
+             * expose the parsed numeric body length without another header lookup. */
             if (hasTransferEncoding) {
+                hasDeclaredBodyLength_ = false;
                 remainingStreamingBytes = STATE_IS_CHUNKED;
             } else if (hasContentLength) {
+                hasDeclaredBodyLength_ = true;
                 remainingStreamingBytes = toUnsignedInteger(contentLengthString);
                 if (remainingStreamingBytes == UINT64_MAX) {
                     return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
                 }
             } else {
+                hasDeclaredBodyLength_ = false;
                 remainingStreamingBytes = 0;
             }
 
@@ -661,6 +670,19 @@ private:
 public:
     explicit HttpParser(const HttpTransportConfig *transportConfig)
         : transportConfig_(transportConfig) {}
+
+    /* Returns the request length selected by HTTP framing, or UINT64_MAX for chunked. */
+    [[nodiscard]] uint64_t maxRemainingBodyLength() const {
+        return isParsingChunkedEncoding(remainingStreamingBytes)
+            ? UINT64_MAX
+            : remainingStreamingBytes;
+    }
+
+    /* Distinguishes an explicit Content-Length, including zero, from chunked
+     * framing and requests without a body-length declaration. */
+    [[nodiscard]] bool hasDeclaredBodyLength() const {
+        return hasDeclaredBodyLength_;
+    }
 
     [[nodiscard]] LimitViolation GetLimitViolation() const {
         return limitViolation_;

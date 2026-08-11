@@ -23,6 +23,7 @@ function assertJavaScriptIdeTypes(consumer, compilerOptions) {
     "app.get('/', (res, req) => req.getH)",
     '',
     'defineHttpHandler((res, req) => res.getProx)',
+    'defineHttpHandler((res) => res.collectBodyWithL)',
     '',
     'defineWebSocketBehavior({',
     '  message(ws, message, isBinary) {',
@@ -57,6 +58,7 @@ function assertJavaScriptIdeTypes(consumer, compilerOptions) {
   for (const [prefix, expected] of [
     ['getH', 'getHeader'],
     ['getProx', 'getProxiedRemoteAddress'],
+    ['collectBodyWithL', 'collectBodyWithLength'],
     ['getB', 'getBufferedAmount']
   ]) {
     const position = source.indexOf(prefix) + prefix.length

@@ -582,6 +582,7 @@ void Capabilities(const FunctionCallbackInfo<Value> &args) {
     const char *names[] = {
         "beginWrite",
         "collectBody",
+        "collectBodyLength",
         "httpTransportConfig",
         "requestPrefetch",
         "responseBatch",

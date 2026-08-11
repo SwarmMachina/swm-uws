@@ -24,6 +24,7 @@ assert.equal(version(), expectedBindingVersion)
 assert.deepEqual(capabilities(), {
   beginWrite: true,
   collectBody: true,
+  collectBodyLength: true,
   httpTransportConfig: true,
   requestPrefetch: true,
   responseBatch: true,
@@ -141,7 +142,9 @@ app.get('/', (res, req) => {
     'close',
     'collect',
     'collectBody',
+    'collectBodyWithLength',
     'cork',
+    'discardBody',
     'end',
     'endWithoutBody',
     'getProxiedRemoteAddress',

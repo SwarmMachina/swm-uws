@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createConnection } from 'node:net'
 import test from 'node:test'
 
 import { createApp } from '../lib/index.js'
@@ -7,6 +8,9 @@ import { rawHttpExchange } from './helpers/raw-http.js'
 
 test('raw HTTP framing remains unambiguous across fast paths and pipelining', { timeout: 15_000 }, async () => {
   const app = createApp()
+
+  let discardedBodyCallbacks = 0
+  let discardedDeclaredLength
 
   app.get('/multi', (res) => {
     res.beginWrite()
@@ -56,12 +60,38 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
       res.end('limited')
     })
   })
+  app.post('/collect-length', (res) => {
+    const declaredLength = res.collectBodyWithLength(4, (body) => {
+      res.end(`${declaredLength}:${body === null ? 'limited' : Buffer.from(body).toString()}`)
+    })
+  })
+  app.post('/collect-discard', (res) => {
+    let callbackCount = 0
+
+    const declaredLength = res.collectBodyWithLength(4, () => callbackCount++)
+    const discardResult = res.discardBody()
+
+    assert.equal(discardResult, undefined)
+    res.end(`${declaredLength}:${callbackCount}:${String(discardResult)}`)
+  })
+  app.post('/collect-discard-drain', (res) => {
+    discardedDeclaredLength = res.collectBodyWithLength(64, () => discardedBodyCallbacks++)
+
+    assert.ok(discardedDeclaredLength > 4)
+    assert.equal(res.discardBody(), undefined)
+    res.writeStatus('413 Payload Too Large').end('discarded')
+  })
   app.get('/collect-validation', (res) => {
-    for (const value of [undefined, null, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2 ** 53, '4', new Number(4)]) {
+    const invalidSizes = [undefined, null, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2 ** 53, '4', new Number(4)]
+
+    for (const value of invalidSizes) {
       assert.throws(() => res.collectBody(value, () => {}), /expects a size|integer between/)
+      assert.throws(() => res.collectBodyWithLength(value, () => {}), /expects a size|integer between/)
     }
 
     assert.throws(() => res.collectBody(1024 ** 3 + 1, () => {}), /integer between/)
+    assert.throws(() => res.collectBodyWithLength(1024 ** 3 + 1, () => {}), /integer between/)
+    assert.throws(() => res.discardBody(1), /does not accept arguments/)
     res.collectBody(1024 ** 3, (body) => {
       assert.equal(body.byteLength, 0)
       res.end('valid')
@@ -140,6 +170,88 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
       assert.equal(responses[0].body.toString(), expected)
     }
 
+    for (const [request, expected] of [
+      [
+        'POST /collect-length HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfour',
+        '4:four'
+      ],
+      [
+        'POST /collect-length HTTP/1.1\r\nHost: localhost\r\nContent-Length: 6\r\nConnection: close\r\n\r\nexcess',
+        '6:limited'
+      ],
+      [
+        'POST /collect-length HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: ChUnKeD\r\nConnection: close\r\n\r\n4\r\nfour\r\n0\r\n\r\n',
+        'undefined:four'
+      ],
+      ['POST /collect-length HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n', '0:'],
+      ['POST /collect-length HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n', 'undefined:']
+    ]) {
+      const responses = await requestAndParse(port, [request], 1)
+
+      assert.equal(responses[0].body.toString(), expected)
+    }
+
+    const discarded = await requestAndParse(
+      port,
+      ['POST /collect-discard HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfour'],
+      1
+    )
+
+    assert.equal(discarded[0].body.toString(), '4:0:undefined')
+
+    const fragmented = await requestAndParse(
+      port,
+      [
+        'POST /collect-length HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\n',
+        'f',
+        'ou',
+        'r'
+      ],
+      1,
+      { yieldBetweenChunks: true }
+    )
+
+    assert.equal(fragmented[0].body.toString(), '4:four')
+
+    const validBodyPipeline = await requestAndParse(
+      port,
+      [
+        'POST /collect-length HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\nfour' +
+          'GET /one HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'
+      ],
+      2
+    )
+
+    assert.deepEqual(
+      validBodyPipeline.map(({ status, body }) => [status, body.toString()]),
+      [
+        [200, '4:four'],
+        [200, 'one']
+      ]
+    )
+
+    const discardedBodyPipeline = await requestAndParse(
+      port,
+      [
+        'POST /collect-discard-drain HTTP/1.1\r\nHost: localhost\r\nContent-Length: 9\r\n\r\n',
+        'over',
+        'limit',
+        'GET /one HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'
+      ],
+      2,
+      { yieldBetweenChunks: true }
+    )
+
+    assert.deepEqual(
+      discardedBodyPipeline.map(({ status, body }) => [status, body.toString()]),
+      [
+        [413, 'discarded'],
+        [200, 'one']
+      ]
+    )
+    assert.equal(discardedDeclaredLength, 9)
+    assert.equal(discardedBodyCallbacks, 0)
+
     const maximum = await requestAndParse(
       port,
       ['GET /collect-validation HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'],
@@ -169,6 +281,70 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
     const next = await requestAndParse(port, ['GET /one HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'], 1)
 
     assert.equal(next[0].body.toString(), 'one')
+  } finally {
+    server.close()
+  }
+})
+
+test(
+  'length-aware collection aborts a truncated declared body without materializing it',
+  { timeout: 5_000 },
+  async () => {
+    const app = createApp()
+    const aborted = Promise.withResolvers()
+
+    let declaredLength
+    let callbackCount = 0
+
+    app.post('/truncated', (res) => {
+      declaredLength = res.collectBodyWithLength(64, () => callbackCount++)
+      res.onAborted(() => aborted.resolve())
+    })
+    const server = await NativeAppServer.listen(app)
+
+    try {
+      const socket = createConnection({ host: '127.0.0.1', port: server.port })
+
+      socket.on('error', () => {})
+      await new Promise((resolve) => socket.once('connect', resolve))
+      socket.write('POST /truncated HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\n\r\nshort')
+      await new Promise((resolve) => setImmediate(resolve))
+      socket.destroy()
+      await aborted.promise
+
+      assert.equal(declaredLength, 10)
+      assert.equal(callbackCount, 0)
+    } finally {
+      server.close()
+    }
+  }
+)
+
+test('length-aware collection does not materialize an aborted chunked body', { timeout: 5_000 }, async () => {
+  const app = createApp()
+  const aborted = Promise.withResolvers()
+
+  let declaredLength = null
+  let callbackCount = 0
+
+  app.post('/aborted', (res) => {
+    declaredLength = res.collectBodyWithLength(64, () => callbackCount++)
+    res.onAborted(() => aborted.resolve())
+  })
+  const server = await NativeAppServer.listen(app)
+
+  try {
+    const socket = createConnection({ host: '127.0.0.1', port: server.port })
+
+    socket.on('error', () => {})
+    await new Promise((resolve) => socket.once('connect', resolve))
+    socket.write('POST /aborted HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab')
+    await new Promise((resolve) => setImmediate(resolve))
+    socket.destroy()
+    await aborted.promise
+
+    assert.equal(declaredLength, undefined)
+    assert.equal(callbackCount, 0)
   } finally {
     server.close()
   }
@@ -250,6 +426,10 @@ test('ambiguous request framing is rejected before any route handler runs', { ti
         'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: 9999999999999999999\r\n\r\n' + smuggled
       ],
       [
+        'Content-Length above the largest safe JavaScript integer',
+        'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: 9007199254740992\r\n\r\n' + smuggled
+      ],
+      [
         'Content-Length plus Transfer-Encoding',
         'POST /victim HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n' +
           smuggled
@@ -304,8 +484,8 @@ test('server fingerprint is suppressed in headers and automatic parser errors', 
   }
 })
 
-function requestAndParse(port, chunks, expectedCount) {
-  return rawExchange(port, chunks).then((wire) => {
+function requestAndParse(port, chunks, expectedCount, options) {
+  return rawExchange(port, chunks, options).then((wire) => {
     const parsed = parseResponses(wire)
 
     assert.equal(parsed.incomplete, false, wire.toString('latin1'))

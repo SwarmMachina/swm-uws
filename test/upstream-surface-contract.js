@@ -156,6 +156,6 @@ export const allowedSurfaceDelta = {
     extra: ['getHttpTransportStats']
   },
   request: { missing: [], extra: ['prefetch'] },
-  response: { missing: [], extra: ['endBatch'] },
+  response: { missing: [], extra: ['collectBodyWithLength', 'discardBody', 'endBatch'] },
   websocket: { missing: [], extra: [] }
 }

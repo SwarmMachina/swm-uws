@@ -308,6 +308,22 @@ export interface HttpResponse {
    */
   collectBody(maxSize: number, handler: (body: ArrayBuffer | null) => void): this
 
+  /**
+   * Framework collector variant that also exposes the numeric request-body
+   * length already known by the native HTTP parser.
+   *
+   * Returns the explicit `Content-Length`, including zero, before body bytes
+   * are consumed. Returns `undefined` for chunked framing or when the header is
+   * absent. The synchronous metadata lets a framework reserve aggregate body
+   * capacity before the native collector can grow. Body delivery reuses the
+   * same owned `ArrayBuffer` and `null` limit-failure semantics as
+   * {@link collectBody}.
+   */
+  collectBodyWithLength(maxSize: number, handler: (body: ArrayBuffer | null) => void): number | undefined
+
+  /** Stops an active body collector without a callback while the transport drains remaining bytes. */
+  discardBody(): void
+
   /** Pauses delivery of request body data. */
   pause(): void
 
@@ -640,6 +656,7 @@ export function version(): string
 export interface Capabilities {
   readonly beginWrite: true
   readonly collectBody: true
+  readonly collectBodyLength: true
   readonly httpTransportConfig: true
   readonly requestPrefetch: true
   readonly responseBatch: true

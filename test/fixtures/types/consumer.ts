@@ -66,6 +66,12 @@ type PublicTypes = [
 const app: AppInstance = createApp()
 const prefetchPlan = new RequestPrefetchPlan({ headers: ['authorization'] })
 const handler = defineHttpHandler((res, req) => res.end(req.getUrl()))
+const bodyLengthHandler = defineHttpHandler((res) => res.collectBodyWithLength(1024, () => {}))
+const bodyDiscardHandler = defineHttpHandler((res) => {
+  const result: void = res.discardBody()
+
+  return result
+})
 const behavior = defineWebSocketBehavior({
   message(ws, message, isBinary) {
     ws.send(message, isBinary)
@@ -74,6 +80,8 @@ const behavior = defineWebSocketBehavior({
 
 void app
 void handler
+void bodyLengthHandler
+void bodyDiscardHandler
 void behavior
 void prefetchPlan
 void uWS

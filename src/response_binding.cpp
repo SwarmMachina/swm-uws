@@ -607,11 +607,14 @@ void ResponseOnDataV2(const FunctionCallbackInfo<Value> &args) {
     args.GetReturnValue().Set(args.This());
 }
 
-void ResponseCollectBody(const FunctionCallbackInfo<Value> &args) {
+void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool returnBodyLength) {
     if (!GetResponse(args)) return;
     if (args.Length() != 2 || !args[0]->IsNumber() || !args[1]->IsFunction()) {
-        ThrowTypeError(args.GetIsolate(),
-                       "res.collectBody(maxSize, handler) expects a size and a function");
+        ThrowTypeError(
+            args.GetIsolate(),
+            returnBodyLength
+                ? "res.collectBodyWithLength(maxSize, handler) expects a size and a function"
+                : "res.collectBody(maxSize, handler) expects a size and a function");
         return;
     }
 
@@ -620,15 +623,20 @@ void ResponseCollectBody(const FunctionCallbackInfo<Value> &args) {
     constexpr double MaxCollectBodySize = 1024.0 * 1024.0 * 1024.0;
     if (!std::isfinite(maxSizeNumber) || maxSizeNumber < 0 || maxSizeNumber > MaxCollectBodySize ||
         std::floor(maxSizeNumber) != maxSizeNumber) {
-        ThrowTypeError(
-            isolate,
-            "res.collectBody(maxSize, handler) maxSize must be an integer between 0 and 1 GiB");
+        ThrowTypeError(isolate,
+                       returnBodyLength ? "res.collectBodyWithLength(maxSize, handler) maxSize "
+                                          "must be an integer between 0 and 1 GiB"
+                                        : "res.collectBody(maxSize, handler) maxSize must be an "
+                                          "integer between 0 and 1 GiB");
         return;
     }
 
     std::shared_ptr<AsyncResponseState> state = PromoteResponse(args);
     if (state->HasDataHandler()) {
-        ThrowError(args.GetIsolate(), "res.collectBody() body handler is already registered");
+        ThrowError(args.GetIsolate(),
+                   returnBodyLength
+                       ? "res.collectBodyWithLength() body handler is already registered"
+                       : "res.collectBody() body handler is already registered");
         return;
     }
     state->RegisterDataHandler(args[1].As<Function>());
@@ -689,7 +697,36 @@ void ResponseCollectBody(const FunctionCallbackInfo<Value> &args) {
         state->ResetDataHandler();
         if (!callbackSucceeded) CloseAsyncResponseAfterCallbackFailure(state);
     });
-    args.GetReturnValue().Set(args.This());
+    if (!returnBodyLength) {
+        args.GetReturnValue().Set(args.This());
+        return;
+    }
+
+    if (!state->Response()->hasDeclaredBodyLength()) {
+        args.GetReturnValue().Set(Undefined(isolate));
+        return;
+    }
+    const uint64_t bodyLength = state->Response()->maxRemainingBodyLength();
+    args.GetReturnValue().Set(Number::New(isolate, static_cast<double>(bodyLength)));
+}
+
+void ResponseCollectBody(const FunctionCallbackInfo<Value> &args) {
+    ResponseCollectBodyImpl(args, false);
+}
+
+void ResponseCollectBodyWithLength(const FunctionCallbackInfo<Value> &args) {
+    ResponseCollectBodyImpl(args, true);
+}
+
+void ResponseDiscardBody(const FunctionCallbackInfo<Value> &args) {
+    if (!GetResponse(args)) return;
+    if (args.Length() != 0) {
+        ThrowTypeError(args.GetIsolate(), "res.discardBody() does not accept arguments");
+        return;
+    }
+
+    std::shared_ptr<AsyncResponseState> state = PromoteResponse(args);
+    state->ResetDataHandler();
 }
 
 void ResponsePause(const FunctionCallbackInfo<Value> &args) {
@@ -759,6 +796,8 @@ void InitializeResponseBinding(BindingEnvironment *context, Local<External> cont
     SetPrototypeMethod(isolate, response, "onData", ResponseOnData);
     SetPrototypeMethod(isolate, response, "onDataV2", ResponseOnDataV2);
     SetPrototypeMethod(isolate, response, "collectBody", ResponseCollectBody);
+    SetPrototypeMethod(isolate, response, "collectBodyWithLength", ResponseCollectBodyWithLength);
+    SetPrototypeMethod(isolate, response, "discardBody", ResponseDiscardBody);
     SetPrototypeMethod(isolate, response, "pause", ResponsePause);
     SetPrototypeMethod(isolate, response, "resume", ResponseResume);
     SetPrototypeMethod(isolate, response, "onAborted", ResponseOnAborted);

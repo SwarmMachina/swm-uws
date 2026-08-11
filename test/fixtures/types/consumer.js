@@ -18,4 +18,12 @@ export const behavior = defineWebSocketBehavior({
   }
 })
 
-export const app = createApp().get('/typed', handler).ws('/typed-ws', behavior)
+export const bodyHandler = defineHttpHandler((res) => {
+  const declaredLength = res.collectBodyWithLength(1024, () => {})
+
+  if (declaredLength !== undefined && declaredLength > 1024) {
+    res.discardBody()
+  }
+})
+
+export const app = createApp().get('/typed', handler).post('/body', bodyHandler).ws('/typed-ws', behavior)
