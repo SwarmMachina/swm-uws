@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { createApp } from '../../lib/index.js'
 import { withTimeout } from '../helpers/async.js'
 import { NativeAppServer } from '../helpers/native-app-server.js'
+import { readResponseHead, webSocketHandshakeRequest } from '../helpers/raw-websocket.js'
 
 const MAX_INBOUND_BYTES = 64 * 1024 * 1024
 const RETENTION_PROBE_BYTES = 16 * 1024 * 1024
@@ -83,7 +84,7 @@ async function probeWebSocketAllocation() {
   try {
     const responseHead = readResponseHead(socket)
 
-    socket.write(webSocketHandshake())
+    socket.write(webSocketHandshakeRequest())
     assert.match((await responseHead).toString('latin1'), /^HTTP\/1\.1 101 /)
     await withTimeout(opened.promise, 2_000, 'WebSocket open callback did not run')
 
@@ -314,58 +315,6 @@ async function connectedSocket(port) {
   await withTimeout(once(socket, 'connect'), 2_000, 'probe socket did not connect')
 
   return socket
-}
-
-function readResponseHead(socket) {
-  return withTimeout(
-    new Promise((resolve, reject) => {
-      const chunks = []
-
-      function cleanup() {
-        socket.off('close', onClose)
-        socket.off('data', onData)
-        socket.off('error', onError)
-      }
-
-      function onClose() {
-        cleanup()
-        reject(new Error('socket closed before the WebSocket handshake response'))
-      }
-
-      function onData(chunk) {
-        chunks.push(chunk)
-        const response = Buffer.concat(chunks)
-
-        if (response.includes('\r\n\r\n')) {
-          cleanup()
-          resolve(response)
-        }
-      }
-
-      function onError(error) {
-        cleanup()
-        reject(error)
-      }
-
-      socket.once('close', onClose)
-      socket.on('data', onData)
-      socket.once('error', onError)
-    }),
-    2_000,
-    'WebSocket handshake response timed out'
-  )
-}
-
-function webSocketHandshake() {
-  return (
-    'GET /ws HTTP/1.1\r\n' +
-    'Host: localhost\r\n' +
-    'Connection: Upgrade\r\n' +
-    'Upgrade: websocket\r\n' +
-    'Sec-WebSocket-Version: 13\r\n' +
-    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
-    '\r\n'
-  )
 }
 
 function maskedFrameHeader(payloadLength) {

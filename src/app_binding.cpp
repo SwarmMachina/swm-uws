@@ -435,6 +435,7 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
             }
         }
 
+        std::uint64_t parsed = 0;
         auto readInteger = [&](const char *name,
                                std::uint64_t maximum,
                                std::uint64_t *output,
@@ -462,43 +463,42 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
             return true;
         };
 
-        std::uint64_t parsed = 0;
+        auto readExplicitTimeout =
+            [&](const char *name, std::uint32_t *timeoutMs, bool *isExplicit) -> bool {
+            if (!readInteger(
+                    name, uWS::HttpTransportConfig::MAX_EXPLICIT_TIMEOUT_MS, &parsed, isExplicit)) {
+                return false;
+            }
+            if (*isExplicit) {
+                *timeoutMs = static_cast<std::uint32_t>(parsed);
+            }
+            return true;
+        };
+
         if (!readInteger("maxHeaderSize", 9007199254740991ULL, &parsed, &optionHasMaxHeaderSize)) {
             return std::nullopt;
         }
         if (optionHasMaxHeaderSize) maxHeaderSize = static_cast<std::size_t>(parsed);
-        if (!readInteger("maxHeaderCount", uWS::MAX_HEADER_COUNT_CAPACITY, &parsed)) {
+        bool optionHasMaxHeaderCount = false;
+        if (!readInteger("maxHeaderCount",
+                         uWS::MAX_HEADER_COUNT_CAPACITY,
+                         &parsed,
+                         &optionHasMaxHeaderCount)) {
             return std::nullopt;
         }
-        if (http->HasOwnProperty(context, NewString(isolate, "maxHeaderCount")).FromMaybe(false)) {
+        if (optionHasMaxHeaderCount) {
             maxHeaderCount = static_cast<std::uint16_t>(parsed);
         }
-        if (!readInteger("headersTimeoutMs",
-                         uWS::HttpTransportConfig::MAX_EXPLICIT_TIMEOUT_MS,
-                         &parsed,
-                         &headersTimeoutExplicit)) {
+        if (!readExplicitTimeout("headersTimeoutMs", &headersTimeoutMs, &headersTimeoutExplicit)) {
             return std::nullopt;
         }
-        if (headersTimeoutExplicit) {
-            headersTimeoutMs = static_cast<std::uint32_t>(parsed);
-        }
-        if (!readInteger("keepAliveTimeoutMs",
-                         uWS::HttpTransportConfig::MAX_EXPLICIT_TIMEOUT_MS,
-                         &parsed,
-                         &keepAliveTimeoutExplicit)) {
+        if (!readExplicitTimeout(
+                "keepAliveTimeoutMs", &keepAliveTimeoutMs, &keepAliveTimeoutExplicit)) {
             return std::nullopt;
         }
-        if (keepAliveTimeoutExplicit) {
-            keepAliveTimeoutMs = static_cast<std::uint32_t>(parsed);
-        }
-        if (!readInteger("bodyIdleTimeoutMs",
-                         uWS::HttpTransportConfig::MAX_EXPLICIT_TIMEOUT_MS,
-                         &parsed,
-                         &bodyIdleTimeoutExplicit)) {
+        if (!readExplicitTimeout(
+                "bodyIdleTimeoutMs", &bodyIdleTimeoutMs, &bodyIdleTimeoutExplicit)) {
             return std::nullopt;
-        }
-        if (bodyIdleTimeoutExplicit) {
-            bodyIdleTimeoutMs = static_cast<std::uint32_t>(parsed);
         }
 
         const Local<String> rateKey = NewString(isolate, "minBodyRateBytesPerSec");
@@ -516,14 +516,9 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
             }
         }
 
-        if (!readInteger("responseWriteTimeoutMs",
-                         uWS::HttpTransportConfig::MAX_EXPLICIT_TIMEOUT_MS,
-                         &parsed,
-                         &responseWriteTimeoutExplicit)) {
+        if (!readExplicitTimeout(
+                "responseWriteTimeoutMs", &responseWriteTimeoutMs, &responseWriteTimeoutExplicit)) {
             return std::nullopt;
-        }
-        if (responseWriteTimeoutExplicit) {
-            responseWriteTimeoutMs = static_cast<std::uint32_t>(parsed);
         }
 
         const Local<String> trustedProxyKey = NewString(isolate, "trustedProxy");

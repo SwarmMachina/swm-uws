@@ -7,8 +7,9 @@ import test from 'node:test'
 import { createApp } from '../lib/index.js'
 import { waitFor, withTimeout } from './helpers/async.js'
 import { NativeAppServer } from './helpers/native-app-server.js'
+import { DEFAULT_WEBSOCKET_KEY, readResponseHead } from './helpers/raw-websocket.js'
 
-const VALID_KEY = 'dGhlIHNhbXBsZSBub25jZQ=='
+const VALID_KEY = DEFAULT_WEBSOCKET_KEY
 
 test('default WebSocket upgrade requires a complete RFC 6455 handshake', async () => {
   const app = createApp()
@@ -288,7 +289,9 @@ async function rawHandshake(port, request) {
   socket.on('error', () => {})
   await once(socket, 'connect')
 
-  const responseHead = readResponseHead(socket)
+  const responseHead = readResponseHead(socket, {
+    closeMessage: 'socket closed before the HTTP response head'
+  })
 
   socket.write(request)
 
@@ -296,47 +299,6 @@ async function rawHandshake(port, request) {
     response: (await responseHead).toString('latin1'),
     socket
   }
-}
-
-function readResponseHead(socket) {
-  return withTimeout(
-    new Promise((resolve, reject) => {
-      const chunks = []
-
-      function cleanup() {
-        socket.off('close', onClose)
-        socket.off('data', onData)
-        socket.off('error', onError)
-      }
-
-      function onClose() {
-        cleanup()
-        reject(new Error('socket closed before the HTTP response head'))
-      }
-
-      function onData(chunk) {
-        chunks.push(chunk)
-
-        const response = Buffer.concat(chunks)
-
-        if (response.includes('\r\n\r\n')) {
-          cleanup()
-          resolve(response)
-        }
-      }
-
-      function onError(error) {
-        cleanup()
-        reject(error)
-      }
-
-      socket.once('close', onClose)
-      socket.on('data', onData)
-      socket.once('error', onError)
-    }),
-    2_000,
-    'WebSocket handshake response timed out'
-  )
 }
 
 function waitForClose(

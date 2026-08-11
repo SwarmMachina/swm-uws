@@ -4,6 +4,7 @@ import { createConnection } from 'node:net'
 import { createInterface } from 'node:readline'
 
 import { withTimeout } from '../helpers/async.js'
+import { readResponseHead, webSocketHandshakeRequest } from '../helpers/raw-websocket.js'
 
 const port = Number(process.argv[2])
 const messageBytes = Number(process.argv[3])
@@ -20,9 +21,11 @@ const socket = createConnection({ host: '127.0.0.1', port })
 
 await withTimeout(once(socket, 'connect'), 2_000, 'retention probe client did not connect')
 
-const responseHead = readResponseHead(socket)
+const responseHead = readResponseHead(socket, {
+  timeoutMessage: 'retention probe WebSocket handshake timed out'
+})
 
-socket.write(webSocketHandshake())
+socket.write(webSocketHandshakeRequest({ path: '/retention' }))
 assert.match((await responseHead).toString('latin1'), /^HTTP\/1\.1 101 /)
 process.stdout.write('OPEN\n')
 
@@ -83,56 +86,4 @@ async function writeBuffered(target, bytes) {
   if (!target.write(bytes)) {
     await withTimeout(once(target, 'drain'), 2_000, 'retention probe client write stalled')
   }
-}
-
-function readResponseHead(target) {
-  return withTimeout(
-    new Promise((resolve, reject) => {
-      const chunks = []
-
-      function cleanup() {
-        target.off('close', onClose)
-        target.off('data', onData)
-        target.off('error', onError)
-      }
-
-      function onClose() {
-        cleanup()
-        reject(new Error('socket closed before the WebSocket handshake response'))
-      }
-
-      function onData(chunk) {
-        chunks.push(chunk)
-        const response = Buffer.concat(chunks)
-
-        if (response.includes('\r\n\r\n')) {
-          cleanup()
-          resolve(response)
-        }
-      }
-
-      function onError(error) {
-        cleanup()
-        reject(error)
-      }
-
-      target.once('close', onClose)
-      target.on('data', onData)
-      target.once('error', onError)
-    }),
-    2_000,
-    'retention probe WebSocket handshake timed out'
-  )
-}
-
-function webSocketHandshake() {
-  return (
-    'GET /retention HTTP/1.1\r\n' +
-    'Host: localhost\r\n' +
-    'Connection: Upgrade\r\n' +
-    'Upgrade: websocket\r\n' +
-    'Sec-WebSocket-Version: 13\r\n' +
-    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
-    '\r\n'
-  )
 }
