@@ -39,35 +39,42 @@ async function withAddressServer(http, run, formatResponse = (_res, address) => 
 }
 
 test('omitting trustedProxy preserves legacy PROXY v2 addresses and ports', async () => {
-  await withAddressServer(undefined, async (port, routeCalls) => {
-    const spoofed = await request(port, 'X-Forwarded-For: 203.0.113.40\r\n')
+  await withAddressServer(
+    undefined,
+    async (port, routeCalls) => {
+      const spoofed = await request(port, 'X-Forwarded-For: 203.0.113.40\r\n')
 
-    assert.match(spoofed, /^HTTP\/1\.1 200 /)
-    assert.equal(body(spoofed), 'none:0')
-    assert.equal(routeCalls(), 1)
+      assert.match(spoofed, /^HTTP\/1\.1 200 /)
+      assert.equal(body(spoofed), 'none:0')
+      assert.equal(routeCalls(), 1)
 
-    const binaryHeader = proxyProtocolV2Ipv4Header({
-      sourceAddress: [203, 0, 113, 41],
-      sourcePort: 41_234,
-      destinationPort: port
-    })
-    const binaryProxy = (
-      await rawHttpExchange(
-        { host: '127.0.0.1', port },
-        [
-          Buffer.concat([binaryHeader, Buffer.from('GET /ip HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')])
-        ],
-        {
-          timeoutMessage: 'binary PROXY preamble request',
-          acceptResetAfterData: true
-        }
-      )
-    ).toString()
+      const binaryHeader = proxyProtocolV2Ipv4Header({
+        sourceAddress: [203, 0, 113, 41],
+        sourcePort: 41_234,
+        destinationPort: port
+      })
+      const binaryProxy = (
+        await rawHttpExchange(
+          { host: '127.0.0.1', port },
+          [
+            Buffer.concat([
+              binaryHeader,
+              Buffer.from('GET /ip HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')
+            ])
+          ],
+          {
+            timeoutMessage: 'binary PROXY preamble request',
+            acceptResetAfterData: true
+          }
+        )
+      ).toString()
 
-    assert.match(binaryProxy, /^HTTP\/1\.1 200 /)
-    assert.equal(body(binaryProxy), '203.0.113.41:41234')
-    assert.equal(routeCalls(), 2)
-  }, (res, address) => `${address || 'none'}:${res.getProxiedRemotePort()}`)
+      assert.match(binaryProxy, /^HTTP\/1\.1 200 /)
+      assert.equal(body(binaryProxy), '203.0.113.41:41234')
+      assert.equal(routeCalls(), 2)
+    },
+    (res, address) => `${address || 'none'}:${res.getProxiedRemotePort()}`
+  )
 })
 
 test('trusted x-forwarded-for selects an explicit hop from the right', async () => {
@@ -97,7 +104,9 @@ test('trusted x-real-ip accepts strict IPv4 and IPv6 address literals', async ()
     const binaryProxy = (
       await rawHttpExchange(
         { host: '127.0.0.1', port },
-        [Buffer.concat([binaryHeader, Buffer.from('GET /ip HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')])],
+        [
+          Buffer.concat([binaryHeader, Buffer.from('GET /ip HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')])
+        ],
         { timeoutMessage: 'binary PROXY preamble in trusted-header mode', acceptResetAfterData: true }
       )
     ).toString()
