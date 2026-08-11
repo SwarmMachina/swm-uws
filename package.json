@@ -3,6 +3,14 @@
   "version": "0.6.2",
   "description": "High-performance, drop-in non-TLS uWebSockets.js binding for Node.js 22 and 24",
   "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SwarmMachina/swm-uws.git"
+  },
+  "homepage": "https://github.com/SwarmMachina/swm-uws#readme",
+  "bugs": {
+    "url": "https://github.com/SwarmMachina/swm-uws/issues"
+  },
   "upstream": {
     "uWebSocketsJs": "v20.69.0"
   },
@@ -27,6 +35,11 @@
   "engines": {
     "node": "22.x || 24.x"
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
   "gypfile": false,
   "scripts": {
     "bench:server": "node scripts/bench-server.js",
@@ -48,17 +61,19 @@
     "build:prebuilds:linux": "node scripts/build-linux-prebuilds.js",
     "deps:update:vendor": "node scripts/update-vendor.js",
     "deps:check:vendor": "node scripts/check-vendor.js",
+    "audit:dependencies": "npm audit --audit-level=low && npm audit --omit=dev --audit-level=low",
     "check:release": "node scripts/check-release-prebuilds.js",
     "clean": "node-gyp clean",
-    "release:gate": "npm run check && npm test && npm run test:types && npm run test:package && npm run check:release",
+    "release:gate": "npm run check && npm run audit:dependencies && npm test && npm run test:types && npm run test:package && npm run check:release",
     "prepublishOnly": "npm run release:gate",
     "test": "node --test test/declaration-exports.test.js && npm run test:harness && npm run test:runtime",
-    "test:harness": "node --test test/harness-helpers.test.js",
-    "test:runtime": "node --test test/import-compatibility.test.js test/http-transport-prefetch.test.js test/upstream-surface.test.js test/readable-contract.test.js test/security-regressions.test.js test/raw-http-framing.test.js && node test/smoke.js",
+    "test:harness": "node --test test/harness-helpers.test.js test/release-artifacts.test.js",
+    "test:runtime": "node --test test/import-compatibility.test.js test/http-transport-prefetch.test.js test/upstream-surface.test.js test/readable-contract.test.js test/security-regressions.test.js test/raw-http-framing.test.js test/websocket-protocol-validation.test.js test/strict-chunked-framing.test.js test/trusted-proxy-header.test.js test/resource-bounds.test.js && node test/smoke.js",
     "test:contract": "node --test test/readable-contract.test.js",
     "test:types": "node scripts/test-packed-types.js",
     "test:package": "node scripts/test-package.js",
     "test:compat:upstream": "node scripts/compare-upstream-surface.js",
+    "test:fuzz:parsers": "bash scripts/run-parser-fuzz.sh",
     "test:v8-http": "node test/v8-http-smoke.js",
     "test:v8-ws": "node test/v8-ws-smoke.js"
   },

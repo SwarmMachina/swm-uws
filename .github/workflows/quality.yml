@@ -18,10 +18,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -33,6 +33,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Audit production and development dependencies
+        run: npm run audit:dependencies
 
       - name: Check shared standards
         run: npm run check
@@ -63,10 +66,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -80,14 +83,14 @@ jobs:
       - name: Run package smoke
         run: npm test
 
-      - name: Install pinned upstream reference
+      - name: Install commit-pinned upstream reference
         if: matrix.node == 24
         run: |
           npm install \
             --prefix "$RUNNER_TEMP/uws-reference" \
             --ignore-scripts \
             --no-save \
-            "uwebsockets.js@github:uNetworking/uWebSockets.js#v20.69.0"
+            "uwebsockets.js@github:uNetworking/uWebSockets.js#dddd8ffd1b2c28a66022160923ca92f064cdacb4"
           echo "SWM_UWS_REFERENCE=$RUNNER_TEMP/uws-reference/node_modules/uwebsockets.js/ESM_wrapper.mjs" >> "$GITHUB_ENV"
 
       - name: Compare runtime surface with pinned upstream
@@ -99,3 +102,23 @@ jobs:
 
       - name: Run raw V8 WebSocket smoke
         run: npm run test:v8-ws
+
+  parser-sanitizers:
+    name: Parser sanitizer and fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends clang-18
+
+      - name: Fuzz patched wire parsers under ASan and UBSan
+        env:
+          SWM_PARSER_FUZZ_CXX: clang++-18
+          SWM_PARSER_FUZZ_SECONDS: 30
+        run: bash scripts/run-parser-fuzz.sh

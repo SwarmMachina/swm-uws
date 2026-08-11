@@ -1,0 +1,8 @@
+chunk_end="0\r\n\r\n"
+chunk_data="4\r\nWiki\r\n"
+chunk_extension="1;name=token\r\na\r\n"
+chunk_quoted_extension="1;name=\"quoted\\\\value\"\r\na\r\n"
+chunk_trailer="0\r\nX-Test: value\r\n\r\n"
+masked_text="\x81\x85\x01\x02\x03\x04"
+unmasked_text="\x81\x01x"
+long_payload="\x82\xff"

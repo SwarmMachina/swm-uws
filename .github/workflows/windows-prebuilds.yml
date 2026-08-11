@@ -2,6 +2,15 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_auth:
+        description: Use npm OIDC, or the emergency token fallback when explicitly dispatching a tag
+        required: true
+        type: choice
+        default: oidc
+        options:
+          - oidc
+          - token
   push:
     tags:
       - 'v*'
@@ -21,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -29,7 +38,7 @@ jobs:
         run: git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/master
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -42,11 +51,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit production and development dependencies
+        run: npm run audit:dependencies
+
       - name: Check shared standards
         run: npm run check
 
       - name: Verify vendored sources
         run: npm run deps:check:vendor
+
+      - name: Fuzz patched wire parsers under ASan and UBSan
+        env:
+          SWM_PARSER_FUZZ_CXX: clang++-18
+          SWM_PARSER_FUZZ_SECONDS: 30
+        run: npm run test:fuzz:parsers
 
       - name: Verify generated benchmark report
         run: npm run bench:report:check
@@ -64,12 +82,19 @@ jobs:
         include:
           - node: 22
             abi: 127
+            image_digest: sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a
           - node: 24
             abi: 137
+            image_digest: sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up manifest generator
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
 
       - name: Require native x86-64 PGO host
         shell: bash
@@ -85,9 +110,10 @@ jobs:
         run: |
           rm -rf prebuilds/linux-x64-glibc
 
-          node_image="node:${{ matrix.node }}-bookworm"
+          node_tag="node:${{ matrix.node }}-bookworm"
+          node_image="${node_tag}@${{ matrix.image_digest }}"
           for attempt in 1 2 3; do
-            if docker pull "$node_image"; then
+            if docker pull --platform linux/amd64 "$node_image"; then
               break
             fi
 
@@ -98,6 +124,8 @@ jobs:
 
             sleep "$((attempt * 5))"
           done
+
+          docker tag "$node_image" "$node_tag"
 
           docker build \
             --platform linux/amd64 \
@@ -148,12 +176,30 @@ jobs:
           fi
           check_ceiling GLIBC GLIBC_2.36
 
+      - name: Record prebuild digest and toolchain
+        shell: bash
+        env:
+          SWM_RELEASE_ARTIFACT: prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node
+          SWM_RELEASE_BUILDER: node:${{ matrix.node }}-bookworm@${{ matrix.image_digest }}
+          SWM_RELEASE_COMPILER: clang-18
+          SWM_RELEASE_PROFILE: PGO+LTO
+        run: |
+          node_image="node:${{ matrix.node }}-bookworm@${{ matrix.image_digest }}"
+          export SWM_RELEASE_NODE_VERSION
+          export SWM_RELEASE_NPM_VERSION
+          SWM_RELEASE_NODE_VERSION="$(docker run --rm --platform linux/amd64 "$node_image" node --version)"
+          SWM_RELEASE_NPM_VERSION="$(docker run --rm --platform linux/amd64 "$node_image" npm --version)"
+          node scripts/release-artifacts.js create-prebuild
+
       - name: Upload ABI prebuild
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-x64-node-v${{ matrix.abi }}
-          path: prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node
+          path: |
+            prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node
+            prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node.build.json
           if-no-files-found: error
+          overwrite: true
           retention-days: 14
 
   windows:
@@ -177,10 +223,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node }}
 
@@ -223,12 +269,23 @@ jobs:
           Get-Item $path
           Get-FileHash -Algorithm SHA256 $path
 
+      - name: Record prebuild digest and toolchain
+        env:
+          SWM_RELEASE_ARTIFACT: prebuilds/win32-x64/node-v${{ matrix.abi }}.node
+          SWM_RELEASE_BUILDER: GitHub Actions self-hosted Windows x64
+          SWM_RELEASE_COMPILER: MSVC via node-gyp
+          SWM_RELEASE_PROFILE: release
+        run: node scripts/release-artifacts.js create-prebuild
+
       - name: Upload ABI prebuild
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-x64-node-v${{ matrix.abi }}
-          path: prebuilds/win32-x64/node-v${{ matrix.abi }}.node
+          path: |
+            prebuilds/win32-x64/node-v${{ matrix.abi }}.node
+            prebuilds/win32-x64/node-v${{ matrix.abi }}.node.build.json
           if-no-files-found: error
+          overwrite: true
           retention-days: 14
 
   macos:
@@ -263,10 +320,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node }}
           architecture: ${{ matrix.arch }}
@@ -302,12 +359,23 @@ jobs:
           test "$(lipo -archs "$path")" = "${{ matrix.binary_arch }}"
           shasum -a 256 "$path"
 
+      - name: Record prebuild digest and toolchain
+        env:
+          SWM_RELEASE_ARTIFACT: prebuilds/darwin-${{ matrix.arch }}/node-v${{ matrix.abi }}.node
+          SWM_RELEASE_BUILDER: GitHub Actions ${{ matrix.runner }}
+          SWM_RELEASE_COMPILER: Apple Clang via node-gyp
+          SWM_RELEASE_PROFILE: release
+        run: node scripts/release-artifacts.js create-prebuild
+
       - name: Upload ABI prebuild
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos-${{ matrix.arch }}-node-v${{ matrix.abi }}
-          path: prebuilds/darwin-${{ matrix.arch }}/node-v${{ matrix.abi }}.node
+          path: |
+            prebuilds/darwin-${{ matrix.arch }}/node-v${{ matrix.abi }}.node
+            prebuilds/darwin-${{ matrix.arch }}/node-v${{ matrix.abi }}.node.build.json
           if-no-files-found: error
+          overwrite: true
           retention-days: 14
 
   regression-gate:
@@ -321,10 +389,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -332,18 +400,18 @@ jobs:
         run: npm ci
 
       - name: Download PGO+LTO candidate
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: linux-x64-node-v127
           path: prebuilds/linux-x64-glibc
 
-      - name: Install pinned upstream reference
+      - name: Install commit-pinned upstream reference
         run: |
           npm install \
             --prefix "$RUNNER_TEMP/uws-reference" \
             --ignore-scripts \
             --no-save \
-            "uwebsockets.js@github:uNetworking/uWebSockets.js#v20.69.0"
+            "uwebsockets.js@github:uNetworking/uWebSockets.js#dddd8ffd1b2c28a66022160923ca92f064cdacb4"
           reference="$RUNNER_TEMP/uws-reference/node_modules/uwebsockets.js/ESM_wrapper.mjs"
           echo "SWM_UWS_REFERENCE=$reference" >> "$GITHUB_ENV"
           echo "SWM_BENCH_REFERENCE=$reference" >> "$GITHUB_ENV"
@@ -375,11 +443,12 @@ jobs:
 
       - name: Upload benchmark evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pgo-performance-report
           path: ${{ runner.temp }}/pgo-benchmark/
           if-no-files-found: warn
+          overwrite: true
           retention-days: 14
 
   package:
@@ -394,58 +463,58 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
 
       - name: Download Linux Node.js 22 prebuild
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: linux-x64-node-v127
           path: prebuilds/linux-x64-glibc
 
       - name: Download Linux Node.js 24 prebuild
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: linux-x64-node-v137
           path: prebuilds/linux-x64-glibc
 
       - name: Download Windows Node.js 22 prebuild
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: windows-x64-node-v127
           path: prebuilds/win32-x64
 
       - name: Download Windows Node.js 24 prebuild
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: windows-x64-node-v137
           path: prebuilds/win32-x64
 
       - name: Download macOS arm64 Node.js 22 prebuild
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: macos-arm64-node-v127
           path: prebuilds/darwin-arm64
 
       - name: Download macOS arm64 Node.js 24 prebuild
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: macos-arm64-node-v137
           path: prebuilds/darwin-arm64
 
       - name: Download macOS x64 Node.js 22 prebuild
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: macos-x64-node-v127
           path: prebuilds/darwin-x64
 
       - name: Download macOS x64 Node.js 24 prebuild
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: macos-x64-node-v137
           path: prebuilds/darwin-x64
@@ -453,28 +522,34 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate release prebuild formats
+      - name: Verify and assemble release manifest
+        run: node scripts/release-artifacts.js assemble
+
+      - name: Validate release prebuild formats and digests
         run: npm run check:release
 
       - name: Pack release candidate
         run: |
           mkdir -p dist
           npm pack --pack-destination dist
+          node scripts/release-artifacts.js create-candidate
 
       - name: Upload combined prebuilds
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-prebuilds
-          path: prebuilds/**/*.node
+          path: prebuilds/**
           if-no-files-found: error
+          overwrite: true
           retention-days: 14
 
       - name: Upload npm package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: swm-uws-release-candidate
-          path: dist/*.tgz
+          path: dist/*
           if-no-files-found: error
+          overwrite: true
           retention-days: 14
 
   package-smoke:
@@ -491,9 +566,11 @@ jobs:
           - os: ubuntu-24.04
             runner: swm-linux
             node: 22
+            runtime_digest: sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
           - os: ubuntu-24.04
             runner: swm-linux
             node: 24
+            runtime_digest: sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
           - os: windows-self-hosted
             runner: swm-win
             node: 22
@@ -503,19 +580,21 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        if: runner.os == 'Windows'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node }}
 
       - name: Download npm package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: swm-uws-release-candidate
           path: dist
+
+      - name: Verify tested release candidate digest and contents
+        run: node scripts/release-artifacts.js verify-candidate
 
       - name: Install and smoke-test packed package on Bookworm
         if: runner.os == 'Linux'
@@ -525,7 +604,7 @@ jobs:
             --platform linux/amd64 \
             --memory 1g \
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly" \
-            node:${{ matrix.node }}-bookworm-slim \
+            node:${{ matrix.node }}-bookworm-slim@${{ matrix.runtime_digest }} \
             sh -euc '
               tgz="$(find /workspace/dist -name "*.tgz" -type f -print -quit)"
               test -n "$tgz"
@@ -576,19 +655,22 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node }}
           architecture: ${{ matrix.arch }}
 
       - name: Download npm package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: swm-uws-release-candidate
           path: dist
+
+      - name: Verify tested release candidate digest and contents
+        run: node scripts/release-artifacts.js verify-candidate
 
       - name: Install and smoke-test packed package
         shell: bash
@@ -610,13 +692,17 @@ jobs:
       - package-smoke-macos
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
@@ -628,17 +714,99 @@ jobs:
           package_version="$(node -p "require('./package.json').version")"
           test "$tag_version" = "$package_version"
 
+      - name: Verify trusted publishing npm CLI
+        shell: bash
+        run: |
+          npm_version="$(npm --version)"
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number)
+            if (major < 11 || (major === 11 && minor < 15)) {
+              throw new Error(`npm >= 11.15.0 is required for trusted publishing, got ${process.argv[1]}`)
+            }
+          ' "$npm_version"
+
       - name: Download tested npm package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: swm-uws-release-candidate
           path: dist
 
-      - name: Publish npm package
+      - name: Verify tested release candidate digest and contents
+        run: node scripts/release-artifacts.js verify-candidate
+
+      - name: Check whether the exact package is already published
+        id: registry
+        shell: bash
+        run: |
+          tgz="$(find "$GITHUB_WORKSPACE/dist" -name '*.tgz' -type f -print -quit)"
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          package_spec="${package_name}@${package_version}"
+          local_integrity="$(node -e '
+            const { createHash } = require("node:crypto")
+            const { readFileSync } = require("node:fs")
+            process.stdout.write(`sha512-${createHash("sha512").update(readFileSync(process.argv[1])).digest("base64")}`)
+          ' "$tgz")"
+          registry_integrity="$(npm view "$package_spec" dist.integrity 2>/dev/null || true)"
+
+          if [ -z "$registry_integrity" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          elif [ "$registry_integrity" = "$local_integrity" ]; then
+            echo "Exact package already exists; continuing with provenance verification"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Refusing to replace $package_spec with different contents" >&2
+            exit 1
+          fi
+
+      - name: Publish npm package with trusted publishing
+        if: steps.registry.outputs.should_publish == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish_auth == 'oidc')
         shell: bash
         run: |
           tgz="$(find "$GITHUB_WORKSPACE/dist" -name '*.tgz' -type f -print -quit)"
           test -n "$tgz"
-          npm publish "$tgz" --access public
+          npm publish "$tgz" --access public --provenance
+
+      - name: Publish npm package with emergency token fallback
+        if: steps.registry.outputs.should_publish == 'true' && github.event_name == 'workflow_dispatch' && inputs.publish_auth == 'token'
+        shell: bash
+        run: |
+          test -n "${NODE_AUTH_TOKEN:-}"
+          tgz="$(find "$GITHUB_WORKSPACE/dist" -name '*.tgz' -type f -print -quit)"
+          test -n "$tgz"
+          npm publish "$tgz" --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify published integrity and provenance
+        shell: bash
+        run: |
+          tgz="$(find "$GITHUB_WORKSPACE/dist" -name '*.tgz' -type f -print -quit)"
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          package_spec="${package_name}@${package_version}"
+          local_integrity="$(node -e '
+            const { createHash } = require("node:crypto")
+            const { readFileSync } = require("node:fs")
+            process.stdout.write(`sha512-${createHash("sha512").update(readFileSync(process.argv[1])).digest("base64")}`)
+          ' "$tgz")"
+
+          registry_integrity=""
+          predicate_type=""
+          for attempt in $(seq 1 12); do
+            registry_integrity="$(npm view "$package_spec" dist.integrity 2>/dev/null || true)"
+            predicate_type="$(npm view "$package_spec" dist.attestations.provenance.predicateType 2>/dev/null || true)"
+            if [ "$registry_integrity" = "$local_integrity" ] && [ "$predicate_type" = "https://slsa.dev/provenance/v1" ]; then
+              break
+            fi
+            sleep 5
+          done
+
+          test "$registry_integrity" = "$local_integrity"
+          test "$predicate_type" = "https://slsa.dev/provenance/v1"
+
+          verify_dir="$RUNNER_TEMP/npm-provenance-verify"
+          mkdir "$verify_dir"
+          npm init --yes --prefix "$verify_dir" >/dev/null
+          npm install --prefix "$verify_dir" "$package_spec" --ignore-scripts --no-audit --no-fund
+          npm audit signatures --prefix "$verify_dir"
