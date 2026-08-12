@@ -257,13 +257,13 @@ export interface HttpResponse {
   /** Returns the peer TCP port in host representation. */
   getRemotePort(): number
 
-  /** Returns the IP selected from the configured trusted HTTP proxy header, or an empty buffer. */
+  /** Returns the trusted HTTP proxy IP, or the upstream peer IP when the configured header is absent. */
   getProxiedRemoteAddress(): ArrayBuffer
 
-  /** Returns the trusted HTTP proxy IP encoded as textual bytes, or an empty buffer. */
+  /** Returns the trusted HTTP proxy IP as text, or the upstream peer IP when the configured header is absent. */
   getProxiedRemoteAddressAsText(): ArrayBuffer
 
-  /** Always returns `0`; trusted HTTP address headers do not authenticate a source port. */
+  /** Returns `0` for a trusted HTTP address header, or the upstream peer port when the header is absent. */
   getProxiedRemotePort(): number
 
   /**

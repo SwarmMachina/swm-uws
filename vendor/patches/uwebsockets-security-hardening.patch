@@ -1,7 +1,7 @@
-diff --git a/vendor/uWebSockets/src/App.h b/vendor/uWebSockets/src/App.h
+diff --git a/src/App.h b/src/App.h
 index 0ddbf62..ae43030 100644
---- a/vendor/uWebSockets/src/App.h
-+++ b/vendor/uWebSockets/src/App.h
+--- a/src/App.h
++++ b/src/App.h
 @@ -25,6 +25,89 @@
  #include <string_view>
  
@@ -192,10 +192,10 @@ index 0ddbf62..ae43030 100644
              } else {
                  /* Tell the router that we did not handle this request */
                  req->setYield(true);
-diff --git a/vendor/uWebSockets/src/ChunkedEncoding.h b/vendor/uWebSockets/src/ChunkedEncoding.h
+diff --git a/src/ChunkedEncoding.h b/src/ChunkedEncoding.h
 index 5b959ad..2b8fdb5 100644
---- a/vendor/uWebSockets/src/ChunkedEncoding.h
-+++ b/vendor/uWebSockets/src/ChunkedEncoding.h
+--- a/src/ChunkedEncoding.h
++++ b/src/ChunkedEncoding.h
 @@ -20,218 +20,499 @@
  
  /* Independent chunked encoding parser, used by HttpParser. */
@@ -847,11 +847,11 @@ index 5b959ad..2b8fdb5 100644
 +} // namespace uWS
 +
  #endif // UWS_CHUNKEDENCODING_H
-diff --git a/vendor/uWebSockets/src/ForwardedAddress.h b/vendor/uWebSockets/src/ForwardedAddress.h
+diff --git a/src/ForwardedAddress.h b/src/ForwardedAddress.h
 new file mode 100644
 index 0000000..fad6099
 --- /dev/null
-+++ b/vendor/uWebSockets/src/ForwardedAddress.h
++++ b/src/ForwardedAddress.h
 @@ -0,0 +1,117 @@
 +/*
 + * SwarmMachina trusted-ingress forwarded-address parser.
@@ -970,10 +970,10 @@ index 0000000..fad6099
 +}  // namespace uWS
 +
 +#endif  // UWS_FORWARDEDADDRESS_H
-diff --git a/vendor/uWebSockets/src/HttpContext.h b/vendor/uWebSockets/src/HttpContext.h
+diff --git a/src/HttpContext.h b/src/HttpContext.h
 index 798133d..93207a5 100644
---- a/vendor/uWebSockets/src/HttpContext.h
-+++ b/vendor/uWebSockets/src/HttpContext.h
+--- a/src/HttpContext.h
++++ b/src/HttpContext.h
 @@ -160,10 +160,11 @@ private:
              // clients need to know the cursor after http parse, not servers!
              // how far did we read then? we need to know to continue with websocket parsing data? or?
@@ -989,10 +989,10 @@ index 798133d..93207a5 100644
  
              /* The return value is entirely up to us to interpret. The HttpParser only care for whether the returned value is DIFFERENT or not from passed user */
              auto [err, returnedSocket] = httpResponseData->consumePostPadded(data, (unsigned int) length, s, proxyParser, [httpContextData](void *s, HttpRequest *httpRequest) -> void * {
-diff --git a/vendor/uWebSockets/src/HttpParser.h b/vendor/uWebSockets/src/HttpParser.h
+diff --git a/src/HttpParser.h b/src/HttpParser.h
 index e338c12..a26043b 100644
---- a/vendor/uWebSockets/src/HttpParser.h
-+++ b/vendor/uWebSockets/src/HttpParser.h
+--- a/src/HttpParser.h
++++ b/src/HttpParser.h
 @@ -30,6 +30,7 @@
  #include <map>
  #include "MoveOnlyFunction.h"
@@ -1115,27 +1115,28 @@ index e338c12..a26043b 100644
      [[nodiscard]] LimitViolation GetLimitViolation() const {
          return limitViolation_;
      }
-diff --git a/vendor/uWebSockets/src/HttpResponse.h b/vendor/uWebSockets/src/HttpResponse.h
+diff --git a/src/HttpResponse.h b/src/HttpResponse.h
 index c3d472a..04d1bd4 100644
---- a/vendor/uWebSockets/src/HttpResponse.h
-+++ b/vendor/uWebSockets/src/HttpResponse.h
-@@ -255,10 +255,12 @@ private:
+--- a/src/HttpResponse.h
++++ b/src/HttpResponse.h
+@@ -255,10 +255,13 @@ private:
      }
  
  public:
 -    /* If we have proxy support; returns the proxed source address as reported by the proxy. */
 -#ifdef UWS_WITH_PROXY
-+    /* Uses a trusted HTTP header when configured, otherwise preserves legacy PROXY v2 behavior. */
++    /* Uses a trusted HTTP header when present, otherwise preserves the upstream peer address. */
      std::string_view getProxiedRemoteAddress() {
 -        return getHttpResponseData()->proxyParser.getSourceAddress();
 +        if (getHttpResponseData()->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
 +            return getHttpResponseData()->proxyParser.getSourceAddress();
 +        }
-+        return getHttpResponseData()->trustedProxyAddress();
++        const std::string_view trustedAddress = getHttpResponseData()->trustedProxyAddress();
++        return trustedAddress.empty() ? Super::getRemoteAddress() : trustedAddress;
      }
  
      std::string_view getProxiedRemoteAddressAsText() {
-@@ -266,9 +268,12 @@ public:
+@@ -266,9 +269,11 @@ public:
      }
  
      unsigned int getProxiedRemotePort() {
@@ -1143,17 +1144,16 @@ index c3d472a..04d1bd4 100644
 +        if (getHttpResponseData()->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
 +            return getHttpResponseData()->proxyParser.getSourcePort();
 +        }
-+        /* Forwarded HTTP address headers do not carry a trustworthy source port. */
-+        return 0;
++        return getHttpResponseData()->trustedProxyAddress().empty() ? Super::getRemotePort() : 0;
      }
 -#endif
  
      /* Manually upgrade to WebSocket. Typically called in upgrade handler. Immediately calls open handler.
       * NOTE: Will invalidate 'this' as socket might change location in memory. Throw away after use. */
-diff --git a/vendor/uWebSockets/src/HttpResponseData.h b/vendor/uWebSockets/src/HttpResponseData.h
+diff --git a/src/HttpResponseData.h b/src/HttpResponseData.h
 index f309976..d66fec1 100644
---- a/vendor/uWebSockets/src/HttpResponseData.h
-+++ b/vendor/uWebSockets/src/HttpResponseData.h
+--- a/src/HttpResponseData.h
++++ b/src/HttpResponseData.h
 @@ -125,12 +125,12 @@ private:
      HttpTransportStats *transportStats;
      HttpTransportPhase transportPhase = HttpTransportPhase::HeadersReading;
@@ -1170,10 +1170,10 @@ index f309976..d66fec1 100644
  };
  
  }
-diff --git a/vendor/uWebSockets/src/HttpTransportConfig.h b/vendor/uWebSockets/src/HttpTransportConfig.h
+diff --git a/src/HttpTransportConfig.h b/src/HttpTransportConfig.h
 index 7691049..9790771 100644
---- a/vendor/uWebSockets/src/HttpTransportConfig.h
-+++ b/vendor/uWebSockets/src/HttpTransportConfig.h
+--- a/src/HttpTransportConfig.h
++++ b/src/HttpTransportConfig.h
 @@ -25,6 +25,12 @@ enum class HttpTransportPhase : std::uint8_t {
      KeepAliveIdle,
  };
@@ -1228,10 +1228,10 @@ index 7691049..9790771 100644
      const unsigned int headersTimeoutSeconds;
      const unsigned int keepAliveTimeoutSeconds;
      const unsigned int bodyIdleTimeoutSeconds;
-diff --git a/vendor/uWebSockets/src/ProxyParser.h b/vendor/uWebSockets/src/ProxyParser.h
+diff --git a/src/ProxyParser.h b/src/ProxyParser.h
 index ffe4bf6..6e71bdc 100644
---- a/vendor/uWebSockets/src/ProxyParser.h
-+++ b/vendor/uWebSockets/src/ProxyParser.h
+--- a/src/ProxyParser.h
++++ b/src/ProxyParser.h
 @@ -104,10 +104,10 @@ public:
  
          if ((family & 0xf0) >> 4 == 1) {
@@ -1245,10 +1245,10 @@ index ffe4bf6..6e71bdc 100644
          }
      }
  
-diff --git a/vendor/uWebSockets/src/WebSocket.h b/vendor/uWebSockets/src/WebSocket.h
+diff --git a/src/WebSocket.h b/src/WebSocket.h
 index 00da781..5134e16 100644
---- a/vendor/uWebSockets/src/WebSocket.h
-+++ b/vendor/uWebSockets/src/WebSocket.h
+--- a/src/WebSocket.h
++++ b/src/WebSocket.h
 @@ -227,6 +227,7 @@ public:
  
          /* We postpone any FIN sending to either drainage or uncorking */
@@ -1257,10 +1257,10 @@ index 00da781..5134e16 100644
  
          /* Format and send the close frame */
          static const int MAX_CLOSE_PAYLOAD = 123;
-diff --git a/vendor/uWebSockets/src/WebSocketContext.h b/vendor/uWebSockets/src/WebSocketContext.h
+diff --git a/src/WebSocketContext.h b/src/WebSocketContext.h
 index d8b3fd0..8c9f699 100644
---- a/vendor/uWebSockets/src/WebSocketContext.h
-+++ b/vendor/uWebSockets/src/WebSocketContext.h
+--- a/src/WebSocketContext.h
++++ b/src/WebSocketContext.h
 @@ -103,10 +103,6 @@ private:
                      }
                  }
@@ -1346,10 +1346,10 @@ index d8b3fd0..8c9f699 100644
                  webSocketData->hasTimedOut = false;
              }
  
-diff --git a/vendor/uWebSockets/src/WebSocketContextData.h b/vendor/uWebSockets/src/WebSocketContextData.h
+diff --git a/src/WebSocketContextData.h b/src/WebSocketContextData.h
 index 7f04aa6..277bf3b 100644
---- a/vendor/uWebSockets/src/WebSocketContextData.h
-+++ b/vendor/uWebSockets/src/WebSocketContextData.h
+--- a/src/WebSocketContextData.h
++++ b/src/WebSocketContextData.h
 @@ -84,6 +84,12 @@ public:
  
      /* This is run once on start-up */
@@ -1363,10 +1363,10 @@ index 7f04aa6..277bf3b 100644
          unsigned short margin = 4;
          /* 4, 8 or 16 seconds margin based on idleTimeout */
          while ((int) idleTimeout - margin * 2 >= margin * 2 && margin < 16) {
-diff --git a/vendor/uWebSockets/src/WebSocketData.h b/vendor/uWebSockets/src/WebSocketData.h
+diff --git a/src/WebSocketData.h b/src/WebSocketData.h
 index 21e96a7..df443fc 100644
---- a/vendor/uWebSockets/src/WebSocketData.h
-+++ b/vendor/uWebSockets/src/WebSocketData.h
+--- a/src/WebSocketData.h
++++ b/src/WebSocketData.h
 @@ -34,8 +34,13 @@ struct WebSocketData : AsyncSocketData<false>, WebSocketState<true> {
      template <bool, bool, typename> friend struct WebSocket;
      template <bool> friend struct HttpContext;
@@ -1420,10 +1420,10 @@ index 21e96a7..df443fc 100644
  public:
      WebSocketData(bool perMessageDeflate, CompressOptions compressOptions, BackPressure &&backpressure) : AsyncSocketData<false>(std::move(backpressure)), WebSocketState<true>() {
          compressionStatus = perMessageDeflate ? ENABLED : DISABLED;
-diff --git a/vendor/uWebSockets/src/WebSocketProtocol.h b/vendor/uWebSockets/src/WebSocketProtocol.h
+diff --git a/src/WebSocketProtocol.h b/src/WebSocketProtocol.h
 index a6c1730..18ebc92 100644
---- a/vendor/uWebSockets/src/WebSocketProtocol.h
-+++ b/vendor/uWebSockets/src/WebSocketProtocol.h
+--- a/src/WebSocketProtocol.h
++++ b/src/WebSocketProtocol.h
 @@ -289,6 +289,7 @@ protected:
      static inline bool isFin(char *frame) {return *((unsigned char *) frame) & 128;}
      static inline unsigned char getOpCode(char *frame) {return *((unsigned char *) frame) & 15;}

@@ -255,12 +255,13 @@ private:
     }
 
 public:
-    /* Uses a trusted HTTP header when configured, otherwise preserves legacy PROXY v2 behavior. */
+    /* Uses a trusted HTTP header when present, otherwise preserves the upstream peer address. */
     std::string_view getProxiedRemoteAddress() {
         if (getHttpResponseData()->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
             return getHttpResponseData()->proxyParser.getSourceAddress();
         }
-        return getHttpResponseData()->trustedProxyAddress();
+        const std::string_view trustedAddress = getHttpResponseData()->trustedProxyAddress();
+        return trustedAddress.empty() ? Super::getRemoteAddress() : trustedAddress;
     }
 
     std::string_view getProxiedRemoteAddressAsText() {
@@ -271,8 +272,7 @@ public:
         if (getHttpResponseData()->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
             return getHttpResponseData()->proxyParser.getSourcePort();
         }
-        /* Forwarded HTTP address headers do not carry a trustworthy source port. */
-        return 0;
+        return getHttpResponseData()->trustedProxyAddress().empty() ? Super::getRemotePort() : 0;
     }
 
     /* Manually upgrade to WebSocket. Typically called in upgrade handler. Immediately calls open handler.

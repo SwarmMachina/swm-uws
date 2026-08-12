@@ -115,6 +115,31 @@ test('trusted x-real-ip accepts strict IPv4 and IPv6 address literals', async ()
   })
 })
 
+test('trusted proxy falls back to the upstream peer address when its header is absent', async () => {
+  await withAddressServer(
+    { trustedProxy: { header: 'x-forwarded-for', hops: 1 } },
+    async (port) => {
+      const response = await request(port)
+      const addresses = JSON.parse(body(response))
+
+      assert.deepEqual(addresses.proxied, addresses.upstream)
+      assert.ok(addresses.proxied.length > 0)
+      assert.deepEqual(addresses.proxiedBinary, addresses.upstreamBinary)
+      assert.equal(addresses.proxiedPort, addresses.upstreamPort)
+      assert.ok(addresses.proxiedPort > 0)
+    },
+    (res, proxied) =>
+      JSON.stringify({
+        proxied,
+        upstream: Buffer.from(res.getRemoteAddressAsText()).toString(),
+        proxiedBinary: Buffer.from(res.getProxiedRemoteAddress()).toString('hex'),
+        upstreamBinary: Buffer.from(res.getRemoteAddress()).toString('hex'),
+        proxiedPort: res.getProxiedRemotePort(),
+        upstreamPort: res.getRemotePort()
+      })
+  )
+})
+
 test('malformed, ambiguous, or undersized trusted header chains fail closed', async () => {
   await withAddressServer({ trustedProxy: { header: 'x-forwarded-for', hops: 2 } }, async (port, routeCalls) => {
     for (const headers of [

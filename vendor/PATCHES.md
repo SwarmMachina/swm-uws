@@ -61,9 +61,11 @@ diverge from the pinned upstream revision:
   16-byte nonce in `Sec-WebSocket-Key`, version 13, and masked client frames;
 - add an explicit trusted `X-Forwarded-For` or `X-Real-IP` mode with a
   configured hop count; duplicate, malformed, and non-IP values fail closed.
-  The mode disables the legacy binary PROXY v2 parser only for the configured
-  `App`, preserving the historical PROXY v2 address and port contract when no
-  trusted HTTP header is set;
+  When its selected HTTP header is absent, the proxied-address accessors fall
+  back to the upstream peer address and port. The mode disables the legacy
+  binary PROXY v2 parser only for the configured `App`, preserving the
+  historical PROXY v2 address and port contract when no trusted HTTP header is
+  set;
 - cap explicit HTTP timeouts to the representable uSockets timeout wheel,
   handle a disabled WebSocket idle timeout without unsigned underflow, and
   preserve the forced-close deadline while shutdown backpressure drains;
