@@ -11,6 +11,7 @@ import { bytesToMiB } from '@swarmmachina/benchkit/units'
 
 import { benchmarkBlockSchedule } from './lib/benchmark-block-schedule.js'
 import { BenchmarkTargetProcess } from './lib/benchmark-target-process.js'
+import { pairedThroughputComparison } from './lib/paired-throughput-comparison.js'
 import {
   cpuIndexOption,
   expandEqualsArguments,
@@ -19,7 +20,7 @@ import {
   requiredOption
 } from './lib/option-values.js'
 
-const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
+const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const options = parseOptions(process.argv.slice(2))
 const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'swm-uws-native-abba-'))
 const results = []
@@ -62,8 +63,8 @@ async function runSide({ binding, role, block, position }) {
   const metrics = path.join(temporaryDirectory, `${block}-${position}-${role}.json`)
   const serverCommand =
     process.platform === 'linux' && options.serverCpu >= 0
-      ? ['taskset', ['-c', String(options.serverCpu), process.execPath, 'scripts/pgo/profile-http-raw-server.js']]
-      : [process.execPath, ['scripts/pgo/profile-http-raw-server.js']]
+      ? ['taskset', ['-c', String(options.serverCpu), process.execPath, 'benchmark/pgo/profile-http-raw-server.js']]
+      : [process.execPath, ['benchmark/pgo/profile-http-raw-server.js']]
   const target = await BenchmarkTargetProcess.start({
     command: serverCommand[0],
     arguments_: serverCommand[1],
@@ -115,19 +116,7 @@ async function runSide({ binding, role, block, position }) {
 function summarize() {
   const baseline = medians(results.filter((result) => result.role === 'baseline'))
   const candidate = medians(results.filter((result) => result.role === 'candidate'))
-  const pairedThroughputDeltaPct = median(
-    Array.from({ length: options.blocks }, (_, index) => {
-      const block = results.filter((result) => result.block === index + 1)
-      const baselineRps = mean(
-        block.filter((result) => result.role === 'baseline').map((result) => result.requestsPerSecond)
-      )
-      const candidateRps = mean(
-        block.filter((result) => result.role === 'candidate').map((result) => result.requestsPerSecond)
-      )
-
-      return percentDelta(candidateRps, baselineRps)
-    })
-  )
+  const pairedThroughput = pairedThroughputComparison(results, options.blocks)
 
   return {
     schemaVersion: 1,
@@ -143,7 +132,9 @@ function summarize() {
     medians: {
       baseline,
       candidate,
-      pairedThroughputDeltaPct,
+      pairedThroughputDeltaPct: pairedThroughput.medianPairedDeltaPct,
+      pairedThroughputIqrPct: [pairedThroughput.iqr.q1, pairedThroughput.iqr.q3],
+      pairedThroughputWinningBlocks: pairedThroughput.winningPairs,
       deltaPct: {
         requestsPerSecond: percentDelta(candidate.requestsPerSecond, baseline.requestsPerSecond),
         p95Ms: percentDelta(candidate.p95Ms, baseline.p95Ms),
@@ -167,12 +158,15 @@ function medians(values) {
   }
 }
 
-function mean(values) {
-  return values.reduce((sum, value) => sum + value, 0) / values.length
-}
-
 function renderReport(artifact) {
-  const { baseline, candidate, deltaPct } = artifact.medians
+  const {
+    baseline,
+    candidate,
+    deltaPct,
+    pairedThroughputDeltaPct,
+    pairedThroughputIqrPct,
+    pairedThroughputWinningBlocks
+  } = artifact.medians
 
   return `# Native binding ABBA benchmark
 
@@ -187,7 +181,7 @@ Node ${artifact.environment.node}; ${artifact.parameters.blocks} alternating ABB
 | Target RSS peak | ${bytesToMiB(baseline.rssPeakBytes).toFixed(1)} MiB | ${bytesToMiB(candidate.rssPeakBytes).toFixed(1)} MiB | ${signed(deltaPct.rssPeakBytes)} |
 | Target heap peak | ${bytesToMiB(baseline.heapUsedPeakBytes).toFixed(1)} MiB | ${bytesToMiB(candidate.heapUsedPeakBytes).toFixed(1)} MiB | — |
 
-Paired throughput delta across ABBA blocks: **${signed(artifact.medians.pairedThroughputDeltaPct)}**.
+Paired throughput delta across ABBA blocks: **${signed(pairedThroughputDeltaPct)}**; IQR **[${signed(pairedThroughputIqrPct[0])}, ${signed(pairedThroughputIqrPct[1])}]**; ${pairedThroughputWinningBlocks} of ${artifact.parameters.blocks} blocks favored the candidate.
 
 Local runs are diagnostic. The release regression gate remains the isolated Linux x86-64 PGO/LTO comparison.
 `
@@ -261,6 +255,10 @@ function parseOptions(arguments_) {
 
   if (!values.baseline) {
     throw new Error('--baseline is required')
+  }
+
+  if (values.blocks < 2) {
+    throw new RangeError('--blocks must be at least 2 for paired comparison')
   }
 
   if (values.method !== 'GET' && values.method !== 'POST') {

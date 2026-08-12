@@ -2,15 +2,16 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:net'
 import test from 'node:test'
 
-import { benchmarkBlockSchedule } from '../scripts/benchmark/lib/benchmark-block-schedule.js'
-import { BenchmarkTargetProcess } from '../scripts/benchmark/lib/benchmark-target-process.js'
+import { benchmarkBlockSchedule } from '../benchmark/lib/benchmark-block-schedule.js'
+import { BenchmarkTargetProcess } from '../benchmark/lib/benchmark-target-process.js'
+import { pairedThroughputComparison } from '../benchmark/lib/paired-throughput-comparison.js'
 import {
   cpuIndexOption,
   expandEqualsArguments,
   nonNegativeIntegerOption,
   positiveIntegerOption,
   requiredOption
-} from '../scripts/benchmark/lib/option-values.js'
+} from '../benchmark/lib/option-values.js'
 import { waitFor, withTimeout } from './helpers/async.js'
 import { proxyProtocolV2Ipv4Header, rawHttpExchange } from './helpers/raw-http.js'
 import { nextWebSocketClose, nextWebSocketMessage, nextWebSocketOpen } from './helpers/websocket-events.js'
@@ -32,6 +33,27 @@ test('benchmark schedule alternates complete ABBA and BAAB blocks', () => {
     ]
   )
   assert.throws(() => benchmarkBlockSchedule(0, { baseline: 'A', candidate: 'B' }), /positive safe integer/)
+})
+
+test('paired throughput comparison preserves ABBA block pairing', () => {
+  const comparison = pairedThroughputComparison(
+    [
+      { block: 1, role: 'baseline', requestsPerSecond: 100 },
+      { block: 1, role: 'candidate', requestsPerSecond: 120 },
+      { block: 1, role: 'candidate', requestsPerSecond: 120 },
+      { block: 1, role: 'baseline', requestsPerSecond: 100 },
+      { block: 2, role: 'candidate', requestsPerSecond: 100 },
+      { block: 2, role: 'baseline', requestsPerSecond: 100 },
+      { block: 2, role: 'baseline', requestsPerSecond: 100 },
+      { block: 2, role: 'candidate', requestsPerSecond: 100 }
+    ],
+    2
+  )
+
+  assert.equal(comparison.medianPairedDeltaPct, 10)
+  assert.deepEqual(comparison.iqr, { algorithm: 'tukey-hinges', q1: 0, q3: 20 })
+  assert.equal(comparison.winningPairs, 1)
+  assert.throws(() => pairedThroughputComparison([], 1), /at least 2/)
 })
 
 test('benchmark option values accept both CLI forms and reject unsafe numbers', () => {

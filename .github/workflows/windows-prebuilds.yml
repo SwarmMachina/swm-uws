@@ -419,7 +419,7 @@ jobs:
       - name: Verify upstream runtime surface
         run: npm run test:compat:upstream
 
-      - name: Run paired PGO benchmark
+      - name: Run paired PGO benchmark suite against upstream
         run: npm run bench:compare:pgo:linux -- "$RUNNER_TEMP/pgo-benchmark"
 
       - name: Run request prefetch PGO benchmark
@@ -434,12 +434,16 @@ jobs:
             --workers=4 \
             --output="$RUNNER_TEMP/pgo-benchmark/request-prefetch-node22.json"
 
-      - name: Publish benchmark summary
+      - name: Publish benchmark reports
         if: always()
         run: |
-          if [ -f "$RUNNER_TEMP/pgo-benchmark/report.md" ]; then
-            cat "$RUNNER_TEMP/pgo-benchmark/report.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for report in \
+            "$RUNNER_TEMP/pgo-benchmark/report.md" \
+            "$RUNNER_TEMP/pgo-benchmark/request-prefetch-node22.md"; do
+            if [ -f "$report" ]; then
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
       - name: Upload benchmark evidence
         if: always()

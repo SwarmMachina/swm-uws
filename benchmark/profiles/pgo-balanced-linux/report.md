@@ -75,6 +75,7 @@ SWM_BENCH_REFERENCE=/path/to/uwebsockets.js/ESM_wrapper.mjs \
   npm run bench:compare:pgo:linux -- benchmark/profiles/pgo-balanced-linux
 ```
 
-The report is generated from `metadata.json` and `runs.json`. The PGO profile
+The report is generated from `metadata.json`, `runs.json`, and the complete
+`features/*.json` suite when feature-path measurements are present. The PGO profile
 should be regenerated whenever native wrapper/vendor sources, the Node ABI, the
 compiler, or material compiler flags change.

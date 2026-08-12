@@ -1,13 +1,20 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, readdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { pairedComparison } from '@swarmmachina/benchkit/statistics'
 import { format } from 'prettier'
 
-let directory = new URL('../../benchmark/profiles/pgo-balanced-linux/', import.meta.url)
+let directory = new URL('../profiles/pgo-balanced-linux/', import.meta.url)
 let check = false
 
+const expectedFeatureArtifacts = [
+  'collect-body-with-length-256.json',
+  'collect-body-with-length-4096.json',
+  'end-batch.json',
+  'request-prefetch.json',
+  'discard-body.json'
+]
 const arguments_ = process.argv.slice(2)
 
 for (let index = 0; index < arguments_.length; index++) {
@@ -28,6 +35,7 @@ for (let index = 0; index < arguments_.length; index++) {
 
 const metadata = await readJson('metadata.json')
 const runs = await readJson('runs.json')
+const featurePaths = await readFeaturePaths()
 
 validateInputs(metadata, runs)
 
@@ -51,7 +59,8 @@ const summary = {
     uwsMedian: metadata.measurements.uwsRuntimeMedian
   },
   guard: metadata.guard,
-  hardwareStat: metadata.hardwareStat
+  hardwareStat: metadata.hardwareStat,
+  ...(featurePaths.length ? { featurePaths } : {})
 }
 const summaryText = await format(JSON.stringify(summary), { parser: 'json' })
 const reportText = await format(renderReport(summary), { parser: 'markdown' })
@@ -83,6 +92,174 @@ if (check) {
 
 async function readJson(name) {
   return JSON.parse(await readFile(new URL(name, directory), 'utf8'))
+}
+
+async function readFeaturePaths() {
+  const featureDirectory = new URL('features/', directory)
+
+  let names
+
+  try {
+    names = await readdir(featureDirectory)
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return []
+    }
+
+    throw error
+  }
+
+  const jsonNames = names.filter((name) => name.endsWith('.json')).sort()
+  const missing = expectedFeatureArtifacts.filter((name) => !jsonNames.includes(name))
+  const unexpected = jsonNames.filter((name) => !expectedFeatureArtifacts.includes(name))
+
+  if (missing.length || unexpected.length) {
+    throw new Error(
+      `feature benchmark artifacts are incomplete: missing=${missing.join(',') || 'none'} unexpected=${unexpected.join(',') || 'none'}`
+    )
+  }
+
+  const artifacts = await Promise.all(
+    jsonNames.map(async (name) => ({
+      name,
+      value: JSON.parse(await readFile(new URL(name, featureDirectory), 'utf8'))
+    }))
+  )
+
+  return artifacts.map(({ name, value }) => summarizeFeaturePath(name, value)).sort(compareFeaturePaths)
+}
+
+function summarizeFeaturePath(name, artifact) {
+  const { parameters, medians, results } = artifact
+  const feature = parameters?.feature || featureFromName(name)
+
+  if (!parameters || !medians || !Array.isArray(results)) {
+    throw new Error(`feature benchmark ${name} has an invalid schema`)
+  }
+
+  if (!feature) {
+    throw new Error(`feature benchmark ${name} does not declare a supported feature`)
+  }
+
+  if (!Number.isSafeInteger(parameters.blocks) || parameters.blocks < 2 || parameters.blocks % 2 !== 0) {
+    throw new Error(`feature benchmark ${name} must use an even block count of at least 2`)
+  }
+
+  if (results.length !== parameters.blocks * 4) {
+    throw new Error(`feature benchmark ${name} has ${results.length} results, expected ${parameters.blocks * 4}`)
+  }
+
+  const baselineRuns = results.filter((result) => result.role === 'baseline')
+  const candidateRuns = results.filter((result) => result.role === 'candidate')
+
+  if (baselineRuns.length !== parameters.blocks * 2 || candidateRuns.length !== parameters.blocks * 2) {
+    throw new Error(`feature benchmark ${name} does not contain balanced baseline and candidate runs`)
+  }
+
+  for (const [metricName, value] of Object.entries({
+    upstreamRequestsPerSecond: medians.upstreamManual?.requestsPerSecond,
+    swmRequestsPerSecond: medians.swmHelper?.requestsPerSecond,
+    pairedThroughputDeltaPct: medians.pairedThroughputDeltaPct,
+    pairedThroughputIqrQ1Pct: medians.pairedThroughputIqrPct?.[0],
+    pairedThroughputIqrQ3Pct: medians.pairedThroughputIqrPct?.[1],
+    p95DeltaPct: medians.deltaPct?.p95Ms,
+    p99DeltaPct: medians.deltaPct?.p99Ms,
+    eluDeltaPct: medians.deltaPct?.eluPct,
+    rssDeltaPct: medians.deltaPct?.rssPeakMiB
+  })) {
+    if (!Number.isFinite(value)) {
+      throw new Error(`feature benchmark ${name} has invalid ${metricName}`)
+    }
+  }
+
+  return {
+    name: name.replace(/\.json$/, ''),
+    feature,
+    label: featureLabel({ ...parameters, feature }),
+    upstreamPath: upstreamPath(feature),
+    parameters: {
+      bodySize: parameters.bodySize,
+      blocks: parameters.blocks,
+      connections: parameters.connections,
+      pipelining: parameters.pipelining,
+      warmupMs: parameters.warmupMs,
+      durationMs: parameters.durationMs,
+      workers: parameters.workers,
+      serverCpu: parameters.serverCpu
+    },
+    upstream: medians.upstreamManual,
+    swm: medians.swmHelper,
+    pairedThroughputDeltaPct: medians.pairedThroughputDeltaPct,
+    pairedThroughputIqrPct: medians.pairedThroughputIqrPct,
+    winningPairs: medians.winningPairs,
+    deltaPct: medians.deltaPct
+  }
+}
+
+function featureFromName(name) {
+  if (name.startsWith('collect-body-with-length-')) {
+    return 'collect-length'
+  }
+
+  if (name === 'end-batch.json') {
+    return 'end-batch'
+  }
+
+  if (name === 'request-prefetch.json') {
+    return 'prefetch'
+  }
+
+  if (name === 'discard-body.json') {
+    return 'discard-body'
+  }
+
+  return null
+}
+
+function compareFeaturePaths(left, right) {
+  const order = {
+    'collect-body-with-length-256': 1,
+    'collect-body-with-length-4096': 2,
+    'end-batch': 3,
+    'request-prefetch': 4,
+    'discard-body': 5
+  }
+
+  return (
+    (order[left.name] ?? Number.MAX_SAFE_INTEGER) - (order[right.name] ?? Number.MAX_SAFE_INTEGER) ||
+    left.name.localeCompare(right.name)
+  )
+}
+
+function featureLabel(parameters) {
+  if (parameters.feature === 'collect-length') {
+    return `collectBodyWithLength, POST ${parameters.bodySize} B`
+  }
+
+  if (parameters.feature === 'end-batch') {
+    return 'endBatch, 6 headers + 11 B body'
+  }
+
+  if (parameters.feature === 'discard-body') {
+    return `discardBody, POST ${parameters.bodySize} B`
+  }
+
+  if (parameters.feature === 'prefetch') {
+    return 'RequestPrefetchPlan, 2 of 20 headers'
+  }
+
+  return parameters.feature
+}
+
+function upstreamPath(feature) {
+  const paths = {
+    'collect-length': 'onDataV2 + allocate/copy body',
+    'end-batch': 'cork + status/header writes + end',
+    'discard-body': 'onDataV2 callback drain',
+    prefetch: 'retain two getHeader values'
+  }
+
+  return paths[feature] || 'manual upstream path'
 }
 
 function validateInputs(inputMetadata, inputRuns) {
@@ -124,7 +301,16 @@ function validateInputs(inputMetadata, inputRuns) {
 }
 
 function renderReport(value) {
-  const { environment, build, parameters, results, runtime: runtimeResults, guard, hardwareStat } = value
+  const {
+    environment,
+    build,
+    parameters,
+    results,
+    runtime: runtimeResults,
+    guard,
+    hardwareStat,
+    featurePaths = []
+  } = value
   const integerFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
   const formatInteger = (number) => integerFormatter.format(number)
   const fixed = (number, digits) => number.toFixed(digits)
@@ -157,6 +343,25 @@ ${guard.failures.length ? guard.failures.map((failure) => `- ${failure}`).join('
 
 `
     : ''
+  const featureSection = featurePaths.length
+    ? `## Binding extension paths versus upstream
+
+Each path uses ${featurePaths[0].parameters.blocks} balanced ABBA/BAAB blocks. RPS and percentile deltas compare the swm-uws helper with the listed pinned-upstream equivalent.
+
+| Feature path | Upstream path | Protocol | Upstream RPS | swm RPS | Paired RPS delta | p95 delta | p99 delta | ELU delta | RSS delta |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+${featurePaths
+  .map((path) => {
+    const protocol = `c${path.parameters.connections}/p${path.parameters.pipelining}; ${path.parameters.warmupMs} ms + ${path.parameters.durationMs} ms`
+
+    return `| ${path.label} | ${path.upstreamPath} | ${protocol} | ${formatInteger(path.upstream.requestsPerSecond)} | ${formatInteger(path.swm.requestsPerSecond)} | ${signed(path.pairedThroughputDeltaPct, 2)}% (${path.winningPairs}/${path.parameters.blocks}) | ${signed(path.deltaPct.p95Ms, 2)}% | ${signed(path.deltaPct.p99Ms, 2)}% | ${signed(path.deltaPct.eluPct, 2)}% | ${signed(path.deltaPct.rssPeakMiB, 2)}% |`
+  })
+  .join('\n')}
+
+The \`prefetch\` and \`discardBody\` paths use pipelining 1 because their comparison retains the response past the route callback. Higher pipelining would close an upstream response before the delayed callback and measure an invalid lifecycle rather than the feature path.
+
+`
+    : ''
 
   return `# Portable balanced PGO+LTO: raw HTTP response
 
@@ -184,7 +389,7 @@ ${results.positivePairedRounds} of ${parameters.runs} paired rounds favored swm-
 - server pinned to CPU ${parameters.serverCpu}; ${parameters.clientWorkers} client workers pinned to CPUs ${parameters.clientCpus}
 - identical bundled server, \`App/get/writeHeader/end\` handler, and byte-identical GET
 
-${runtimeSection}${guardSection}## Hardware counters
+${runtimeSection}${featureSection}${guardSection}## Hardware counters
 
 The ${hardwareStat.source || 'independent stat-only run'} produced ${formatInteger(hardwareStat.requestsPerSecond)} req/s
 with p99 ${fixed(hardwareStat.latencyMs.p99, 3)} ms.
@@ -218,7 +423,8 @@ SWM_BENCH_REFERENCE=/path/to/uwebsockets.js/ESM_wrapper.mjs \\
   npm run bench:compare:pgo:linux -- benchmark/profiles/pgo-balanced-linux
 \`\`\`
 
-The report is generated from \`metadata.json\` and \`runs.json\`. The PGO profile
+The report is generated from \`metadata.json\`, \`runs.json\`, and the complete
+\`features/*.json\` suite when feature-path measurements are present. The PGO profile
 should be regenerated whenever native wrapper/vendor sources, the Node ABI, the
 compiler, or material compiler flags change.
 `

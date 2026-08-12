@@ -20,7 +20,7 @@ CALL_GRAPH=${SWM_PROFILE_CALL_GRAPH:-dwarf}
 SKIP_PERF=${SWM_PROFILE_SKIP_PERF:-0}
 EVENTS=cycles,instructions,branches,branch-misses,cache-references,cache-misses
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-LOAD_GENERATOR="$ROOT/scripts/pgo/profile-http-raw-load.js"
+LOAD_GENERATOR="$ROOT/benchmark/pgo/profile-http-raw-load.js"
 
 if ! [[ "$FREQUENCY" =~ ^[0-9]+$ ]] || (( FREQUENCY < 1 )); then
   echo "SWM_PROFILE_FREQUENCY must be a positive integer" >&2
@@ -61,7 +61,7 @@ trap cleanup EXIT
 
 SWM_PROFILE_METRICS="$METRICS_JSON" \
 SWM_PROFILE_PORT="$PORT" \
-  taskset -c "$SERVER_CPU" node "$ROOT/scripts/pgo/profile-http-raw-server.js" \
+  taskset -c "$SERVER_CPU" node "$ROOT/benchmark/pgo/profile-http-raw-server.js" \
   >"$SERVER_LOG" 2>&1 &
 server_pid=$!
 

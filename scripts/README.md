@@ -1,7 +1,7 @@
 # Internal tooling
 
-- `benchmark/` contains load generators and local benchmark servers.
-- `pgo/` builds profile-guided binaries and produces their evidence reports.
+- Repository `benchmark/` contains benchmark code, profiles, and captured reports.
+- `benchmark/pgo/build-native-pgo.sh` builds a PGO binary and drives its training paths.
 - `release/` assembles, validates, and tests release artifacts.
 - `test/` runs the repository test suite without recursively treating fixtures as tests.
 - `vendor/` refreshes and verifies the checked-in upstream source snapshot.

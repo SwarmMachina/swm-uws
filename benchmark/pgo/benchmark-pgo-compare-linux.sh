@@ -66,7 +66,7 @@ run_profile() {
   SWM_PROFILE_CLIENT_CPUS="$CLIENT_CPUS" \
   SWM_PROFILE_CLIENT_WORKERS="$CLIENT_WORKERS" \
   SWM_PROFILE_SKIP_PERF=1 \
-    "$ROOT/scripts/pgo/profile-http-raw-linux.sh" "$RAW_DIR/round-$round-$side" "$port" >/dev/null
+    "$ROOT/benchmark/pgo/profile-http-raw-linux.sh" "$RAW_DIR/round-$round-$side" "$port" >/dev/null
 }
 
 for round in $(seq 1 "$RUNS"); do
@@ -95,7 +95,7 @@ else
   SWM_PROFILE_CLIENT_CPUS="$CLIENT_CPUS" \
   SWM_PROFILE_CLIENT_WORKERS="$CLIENT_WORKERS" \
   SWM_PROFILE_SKIP_PERF=0 \
-    "$ROOT/scripts/pgo/profile-http-raw-linux.sh" "$RAW_DIR/hardware" "$PORT_BASE" >/dev/null
+    "$ROOT/benchmark/pgo/profile-http-raw-linux.sh" "$RAW_DIR/hardware" "$PORT_BASE" >/dev/null
   HARDWARE_SOURCE="independent stat-only run"
 fi
 
@@ -108,10 +108,11 @@ SWM_BENCH_SERVER_CPU="$SERVER_CPU" \
 SWM_BENCH_CLIENT_CPUS="$CLIENT_CPUS" \
 SWM_BENCH_CLIENT_WORKERS="$CLIENT_WORKERS" \
 SWM_BENCH_HARDWARE_SOURCE="$HARDWARE_SOURCE" \
-  node "$ROOT/scripts/pgo/collect-pgo-benchmark.js" "$RAW_DIR" "$OUT_DIR" "$CANDIDATE_BINARY"
+  node "$ROOT/benchmark/pgo/collect-pgo-benchmark.js" "$RAW_DIR" "$OUT_DIR" "$CANDIDATE_BINARY"
 
 cp "$RAW_DIR/hardware/perf-stat.csv" "$OUT_DIR/perf-stat.csv"
-node "$ROOT/scripts/pgo/generate-pgo-report.js" --directory "$OUT_DIR"
-node "$ROOT/scripts/pgo/check-pgo-benchmark.js" "$OUT_DIR"
+bash "$ROOT/benchmark/pgo/benchmark-upstream-feature-paths.sh" "$OUT_DIR/features"
+node "$ROOT/benchmark/pgo/generate-pgo-report.js" --directory "$OUT_DIR"
+node "$ROOT/benchmark/pgo/check-pgo-benchmark.js" "$OUT_DIR"
 
 echo "paired PGO benchmark complete: $OUT_DIR"

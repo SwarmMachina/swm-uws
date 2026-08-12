@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks'
 
 import { Metrics } from '@swarmmachina/benchkit/measurement'
 
-import { RequestPrefetchPlan, createApp, us_listen_socket_close, us_socket_local_port } from '../../lib/index.js'
+import { RequestPrefetchPlan, createApp, us_listen_socket_close, us_socket_local_port } from '../lib/index.js'
 
 const selectedCounts = [0, 1, 2, 4, 8]
 const selectedNames = Array.from({ length: 8 }, (_, index) => `x-selected-${index}`)

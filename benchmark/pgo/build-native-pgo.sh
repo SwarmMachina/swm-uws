@@ -56,7 +56,7 @@ LLVM_PROFILE_FILE="$PROFILE_DIR/ws-%p.profraw" npm run test:v8-ws
 LLVM_PROFILE_FILE="$PROFILE_DIR/server-%p.profraw" \
 SWM_PROFILE_METRICS="$SERVER_METRICS" \
 SWM_PROFILE_PORT="$PORT" \
-  node "$ROOT/scripts/pgo/profile-http-raw-server.js" >"$SERVER_LOG" 2>&1 &
+  node "$ROOT/benchmark/pgo/profile-http-raw-server.js" >"$SERVER_LOG" 2>&1 &
 server_pid=$!
 
 ready=0
@@ -76,7 +76,7 @@ if [[ "$ready" != "1" ]]; then
   exit 1
 fi
 
-node "$ROOT/scripts/pgo/profile-http-raw-load.js" \
+node "$ROOT/benchmark/pgo/profile-http-raw-load.js" \
   --host 127.0.0.1 \
   --port "$PORT" \
   --connections "$CONNECTIONS" \
@@ -86,7 +86,7 @@ node "$ROOT/scripts/pgo/profile-http-raw-load.js" \
   >"$PROFILE_DIR/training-get.json"
 
 if [[ "$PROFILE" == "balanced" ]]; then
-  node "$ROOT/scripts/pgo/profile-http-raw-load.js" \
+  node "$ROOT/benchmark/pgo/profile-http-raw-load.js" \
     --host 127.0.0.1 \
     --port "$PORT" \
     --method POST \
@@ -99,10 +99,10 @@ if [[ "$PROFILE" == "balanced" ]]; then
     >"$PROFILE_DIR/training-post.json"
 
   PORT="$PORT" CONNECTIONS="$CONNECTIONS" DEPTH=1 \
-    DURATION_MS="$((WS_DURATION * 1000))" node "$ROOT/scripts/benchmark/bench-ws.js" \
+    DURATION_MS="$((WS_DURATION * 1000))" node "$ROOT/benchmark/bench-ws.js" \
     >"$PROFILE_DIR/training-ws-closed.json"
   PORT="$PORT" CONNECTIONS="$CONNECTIONS" DEPTH=16 \
-    DURATION_MS="$((WS_DURATION * 1000))" node "$ROOT/scripts/benchmark/bench-ws.js" \
+    DURATION_MS="$((WS_DURATION * 1000))" node "$ROOT/benchmark/bench-ws.js" \
     >"$PROFILE_DIR/training-ws-depth16.json"
 fi
 
