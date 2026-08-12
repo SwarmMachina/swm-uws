@@ -6,8 +6,9 @@
 [![runtime dependencies](https://img.shields.io/badge/runtime_dependencies-0-brightgreen.svg)](#runtime-requirements)
 [![stability](https://img.shields.io/badge/stability-experimental-orange.svg)](#stability)
 
-Non-TLS HTTP and WebSocket V8 binding compatible with the standard
-uWebSockets.js `App()` API. Used by `swm-core`.
+A high-performance non-TLS HTTP and WebSocket binding compatible with the
+standard uWebSockets.js `App()` API. Used by
+[`@swarmmachina/swm-core`](https://www.npmjs.com/package/@swarmmachina/swm-core).
 
 The binding tracks uWebSockets.js `20.69.0`. See the
 [vendored revisions](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/VERSIONS.md),
@@ -16,44 +17,30 @@ and [TypeScript API](lib/index.d.ts).
 
 ## Features
 
-- Drop-in non-TLS compatibility with the standard uWebSockets.js `App()` API.
-- Native HTTP and WebSocket transport for Node.js 22 and 24.
-- TypeScript declarations with typed standalone callback helpers.
-- Zero-copy streaming and bounded native body collection.
-- Per-App native HTTP limits, phase-specific timeouts, and transport counters.
-- Generated responses omit the upstream fingerprint from headers and automatic parser errors.
-- Compiled selective request-header prefetch with owned lazy snapshots.
-- Batched responses and explicit capability detection.
-- Platform-specific prebuilds with no runtime dependencies.
+- **uWebSockets.js compatibility** - Non-TLS `App()` API for existing applications.
+- **Native HTTP + WebSocket transport** - Both protocols on Node.js 22 and 24.
+- **TypeScript declarations** - Typed APIs and helpers for standalone callbacks.
+- **Request-body control** - Zero-copy streaming, bounded collection, pause and resume.
+- **HTTP transport policy** - Per-`App` parser limits, timeouts, trusted proxy support, and counters.
+- **Optimized extensions** - Header prefetch, batched responses, and capability detection.
+- **Zero runtime dependencies** - Platform-specific native prebuilds are included.
 
 ## Installation
 
 ```bash
-npm install @swarmmachina/swm-uws
+pnpm add @swarmmachina/swm-uws
 ```
 
 ### Runtime requirements
 
-| Runtime | Support    |
-| ------- | ---------- |
-| Node.js | 22, 24     |
-| Linux   | x64, glibc |
-| Windows | x64        |
-| macOS   | arm64, x64 |
+The binding ships platform-specific native prebuilds:
 
-- No runtime npm dependencies; the package ships platform-specific native prebuilds.
-
-Not supported:
-
-- TLS / `SSLApp`.
-- `H3App`.
-- permessage-deflate and non-zero compression constants.
-- SNI.
-- Alpine/musl.
-- Windows ARM64.
-- Upstream worker descriptors, declarative responses, KV and timer helpers.
-
-Terminate TLS before traffic reaches the application.
+- **Node.js 22 or 24** - Other majors are rejected by the package engine constraint.
+- **Linux x64 with glibc** - Use a `bookworm`/`slim` image rather than Alpine/musl.
+- **Windows x64** and **macOS arm64/x64** are supported.
+- **Linux ARM64, Windows ARM64 and musl are not supported.**
+- **TLS, `SSLApp`, `H3App`, and WebSocket compression are disabled.** Terminate TLS
+  before the application.
 
 ## Quick Start
 
@@ -89,14 +76,17 @@ process.on('SIGTERM', () => {
 })
 ```
 
-Named imports are available:
+Named imports are also available:
 
 ```js
 import { App, us_listen_socket_close } from '@swarmmachina/swm-uws'
 ```
 
-Inline callbacks are typed by the IDE automatically. Use the identity helpers
-when declaring them separately:
+### Standalone callback types
+
+Inline route and WebSocket callbacks are inferred automatically. Wrap a
+separately declared callback with an identity helper to retain its contextual
+type:
 
 ```js
 import { defineHttpHandler, defineWebSocketBehavior } from '@swarmmachina/swm-uws'
@@ -112,12 +102,12 @@ const behavior = defineWebSocketBehavior({
 })
 ```
 
-## Drop-in alias
+## Drop-in compatibility
 
-Keep existing `uwebsockets.js` imports:
+Keep existing `uwebsockets.js` imports with an npm alias:
 
 ```sh
-npm install uwebsockets.js@npm:@swarmmachina/swm-uws
+pnpm add uwebsockets.js@npm:@swarmmachina/swm-uws
 ```
 
 ```js
@@ -125,22 +115,24 @@ import uWS from 'uwebsockets.js'
 // const uWS = require('uwebsockets.js')
 ```
 
-Use an explicit package import when the application also needs unsupported
-upstream features.
+Use the explicit `@swarmmachina/swm-uws` import when the application also
+depends on unsupported upstream features.
 
-## Contracts
+## API Documentation
 
-### HTTP transport policy
+The [TypeScript declarations](lib/index.d.ts) are the complete API reference.
+The sections below cover the binding-specific contracts.
 
-Configure parser limits and lifecycle timeouts independently for each `App`:
+### `App(options)`
+
+`App()` creates a non-TLS application. Route methods (`get`, `post`, `put`,
+`patch`, `del`, `options`, `head`, `connect`, `trace`, and `any`) return the
+same application instance. `app.close()` idempotently closes its listeners and
+active contexts.
+
+Configure HTTP parser and lifecycle limits per application:
 
 ```js
-const native = uWS.capabilities()
-
-if (!native.httpTransportConfig || !native.requestPrefetch) {
-  throw new Error('required native fast paths are unavailable')
-}
-
 const app = uWS.App({
   http: {
     maxHeaderSize: 16 * 1024,
@@ -149,45 +141,24 @@ const app = uWS.App({
     keepAliveTimeoutMs: 5_000,
     bodyIdleTimeoutMs: 10_000,
     minBodyRateBytesPerSec: 16 * 1024,
-    responseWriteTimeoutMs: 10_000,
-    trustedProxy: { header: 'x-forwarded-for', hops: 1 }
+    responseWriteTimeoutMs: 10_000
   }
 })
 ```
 
-Values are positive finite safe integers without coercion; `0` is rejected and
-`null` is accepted only as `minBodyRateBytesPerSec: null` to disable the body
-rate check. Unknown `http` fields throw synchronously during `App()`.
-`UWS_HTTP_MAX_HEADERS_SIZE` remains a deprecated fallback when
-`maxHeaderSize` is omitted. Explicit timeouts use the coarse four-second
-uSockets wheel, never expire before the configured deadline, and are limited
-to `956_000` ms so the wheel cannot wrap to a much shorter timeout.
+Header-limit failures return `431` before an HTTP or WebSocket handler runs.
+Read inexpensive per-application counters with `app.getHttpTransportStats()`:
 
-`trustedProxy` is an explicit listener trust boundary for ordinary nginx-style
-HTTP proxying. It is disabled by default. Enable it only when clients cannot
-reach the listener without passing through proxies that overwrite or sanitize
-the selected header. `x-forwarded-for` selects `hops` entries from the right
-(`1` is the rightmost value); `x-real-ip` accepts exactly one address and only
-`hops: 1`. Invalid or duplicate trusted headers receive `400`. Configuring a
-trusted HTTP header disables binary PROXY v2 parsing for that `App`. The
-compatibility methods
-`getProxiedRemoteAddress()` and `getProxiedRemoteAddressAsText()` expose the
-selected address; `getProxiedRemotePort()` returns `0` because these HTTP
-headers do not authenticate a source port. When `trustedProxy` is omitted, the
-listener preserves legacy binary PROXY v2 behavior, including its source
-address and port accessors. Use that legacy mode only on a listener unreachable
-except through a trusted PROXY-protocol peer.
-
-For a single nginx hop, bind the native listener to loopback or a private
-network, overwrite the address header at nginx, and trust only that header:
-
-```nginx
-location / {
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For "";
-    proxy_pass http://127.0.0.1:3000;
-}
+```js
+const stats = app.getHttpTransportStats()
+console.log(stats.headerTooLarge, stats.bodyRateViolations, stats.activeConnections)
 ```
+
+### Trusted proxies
+
+`trustedProxy` is disabled by default. Enable it only for a listener that is
+unreachable except through proxies that overwrite or sanitize the selected
+header:
 
 ```js
 const app = uWS.App({
@@ -195,48 +166,72 @@ const app = uWS.App({
 })
 ```
 
-For a fixed proxy chain, use `x-forwarded-for` with the exact number of
-trusted hops. Do not enable either mode on a listener that clients can reach
-directly; an HTTP header is trustworthy only because the ingress proxy
-replaces or sanitizes it.
+Use `x-forwarded-for` with an exact `hops` count for a fixed proxy chain. The
+selected address is available through `getProxiedRemoteAddress()` and
+`getProxiedRemoteAddressAsText()`; `getProxiedRemotePort()` is `0` for a
+selected header. If the configured header is absent, these methods fall back to
+the upstream peer address and port.
 
-Header limit failures return `431` before HTTP or WebSocket handlers run.
-Read inexpensive per-App counters when exporting metrics:
+### Requests and responses
+
+`HttpRequest` is valid only while its route or upgrade callback is running.
+Values returned by individual getters are owned JavaScript values and may be
+retained after the callback returns.
+
+| Request API                                    | Description                                     |
+| ---------------------------------------------- | ----------------------------------------------- |
+| `getMethod()`, `getUrl()`, `getQuery()`        | Request method, path, and query string.         |
+| `getHeader(name)`, `getParameter(indexOrName)` | Header and route parameter lookup.              |
+| `forEach(handler)`                             | Visits request headers.                         |
+| `prefetch(plan)`                               | Copies selected headers into an owned snapshot. |
+
+`HttpResponse` is invalid after `end`, a completing `tryEnd`, `close`, or
+`upgrade`. The binding owns `Content-Length` and `Transfer-Encoding`; setting
+either header manually throws.
 
 ```js
-const stats = app.getHttpTransportStats()
-console.log(stats.headerTooLarge, stats.bodyRateViolations, stats.activeConnections)
+app.get('/stream', (res) => {
+  res.beginWrite()
+  res.write('one')
+  res.end('two')
+})
 ```
 
-### Request lifetime
+Register `onWritable` before continuing a response after backpressure. A
+response may outlive a route callback only after registering `onData`,
+`onDataV2`, `onWritable`, `collectBody`, or `onAborted`.
 
-Request wrappers expire when the route or upgrade callback returns. Copy the
-individual values needed by asynchronous work while the callback is active:
+### Request bodies
+
+`onData` and `onDataV2` receive zero-copy `ArrayBuffer` chunks. Copy a chunk
+synchronously before retaining it.
+
+Use `collectBody` to receive one owned `ArrayBuffer` with a per-request limit:
 
 ```js
-app.get('/users/:id', (res, req) => {
-  const parameter = req.getParameter(0)
-  const userAgent = req.getHeader('user-agent')
-  let aborted = false
+const maxBodyBytes = 16 * 1024 * 1024
 
-  res.onAborted(() => {
-    aborted = true
-  })
+app.post('/echo', (res) => {
+  res.collectBody(maxBodyBytes, (body) => {
+    if (body === null) {
+      res.writeStatus('413 Payload Too Large').end()
+      return
+    }
 
-  setImmediate(() => {
-    if (aborted) return
-    console.log(parameter, userAgent)
-    res.end('ok')
+    res.end(Buffer.from(body))
   })
 })
 ```
 
-Values returned by `req.getMethod()`, `getUrl()`, `getQuery()`, `getHeader()` and
-`getParameter()` are owned JavaScript values and may outlive the native request
-wrapper.
+`maxSize` is an integer between `0` and `64 MiB` and bounds one request only.
+Use application-level admission control for a process-wide memory budget.
+`collectBodyWithLength` additionally returns the explicit `Content-Length`
+before body delivery; it returns `undefined` for chunked or absent lengths.
 
-For async consumers that need selected headers with duplicate/missing/empty
-semantics, compile a native plan once and prefetch only those fields:
+### Selected request headers
+
+Compile a selection once when asynchronous work needs request headers after
+the route callback has returned:
 
 ```js
 const plan = new uWS.RequestPrefetchPlan({
@@ -246,231 +241,193 @@ const plan = new uWS.RequestPrefetchPlan({
 app.get('/*', (res, req) => {
   const headers = req.prefetch(plan)
   res.onAborted(() => {})
+
   setImmediate(() => {
-    const authorization = headers.getHeader('authorization')
-    const traceparents = headers.getHeaderValues('traceparent')
-    res.end(JSON.stringify({ authorization, traceparents }))
+    res.end(headers.getHeader('authorization') ?? '')
   })
 })
 ```
 
-Plans normalize and deduplicate names once. Snapshots remain valid after the
-request callback, preserve duplicate wire order, distinguish missing
-(`undefined`) from empty (`''`), and copy no unselected headers. Use
-`getHeaders()` for a null-prototype last-value-wins record or
-`getHeaderEntries()` for all retained pairs in wire order. `headers: []`
-captures nothing; `headers: 'all'` captures every occurrence.
+Snapshots preserve duplicate wire order. `getHeaderValues()` returns all
+values, `getHeaders()` returns a null-prototype last-value-wins record, and
+`getHeaderEntries()` returns all retained pairs in wire order.
 
-### Streaming data
+### WebSockets
 
-`onData` and `onDataV2` receive zero-copy `ArrayBuffer`s. They are detached
-after the callback:
+`app.ws(path, behavior)` accepts the standard uWebSockets.js lifecycle
+callbacks: `upgrade`, `open`, `message`, `dropped`, `drain`, `ping`, `pong`,
+`subscription`, and `close`. WebSocket message and control-frame buffers are
+transport-owned; copy them before retaining them.
+
+Adding an `upgrade` callback makes the application responsible for validating
+the complete WebSocket handshake before it calls `res.upgrade()`.
+
+The non-TLS binding supports `DISABLED` (`0`) as its only compression option.
+Use `maxPayloadLength`, `idleTimeout`, `maxBackpressure`,
+`closeOnBackpressureLimit`, and `maxLifetime` to set per-route limits.
+
+### Binding extensions
+
+Check optional binding extensions before depending on them across compatible
+uWebSockets.js implementations:
 
 ```js
-res.onData((chunk, isLast) => {
-  const owned = Buffer.from(new Uint8Array(chunk))
-  // keep `owned`, not `chunk`
+const native = uWS.capabilities()
+
+if (!native.httpTransportConfig || !native.requestPrefetch) {
+  throw new Error('required native extensions are unavailable')
+}
+```
+
+| Capability            | API                                                               |
+| --------------------- | ----------------------------------------------------------------- |
+| `beginWrite`          | `res.beginWrite()` selects explicit streaming.                    |
+| `collectBody`         | `res.collectBody(maxBytes, callback)` retains one complete body.  |
+| `collectBodyLength`   | `res.collectBodyWithLength()` exposes the declared body length.   |
+| `httpTransportConfig` | `App({ http })` applies parser and lifecycle policy.              |
+| `requestPrefetch`     | `req.prefetch(plan)` copies selected headers.                     |
+| `responseBatch`       | `res.endBatch(status, headers, body)` writes a prepared response. |
+| `requestPause`        | `res.pause()` and `res.resume()` control body delivery.           |
+
+## Examples
+
+Each example below is a separate server fragment. Start its application with
+the `listen()` call from Quick Start.
+
+### JSON route with parameters
+
+Use named route parameters and `cork()` to prepare a small JSON response in
+one native write:
+
+```js
+import uWS from '@swarmmachina/swm-uws'
+
+const app = uWS.App()
+
+app.get('/users/:id', (res, req) => {
+  const body = JSON.stringify({
+    id: req.getParameter('id'),
+    verbose: req.getQuery('verbose') === 'true'
+  })
+
+  res.cork(() => {
+    res.writeStatus('200 OK')
+    res.writeHeader('content-type', 'application/json')
+    res.end(body)
+  })
 })
 ```
 
-Responses stay alive after a route callback only after registering `onData`,
-`onDataV2`, `onWritable`, `collectBody`, or `onAborted`.
+### Streaming an upload
 
-### Body collection
+`onData` delivers transport-owned chunks. Consume or copy each chunk before
+the callback returns:
 
 ```js
-const maxBodyBytes = 16 * 1024 * 1024
+import { createHash } from 'node:crypto'
+import uWS from '@swarmmachina/swm-uws'
 
-res.collectBody(maxBodyBytes, (body) => {
-  if (body === null) {
-    res.writeStatus('413 Payload Too Large')
-    return res.end('request body too large', true)
+const app = uWS.App()
+
+app.post('/upload', (res) => {
+  const hash = createHash('sha256')
+  let aborted = false
+
+  res.onAborted(() => {
+    aborted = true
+  })
+
+  res.onData((chunk, isLast) => {
+    hash.update(new Uint8Array(chunk))
+
+    if (isLast && !aborted) {
+      res.writeHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ sha256: hash.digest('hex') }))
+    }
+  })
+})
+```
+
+### Download with backpressure
+
+When the socket is full, resume a known-length response from the offset passed
+to `onWritable`:
+
+```js
+import { readFile } from 'node:fs/promises'
+import uWS from '@swarmmachina/swm-uws'
+
+const app = uWS.App()
+const body = await readFile(new URL('./report.csv', import.meta.url))
+
+app.get('/report.csv', (res) => {
+  let aborted = false
+
+  res.onAborted(() => {
+    aborted = true
+  })
+
+  const write = (offset) => {
+    if (aborted) return true
+
+    const [ok, done] = res.tryEnd(body.subarray(offset), body.length)
+    return ok || done
   }
 
-  res.end(Buffer.from(body))
+  res.writeHeader('content-type', 'text/csv')
+  res.onWritable(write)
+  write(0)
 })
 ```
 
-```text
-maxSize: integer bytes, 0..64 MiB, per request
-native body memory grows with bytes actually received, not declared Content-Length
-```
+### Prepared batch response
 
-Use application-level admission control for a global memory limit.
-
-### Response framing
-
-`Content-Length` and `Transfer-Encoding` are set by response methods:
+Use `endBatch()` when status and headers are already available as flat
+name/value pairs:
 
 ```js
-res.end('ok') // Content-Length: 2
+import uWS from '@swarmmachina/swm-uws'
 
-res.beginWrite()
-res.write('one')
-res.end('two') // chunked
-```
+const app = uWS.App()
 
-Manual framing headers are rejected:
+const jsonHeaders = ['content-type', 'application/json', 'cache-control', 'no-store']
 
-```js
-res.writeHeader('content-length', '2') // throws
-res.writeHeader('transfer-encoding', 'chunked') // throws
-res.endBatch('200 OK', ['content-length', '2'], 'ok') // throws
-```
-
-### Callback failures
-
-If a callback throws, Node.js receives the original exception. The binding
-stops the current request or socket sequence and invalidates the affected
-wrapper.
-
-Valid `onWritable` results remain distinct:
-
-```js
-const body = Buffer.from(largePayload)
-
-res.onWritable((offset) => {
-  const [ok, done] = res.tryEnd(body.subarray(offset), body.length)
-  return ok || done
+app.get('/health', (res) => {
+  res.endBatch('200 OK', jsonHeaders, '{"ok":true}')
 })
 ```
 
-### WebSocket user data
+`Content-Length` and `Transfer-Encoding` remain managed by the binding and
+must not be included in `jsonHeaders`.
 
-For user data passed to `upgrade()`:
+### WebSocket topics
 
-- own string and symbol descriptors are copied once;
-- inherited properties are skipped;
-- accessors are copied without invocation;
-- binding methods such as `send` cannot be shadowed.
-
-### Capabilities
+Subscribe each connection to a chat topic and broadcast text messages to it:
 
 ```js
-uWS.capabilities()
-// {
-//   beginWrite: true,
-//   collectBody: true,
-//   httpTransportConfig: true,
-//   requestPrefetch: true,
-//   responseBatch: true,
-//   requestPause: true
-// }
+import uWS from '@swarmmachina/swm-uws'
+
+const app = uWS.App()
+
+app.ws('/chat', {
+  maxPayloadLength: 1024 * 1024,
+  idleTimeout: 60,
+
+  open(ws) {
+    ws.subscribe('chat')
+    ws.send(JSON.stringify({ type: 'welcome' }))
+  },
+
+  message(_ws, message, isBinary) {
+    if (!isBinary) app.publish('chat', message, false)
+  }
+})
 ```
 
-The six flags describe binding extensions; consumers should negotiate them
-instead of assuming that every compatible binding implements the extension:
+## Testing
 
-| Capability            | Short use                                                                                                                                         |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `beginWrite`          | `res.beginWrite()` selects explicit streaming before `write()`.                                                                                   |
-| `collectBody`         | `res.collectBody(maxBytes, callback)` retains one complete body.                                                                                  |
-| `httpTransportConfig` | `App({ http: { maxHeaderCount: 64 } })` applies per-App parser policy.                                                                            |
-| `requestPrefetch`     | `req.prefetch(new RequestPrefetchPlan({ headers: ['authorization'] }))` retains selected headers.                                                 |
-| `responseBatch`       | `res.endBatch(status, preparedHeaderLines, body)` combines a prepared response; consumers should keep it opt-in until their own perf gate passes. |
-| `requestPause`        | `res.pause()` / `res.resume()` controls incoming request-body delivery.                                                                           |
-
-## Development
-
-```sh
-npm ci
-npm run build:native
-npm run check
-npm run check:cpp
+```bash
 npm test
-npm run test:v8-http
-npm run test:v8-ws
-npm run test:types
-npm run test:package
-npm run deps:check:vendor
-```
-
-`check:cpp` requires LLVM 18+ (`clang-format` and `clang-tidy`), prefers the
-versioned LLVM 18 toolchain (including Homebrew's keg-only `llvm@18`), and checks
-only first-party `src/` files. Use `npm run fix:cpp` to apply the shared C++ format.
-
-```sh
-# Full prepublish validation
-npm run release:gate
-```
-
-## Linux release build
-
-Portable generic x86-64 Clang 18 PGO+LTO:
-
-```sh
-# Requires clang-18, libclang-rt-18-dev and llvm-profdata-18
-npm run build:native:pgo
-
-# Build Node ABI 127 and 137 prebuilds with Docker
-npm run build:prebuilds
-```
-
-```sh
-# GET-only training
-SWM_PGO_PROFILE=synthetic npm run build:native:pgo
-```
-
-Release CI runs PGO on native x86-64 hosts. The current working tree measured
-`+12.71%` paired raw-GET throughput over pinned upstream uWebSockets.js
-20.69.0 on isolated Node 22 Linux; all 10 paired rounds favored swm-uws, with
-lower p95, p99, and RSS. See the generated
-[`Linux PGO report`](https://github.com/SwarmMachina/swm-uws/blob/master/benchmark/profiles/pgo-balanced-linux/report.md)
-and the broader
-[`Linux refactor qualification`](benchmark/profiles/refactor-linux/report.md).
-
-## Profiling
-
-```sh
-npm run profile:http-raw:linux -- /tmp/http-raw-swm
-
-# Optional
-FLAMEGRAPH_DIR=/path/to/FlameGraph
-SWM_PROFILE_FREQUENCY=199
-SWM_PROFILE_CALL_GRAPH=fp # or dwarf
-SWM_PROFILE_SKIP_PERF=1
-
-npm run bench:report
-npm run bench:report:check
-```
-
-Defaults: concurrency 100, pipelining 10, 2-second warmup, 5-second measurement.
-Release CI also runs an independent `perf stat` measurement for cycles,
-instructions, branches, and cache events. Its dedicated Linux runner requires
-`kernel.perf_event_paranoid=1` or an equivalent scoped `CAP_PERFMON` policy.
-
-Selective request prefetch (separate target/load processes, balanced ABBA/BAAB blocks):
-
-```sh
-npm run bench:prefetch -- --quick
-```
-
-Node 22/24 reports are under
-[`benchmark/request-prefetch`](benchmark/request-prefetch/). With 20 incoming
-headers and two selected fields, materialized native prefetch measured `+15.4%`
-over `req.forEach()` plus JS filtering. Creating a snapshot that is never used
-measured `-37.9%` to `-40.6%`, so prefetch should remain opt-in per route.
-
-Native before/after comparison with throughput, p95/p99, target ELU and memory:
-
-```sh
-npm run bench:native:abba -- \
-  --baseline /path/to/before.node \
-  --candidate build/Release/swm_uws.node \
-  --blocks 6 \
-  --connections 100 \
-  --pipelining 10 \
-  --warmupMs 2000 \
-  --durationMs 10000 \
-  --workers 4 \
-  --serverCpu 2
-```
-
-## Updating upstream
-
-```sh
-npm run deps:update:vendor -- v20.69.0
-npm run deps:check:vendor
 ```
 
 ## Stability
@@ -481,15 +438,18 @@ tests.
 
 ## Contributing
 
-Run `npm run release:gate` before opening a pull request. Changes to vendored
-upstream code must retain the applicable licenses and be documented in
-[vendor/PATCHES.md](vendor/PATCHES.md).
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License
 
-[MPL-2.0](LICENSE) for first-party code.
-
-Vendored licenses and notices:
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Licensed under the MPL-2.0 License.
 
 Copyright Contributors to SwarmMachina.
+
+See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
