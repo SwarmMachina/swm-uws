@@ -13,6 +13,7 @@ let nativeSocket
 let detachedMessage
 let openCount = 0
 let closeCount = 0
+let asyncAbortCount = 0
 
 const subscriptions = []
 
@@ -68,6 +69,23 @@ app.ws('/ws', {
   }
 })
 
+app.ws('/async', {
+  async upgrade(res, req, context) {
+    res.onAborted(() => {
+      asyncAbortCount++
+    })
+    const key = req.getHeader('sec-websocket-key')
+    const protocol = req.getHeader('sec-websocket-protocol')
+    const extensions = req.getHeader('sec-websocket-extensions')
+
+    await Promise.resolve()
+    res.upgrade({ connectionId: 'async-upgrade' }, key, protocol, extensions, context)
+  },
+  open(ws) {
+    ws.send(ws.connectionId)
+  }
+})
+
 let listenSocket
 
 await new Promise((resolve, reject) => {
@@ -118,6 +136,17 @@ await withTimeout(closed, 5_000, 'native close callback timed out')
 assert.equal(closeCount, 1)
 assert.equal(app.numSubscribers('room'), 0)
 assert.throws(() => nativeSocket.send('late'), /WebSocket is no longer valid/)
+
+const asyncClient = new WebSocket(`ws://127.0.0.1:${port}/async`)
+const asyncGreeting = nextWebSocketMessage(asyncClient)
+
+await nextWebSocketEvent(asyncClient, 'open')
+assert.equal(await asyncGreeting, 'async-upgrade')
+const asyncClosed = nextWebSocketEvent(asyncClient, 'close')
+
+asyncClient.close()
+await asyncClosed
+assert.equal(asyncAbortCount, 0)
 
 us_listen_socket_close(listenSocket)
 app.close()

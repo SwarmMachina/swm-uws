@@ -1,9 +1,6 @@
 #include "binding_environment.h"
 
 #include "app_state.h"
-#include "upgrade_context_scope.h"
-
-#include <algorithm>
 
 namespace swm::binding {
 
@@ -39,25 +36,6 @@ std::optional<int> BindingEnvironment::ListenSocketLocalPort(v8::Local<v8::Value
         if (port) return port;
     }
     return std::nullopt;
-}
-
-us_socket_context_t *
-BindingEnvironment::ResolveUpgradeContext(v8::Local<v8::Value> token,
-                                          uWS::HttpResponse<false> *response) const {
-    for (auto iterator = activeUpgradeContexts_.rbegin(); iterator != activeUpgradeContexts_.rend();
-         ++iterator) {
-        if ((*iterator)->Matches(token, response)) return (*iterator)->NativeContext();
-    }
-    return nullptr;
-}
-
-void BindingEnvironment::RegisterUpgradeContext(UpgradeContextScope *scope) {
-    activeUpgradeContexts_.push_back(scope);
-}
-
-void BindingEnvironment::UnregisterUpgradeContext(UpgradeContextScope *scope) {
-    auto iterator = std::find(activeUpgradeContexts_.begin(), activeUpgradeContexts_.end(), scope);
-    if (iterator != activeUpgradeContexts_.end()) activeUpgradeContexts_.erase(iterator);
 }
 
 } // namespace swm::binding

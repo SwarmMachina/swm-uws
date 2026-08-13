@@ -20,10 +20,15 @@ bool ResponseStillMatches(const FunctionCallbackInfo<Value> &args, HttpResponse 
 }
 
 void InvalidateResponseObject(Local<Object> object) {
-    auto *metadata = static_cast<ResponseMetadata *>(GetInternalPointer(object, 2));
-    if (metadata && metadata->callbackLifetime) metadata->callbackLifetime->Invalidate();
+    // A normal response can finish before the JavaScript route callback returns.
+    // The route scope owns request invalidation; close and upgrade invalidate it early below.
     SetInternalPointer(object, nullptr, 0);
     SetInternalPointer(object, nullptr, 2);
+}
+
+void InvalidateRequestLifetime(Local<Object> responseObject) {
+    ResponseMetadata *metadata = GetResponseMetadata(responseObject);
+    if (metadata && metadata->callbackLifetime) metadata->callbackLifetime->Invalidate();
 }
 
 ResponseMetadata *GetResponseMetadata(Local<Object> object) {
@@ -156,6 +161,7 @@ void ResponseClose(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(args.GetIsolate(), "res.close() does not accept arguments");
         return;
     }
+    InvalidateRequestLifetime(args.This());
     auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
     std::shared_ptr<AsyncResponseState> asyncState =
         async ? async->shared_from_this() : std::shared_ptr<AsyncResponseState>();
@@ -629,20 +635,21 @@ void ResponseUpgrade(const FunctionCallbackInfo<Value> &args) {
                        "res.upgrade() key, protocol and extensions expect strings or buffers");
         return;
     }
-    auto *environment = static_cast<BindingEnvironment *>(args.Data().As<External>()->Value());
-    us_socket_context_t *socketContext = environment->ResolveUpgradeContext(args[4], response);
-    if (!socketContext) {
+    ResponseMetadata *metadata = GetResponseMetadata(args.This());
+    std::shared_ptr<UpgradeContext> upgradeContext = metadata->upgradeContext;
+    if (!upgradeContext || !upgradeContext->Matches(args[4], response)) {
         ThrowTypeError(isolate,
                        "res.upgrade() expects the active WebSocket upgrade context for this "
                        "response");
         return;
     }
-    ResponseMetadata *metadata = GetResponseMetadata(args.This());
+    us_socket_context_t *socketContext = upgradeContext->NativeContext();
     auto socketState = std::make_shared<SocketState>(isolate, *metadata->app);
     socketState->SetUserData(args[0]);
     auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
     std::shared_ptr<AsyncResponseState> asyncState =
         async ? async->shared_from_this() : std::shared_ptr<AsyncResponseState>();
+    InvalidateRequestLifetime(args.This());
     if (asyncState) InvalidateAsyncResponse(asyncState);
     else InvalidateResponseObject(args.This());
     response->upgrade<PerSocketData>(PerSocketData{std::move(socketState)},
@@ -889,7 +896,7 @@ void InitializeResponseBinding(BindingEnvironment *context, Local<External> cont
     SetPrototypeMethod(
         isolate, response, "getProxiedRemoteAddressAsText", ResponseGetProxiedRemoteAddressAsText);
     SetPrototypeMethod(isolate, response, "getProxiedRemotePort", ResponseGetProxiedRemotePort);
-    SetPrototypeMethod(isolate, response, "upgrade", ResponseUpgrade, contextExternal);
+    SetPrototypeMethod(isolate, response, "upgrade", ResponseUpgrade);
     SetPrototypeMethod(isolate, response, "onData", ResponseOnData);
     SetPrototypeMethod(isolate, response, "onDataV2", ResponseOnDataV2);
     SetPrototypeMethod(isolate, response, "collectBody", ResponseCollectBody);

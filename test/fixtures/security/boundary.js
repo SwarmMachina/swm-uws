@@ -3,6 +3,40 @@ import assert from 'node:assert/strict'
 import { RequestPrefetchPlan, createApp, us_listen_socket_close, us_socket_local_port } from '../../../lib/index.js'
 
 export const boundaryCases = {
+  async 'upgrade-async-context'(fixture) {
+    const { app } = fixture
+
+    let abortedCount = 0
+
+    app.ws('/async', {
+      async upgrade(res, req, context) {
+        res.onAborted(() => {
+          abortedCount++
+        })
+        const key = req.getHeader('sec-websocket-key')
+        const protocol = req.getHeader('sec-websocket-protocol')
+        const extensions = req.getHeader('sec-websocket-extensions')
+
+        await Promise.resolve()
+        res.upgrade({ ready: true }, key, protocol, extensions, context)
+      },
+      open(ws) {
+        ws.send(ws.ready ? 'ready' : 'missing')
+      }
+    })
+
+    const port = await fixture.listen()
+    const client = new WebSocket(`ws://127.0.0.1:${port}/async`)
+    const message = await fixture.event(client, 'message')
+
+    assert.equal(message.data, 'ready')
+    const closed = fixture.event(client, 'close')
+
+    client.close()
+    await closed
+    assert.equal(abortedCount, 0)
+  },
+
   async 'filter-reentrant-registration'(fixture) {
     const { app } = fixture
 

@@ -18,7 +18,7 @@
 #include "response_callback_lifetime.h"
 #include "response_metadata.h"
 #include "socket_state.h"
-#include "upgrade_context_scope.h"
+#include "upgrade_context.h"
 
 #include <algorithm>
 #include <array>

@@ -1,6 +1,27 @@
 import assert from 'node:assert/strict'
 
 export const requestCases = {
+  async 'request-after-response-end'(fixture) {
+    const { app } = fixture
+
+    let retainedRequest
+
+    app.get('/end', (res, req) => {
+      retainedRequest = req
+      res.end('ok')
+      assert.equal(req.getHeader('host'), 'localhost')
+      assert.equal(req.getUrl(), '/end')
+    })
+
+    const port = await fixture.listen()
+    const response = await fixture.rawRequest(port, [
+      'GET /end HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'
+    ])
+
+    assert.match(response, /ok$/)
+    assert.throws(() => retainedRequest.getUrl(), /HTTP request is no longer valid/)
+  },
+
   async 'request-for-each-reentrant-app-close'(fixture) {
     const { app } = fixture
 

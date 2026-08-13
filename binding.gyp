@@ -20,7 +20,7 @@
         "src/request_prefetch_snapshot.cpp",
         "src/response_callback_lifetime.cpp",
         "src/response_binding.cpp",
-        "src/upgrade_context_scope.cpp",
+        "src/upgrade_context.cpp",
         "src/websocket_binding.cpp",
         "vendor/uSockets/src/bsd.c",
         "vendor/uSockets/src/context.c",

@@ -700,12 +700,16 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
             Local<Object> requestObject = context->CloneRequestTemplate();
             ResponseCallbackLifetime callbackLifetime{state};
             ResponseMetadata responseMetadata{state, &callbackLifetime};
+            // Promotion copies the shared handle into AsyncResponseState, keeping the
+            // response-bound token valid across an awaited upgrade callback.
+            responseMetadata.upgradeContext =
+                std::make_shared<UpgradeContext>(callbackIsolate, response, socketContext);
             SetInternalPointer(responseObject, response, 0);
             SetInternalPointer(responseObject, &responseMetadata, 2);
             SetInternalPointer(requestObject, request);
             SetInternalPointer(requestObject, &callbackLifetime, 2);
-            UpgradeContextScope upgradeContext(*context, response, socketContext);
-            Local<Value> argv[] = {responseObject, requestObject, upgradeContext.Token()};
+            Local<Value> argv[] = {
+                responseObject, requestObject, responseMetadata.upgradeContext->Token()};
             const bool callbackSucceeded =
                 CallJs(callbackIsolate, upgrade->Get(callbackIsolate), 3, argv);
             callbackLifetime.Invalidate();
