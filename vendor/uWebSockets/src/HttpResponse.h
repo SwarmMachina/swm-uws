@@ -603,6 +603,14 @@ public:
              * from here downwards. The corking is done with corkUnchecked() in upgrade. It steals cork. */
             auto *newCorkedSocket = loopData->corkedSocket;
 
+            /* The handler can close either the HTTP socket or a reallocated
+             * upgraded socket. Only inspect the current corked allocation. */
+            if (newCorkedSocket &&
+                us_socket_is_closed(SSL, (us_socket_t *) newCorkedSocket)) {
+                static_cast<Super *>(newCorkedSocket)->uncork();
+                return static_cast<HttpResponse *>(newCorkedSocket);
+            }
+
             /* If nobody is corked, it means most probably that large amounts of data has
              * been written and the cork buffer has already been sent off and uncorked.
              * We are done here, if that is the case. */

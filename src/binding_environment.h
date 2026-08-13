@@ -5,15 +5,17 @@
 #include <v8.h>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace swm::binding {
 
 class AppState;
+class UpgradeContextScope;
 
 class BindingEnvironment final {
 public:
-    explicit BindingEnvironment(v8::Isolate *isolate) noexcept : isolate_(isolate) {}
+    explicit BindingEnvironment(v8::Isolate *isolate) noexcept;
 
     ~BindingEnvironment();
 
@@ -97,9 +99,17 @@ public:
     }
 
     AppState *OwnApp(std::unique_ptr<AppState> app);
-    void ForgetListenSocket(us_listen_socket_t *socket);
+    [[nodiscard]] bool CloseListenSocket(v8::Local<v8::Value> token);
+    [[nodiscard]] std::optional<int> ListenSocketLocalPort(v8::Local<v8::Value> token) const;
+    [[nodiscard]] us_socket_context_t *
+    ResolveUpgradeContext(v8::Local<v8::Value> token, uWS::HttpResponse<false> *response) const;
 
 private:
+    friend class UpgradeContextScope;
+
+    void RegisterUpgradeContext(UpgradeContextScope *scope);
+    void UnregisterUpgradeContext(UpgradeContextScope *scope);
+
     class ValidatedStringCache final {
     public:
         [[nodiscard]] bool Matches(v8::Isolate *isolate, v8::Local<v8::String> value) const {
@@ -125,6 +135,7 @@ private:
     ValidatedStringCache responseHeaderNameValidation_;
     ValidatedStringCache responseHeaderValueValidation_;
     std::vector<std::unique_ptr<AppState>> apps_;
+    std::vector<UpgradeContextScope *> activeUpgradeContexts_;
 };
 
 } // namespace swm::binding

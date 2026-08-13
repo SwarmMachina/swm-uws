@@ -28,6 +28,7 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
   app.get('/empty', (res) => res.end())
   app.get('/exact', (res) => {
     assert.deepEqual(res.tryEnd('exact', 5), [true, true])
+    assert.throws(() => res.getWriteOffset(), /HTTP response is no longer valid/)
   })
   app.get('/larger', (res) => {
     assert.throws(() => res.tryEnd('oversized', 4), /exceeds or conflicts/)

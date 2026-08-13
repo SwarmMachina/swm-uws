@@ -23,7 +23,7 @@ export interface ListenSocket {
   readonly [listenSocketBrand]: true
 }
 
-/** Opaque native socket accepted by {@link us_socket_local_port}. */
+/** Upstream-compatible opaque native socket marker. */
 export interface Socket {
   readonly [socketBrand]: true
 }
@@ -523,7 +523,7 @@ export interface TrustedProxyOptions {
 
 /** Per-application HTTP parser and lifecycle policy. */
 export interface HttpTransportOptions {
-  /** Maximum bytes in the request line and all request header fields. */
+  /** Maximum bytes in the request line and all request header fields, up to `64 MiB`. */
   maxHeaderSize?: number
 
   /** Maximum number of request header fields, excluding parser sentinel slots. */
@@ -657,8 +657,8 @@ export function createApp(options?: AppOptions): AppInstance
 /** Closes a native listen token. */
 export function us_listen_socket_close(socket: ListenSocket): void
 
-/** Returns the local port associated with a native socket or listen token. */
-export function us_socket_local_port(socket: Socket | ListenSocket): number
+/** Returns the local port associated with a live native listen token. */
+export function us_socket_local_port(socket: ListenSocket): number
 
 /** Native exclusive-port listen flag. */
 export const LIBUS_LISTEN_EXCLUSIVE_PORT: 1

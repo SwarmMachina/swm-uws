@@ -18,6 +18,7 @@
 #ifndef UWS_TOPICTREE_H
 #define UWS_TOPICTREE_H
 
+#include <cstdint>
 #include <map>
 #include <list>
 #include <iostream>
@@ -84,13 +85,19 @@ struct TopicTree {
         FIRST = 2
     };
 
+    struct SubscriptionChange {
+        std::string topic;
+        int newCount;
+        int oldCount;
+    };
+
     /* Whomever is iterating this topic is locked to not modify its own list */
     Subscriber *iteratingSubscriber = nullptr;
 
 private:
 
-    /* The drain callback must not publish, unsubscribe or subscribe.
-     * It must only cork, uncork, send, write */
+    /* Drain callbacks can enter user code via WebSocket::send. Topology changes
+     * stop the current traversal before any invalidated iterator is advanced. */
     std::function<bool(Subscriber *, T &, IteratorFlags)> cb;
 
     /* The topics */
@@ -102,6 +109,17 @@ private:
     /* Palette of outgoing messages, up to 64k */
     std::vector<T> outgoingMessages;
 
+    /* Invalidates subscriber iterators when a callback mutates topic membership. */
+    std::uint64_t topologyVersion = 0;
+
+    /* Invalidates message indices when a nested drain clears the shared palette. */
+    std::uint64_t outgoingMessagesVersion = 0;
+
+    void clearOutgoingMessages() {
+        outgoingMessages.clear();
+        outgoingMessagesVersion++;
+    }
+
     void checkIteratingSubscriber(Subscriber *s) {
         /* Notify user that they are doing something wrong here */
         if (iteratingSubscriber == s) {
@@ -111,7 +129,7 @@ private:
     }
 
     /* Warning: does NOT unlink from drainableSubscribers or modify next, prev. */
-    void drainImpl(Subscriber *s) {
+    bool drainImpl(Subscriber *s) {
         /* Before we call cb we need to make sure this subscriber will not report needsDrainage()
          * since WebSocket::send will call drain from within the cb in that case.*/
         int numMessageIndices = s->numMessageIndices;
@@ -124,10 +142,16 @@ private:
             int flags = (i == numMessageIndices - 1) ? LAST : 0;
 
             /* Returning true will stop drainage short (such as when backpressure is too high) */
-            if (cb(s, outgoingMessage, (IteratorFlags)(flags | (i == 0 ? FIRST : 0)))) {
-                break;
+            std::uint64_t topologyVersionBeforeCallback = topologyVersion;
+            std::uint64_t outgoingMessagesVersionBeforeCallback = outgoingMessagesVersion;
+            if (cb(s, outgoingMessage, (IteratorFlags)(flags | (i == 0 ? FIRST : 0))) ||
+                topologyVersionBeforeCallback != topologyVersion ||
+                outgoingMessagesVersionBeforeCallback != outgoingMessagesVersion) {
+                return true;
             }
         }
+
+        return false;
     }
 
     void unlinkDrainableSubscriber(Subscriber *s) {
@@ -177,6 +201,7 @@ public:
             return nullptr;
         }
         topicPtr->insert(s);
+        topologyVersion++;
 
         /* Success */
         return topicPtr;
@@ -198,6 +223,7 @@ public:
         if (s->topics.erase(topicPtr) == 0) {
             return {false, false, -1};
         }
+        topologyVersion++;
 
         /* Remove us from topic */
         topicPtr->erase(s);
@@ -219,12 +245,25 @@ public:
         return new Subscriber();
     }
 
-    /* This is used to end a Subscriber, before freeing it */
-    void freeSubscriber(Subscriber *s) {
+    /* This is used to end a Subscriber, before freeing it. When requested,
+     * removal notifications are copied before any Topic can be deleted so
+     * user callbacks can run only after the topology is stable. */
+    std::vector<SubscriptionChange> freeSubscriber(Subscriber *s, bool captureChanges = false) {
+        std::vector<SubscriptionChange> changes;
 
         /* I guess we call this one even if we are not subscribers */
         if (!s) {
-            return;
+            return changes;
+        }
+
+        topologyVersion++;
+        if (captureChanges) {
+            changes.reserve(s->topics.size());
+            for (Topic *topicPtr : s->topics) {
+                changes.push_back({topicPtr->name,
+                                   (int)topicPtr->size() - 1,
+                                   (int)topicPtr->size()});
+            }
         }
 
         /* For all topics, unsubscribe */
@@ -244,10 +283,11 @@ public:
         }
 
         delete s;
+        return changes;
     }
 
     /* Mainly used by WebSocket::send to drain one socket before sending */
-    void drain(Subscriber *s) {
+    bool drain(Subscriber *s) {
         /* The list is undefined and cannot be touched unless needsDrainage(). */
         if (s->needsDrainage()) {
             /* This function differs from drainImpl by properly unlinking
@@ -256,28 +296,31 @@ public:
 
             /* This one always resets needsDrainage before it calls any cb's.
              * Otherwise we would stackoverflow when sending after publish but before drain. */
-            drainImpl(s);
-            
+            bool stopped = drainImpl(s);
+
             /* If we drained last subscriber, also clear outgoingMessages */
             if (!drainableSubscribers) {
-                outgoingMessages.clear();
+                clearOutgoingMessages();
             }
+            return stopped;
         }
+        return false;
     }
 
     /* Called everytime we call send, to drain published messages so to sync outgoing messages */
-    void drain() {
-        if (drainableSubscribers) {
-            /* Drain one socket a time */
-            for (Subscriber *s = drainableSubscribers; s; s = s->next) {
-                /* Instead of unlinking every single subscriber, we just leave the list undefined
-                 * and reset drainableSubscribers ptr below. */
-                drainImpl(s);
+    bool drain() {
+        while (drainableSubscribers) {
+            Subscriber *s = drainableSubscribers;
+            unlinkDrainableSubscriber(s);
+            if (drainImpl(s)) {
+                if (!drainableSubscribers) {
+                    clearOutgoingMessages();
+                }
+                return true;
             }
-            /* Drain always clears drainableSubscribers and outgoingMessages */
-            drainableSubscribers = nullptr;
-            outgoingMessages.clear();
         }
+        clearOutgoingMessages();
+        return false;
     }
 
     /* Big messages bypass all buffering and land directly in backpressure */
@@ -294,7 +337,11 @@ public:
 
             /* If we are sender then ignore us */
             if (sender != s) {
+                std::uint64_t versionBeforeCallback = topologyVersion;
                 cb(s, bigMessage);
+                if (versionBeforeCallback != topologyVersion) {
+                    return true;
+                }
             }
         }
 
@@ -303,17 +350,19 @@ public:
 
     /* Linear in number of affected subscribers */
     bool publish(Subscriber *sender, std::string_view topic, T &&message) {
-        /* Do we even have this topic? */
-        auto it = topics.find(topic);
-        if (it == topics.end()) {
-            return false;
-        }
-
         /* If we have more than 65k messages we need to drain every socket. */
         if (outgoingMessages.size() == UINT16_MAX) {
             /* If there is a socket that is currently corked, this will be ugly as all sockets will drain
              * to their own backpressure */
-            drain();
+            if (drain()) {
+                return false;
+            }
+        }
+
+        /* Do we even have this topic? Re-resolve after drain callbacks. */
+        auto it = topics.find(topic);
+        if (it == topics.end()) {
+            return false;
         }
 
         /* If nobody references this message, don't buffer it */
@@ -331,7 +380,9 @@ public:
                 /* If we already have too many outgoing messages on this subscriber, drain it now */
                 if (s->numMessageIndices == 32) {
                     /* This one does not need to check needsDrainage here but still does. */
-                    drain(s);
+                    if (drain(s)) {
+                        return referencedMessage;
+                    }
                 }
 
                 /* Finally we can continue */

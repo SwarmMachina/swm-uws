@@ -664,7 +664,13 @@ private:
                     /* Go ahead and parse it (todo: better heuristics for emitting FIN to the app level) */
                     std::string_view dataToConsume(data, length);
                     for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
-                        dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
+                        void *returnedUser =
+                            dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
+                        if (returnedUser != user) {
+                            consumedTotal +=
+                                length - (unsigned int)dataToConsume.length();
+                            return {consumedTotal, returnedUser};
+                        }
                     }
                     if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
                         return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
@@ -677,16 +683,25 @@ private:
             } else if (hasContentLength) {
                 if (!CONSUME_MINIMALLY) {
                     unsigned int emittable = (unsigned int) std::min<uint64_t>(remainingStreamingBytes, length);
-                    dataHandler(user, std::string_view(data, emittable), remainingStreamingBytes - emittable);
-                    remainingStreamingBytes -= emittable;
+                    std::string_view chunk(data, emittable);
+                    uint64_t remainingAfterChunk = remainingStreamingBytes - emittable;
+                    remainingStreamingBytes = remainingAfterChunk;
 
                     data += emittable;
                     length -= emittable;
                     consumedTotal += emittable;
+
+                    void *returnedUser = dataHandler(user, chunk, remainingAfterChunk);
+                    if (returnedUser != user) {
+                        return {consumedTotal, returnedUser};
+                    }
                 }
             } else {
                 /* If we came here without a body; emit an empty data chunk to signal no data */
-                dataHandler(user, {}, 0);
+                void *returnedUser = dataHandler(user, {}, 0);
+                if (returnedUser != user) {
+                    return {consumedTotal, returnedUser};
+                }
             }
 
             /* Consume minimally should break as easrly as possible */
@@ -745,7 +760,11 @@ public:
                 std::string_view dataToConsume(data, length);
                 for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
                     /* If we got the zero size chunk, maxRemainingBodyLength is 0, else it is practically infinity */
-                    dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
+                    void *returnedUser =
+                        dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
+                    if (returnedUser != user) {
+                        return {0, returnedUser};
+                    }
                 }
                 if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
                     return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
@@ -756,16 +775,20 @@ public:
                 // this is exactly the same as below!
                 // todo: refactor this
                 if (remainingStreamingBytes >= length) {
-                    void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes - length);
-                    remainingStreamingBytes -= length;
+                    uint64_t remainingAfterChunk = remainingStreamingBytes - length;
+                    remainingStreamingBytes = remainingAfterChunk;
+                    void *returnedUser =
+                        dataHandler(user, std::string_view(data, length), remainingAfterChunk);
                     return {0, returnedUser};
                 } else {
-                    void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), 0);
-
-                    data += (unsigned int) remainingStreamingBytes;
-                    length -= (unsigned int) remainingStreamingBytes;
-
+                    unsigned int emittable = (unsigned int)remainingStreamingBytes;
+                    std::string_view chunk(data, emittable);
                     remainingStreamingBytes = 0;
+
+                    data += emittable;
+                    length -= emittable;
+
+                    void *returnedUser = dataHandler(user, chunk, 0);
 
                     if (returnedUser != user) {
                         return {0, returnedUser};
@@ -802,7 +825,11 @@ public:
                     if (isParsingChunkedEncoding(remainingStreamingBytes)) {
                         std::string_view dataToConsume(data, length);
                         for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
-                            dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
+                            void *returnedUser =
+                                dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
+                            if (returnedUser != user) {
+                                return {0, returnedUser};
+                            }
                         }
                         if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
                             return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
@@ -812,16 +839,20 @@ public:
                     } else {
                         // this is exactly the same as above!
                         if (remainingStreamingBytes >= (unsigned int) length) {
-                            void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes - (unsigned int) length);
-                            remainingStreamingBytes -= length;
+                            uint64_t remainingAfterChunk = remainingStreamingBytes - length;
+                            remainingStreamingBytes = remainingAfterChunk;
+                            void *returnedUser =
+                                dataHandler(user, std::string_view(data, length), remainingAfterChunk);
                             return {0, returnedUser};
                         } else {
-                            void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), 0);
-
-                            data += (unsigned int) remainingStreamingBytes;
-                            length -= (unsigned int) remainingStreamingBytes;
-
+                            unsigned int emittable = (unsigned int)remainingStreamingBytes;
+                            std::string_view chunk(data, emittable);
                             remainingStreamingBytes = 0;
+
+                            data += emittable;
+                            length -= emittable;
+
+                            void *returnedUser = dataHandler(user, chunk, 0);
 
                             if (returnedUser != user) {
                                 return {0, returnedUser};

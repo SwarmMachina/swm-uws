@@ -11,6 +11,10 @@ export class SecurityFixtureContext {
     return this.#app
   }
 
+  get listenSocket() {
+    return this.#listenSocket
+  }
+
   captureUncaught(message) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -86,6 +90,11 @@ export class SecurityFixtureContext {
     socket.on('error', () => {})
 
     return socket
+  }
+
+  closeApp() {
+    this.#app.close()
+    this.#listenSocket = undefined
   }
 
   close() {

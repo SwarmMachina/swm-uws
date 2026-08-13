@@ -186,12 +186,16 @@ app.get('/', (res, req) => {
 
   assert.equal(req.getCaseSensitiveMethod(), 'GET')
   assert.equal(req.setYield(false), req)
-  assert.ok([4, 16].includes(res.getRemoteAddress().byteLength))
-  assert.ok(res.getRemoteAddressAsText().byteLength > 0)
-  assert.ok(res.getRemotePort() > 0)
-  assert.equal(res.getProxiedRemoteAddress().byteLength, 0)
-  assert.equal(res.getProxiedRemoteAddressAsText().byteLength, 0)
-  assert.equal(res.getProxiedRemotePort(), 0)
+  const remoteAddress = res.getRemoteAddress()
+  const remoteAddressAsText = res.getRemoteAddressAsText()
+  const remotePort = res.getRemotePort()
+
+  assert.ok([4, 16].includes(remoteAddress.byteLength))
+  assert.ok(remoteAddressAsText.byteLength > 0)
+  assert.ok(remotePort > 0)
+  assert.deepEqual(res.getProxiedRemoteAddress(), remoteAddress)
+  assert.deepEqual(res.getProxiedRemoteAddressAsText(), remoteAddressAsText)
+  assert.equal(res.getProxiedRemotePort(), remotePort)
   assert.equal(res.pause(), res)
   assert.equal(res.resume(), res)
   completedResponse = res

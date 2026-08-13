@@ -95,6 +95,9 @@ private:
             /* Call filter */
             for (auto &f : httpContextData->filterHandlers) {
                 f((HttpResponse<SSL> *) s, 1);
+                if (us_socket_is_closed(SSL, s)) {
+                    return s;
+                }
             }
 
             return s;
@@ -358,6 +361,14 @@ private:
                 /* Uncork here as well (note: what if we failed to uncork and we then pub/sub before we even upgraded?) */
                 auto [written, failed] = asyncSocket->uncork();
 
+                /* The open handler can synchronously close the upgraded socket.
+                 * Uncork first to release loop state, then stop before reading
+                 * the already-destroyed WebSocketData extension. */
+                if (us_socket_is_closed(SSL, (us_socket_t *) asyncSocket)) {
+                    httpContextData->upgradedWebSocket = nullptr;
+                    return (us_socket_t *) asyncSocket;
+                }
+
                 /* If we succeeded in uncorking, check if we have sent WebSocket FIN */
                 if (!failed) {
                     WebSocketData *webSocketData = (WebSocketData *) asyncSocket->getAsyncSocketData();
@@ -395,6 +406,12 @@ private:
                 /* We expect the developer to return whether or not write was successful (true).
                  * If write was never called, the developer should still return true so that we may drain. */
                 bool success = httpResponseData->callOnWritable(httpResponseData->offset);
+
+                /* User code may close this socket or its entire context. Do not
+                 * touch HttpResponseData after that callback. */
+                if (us_socket_is_closed(SSL, s)) {
+                    return s;
+                }
 
                 /* The developer indicated that their onWritable failed. */
                 if (!success) {

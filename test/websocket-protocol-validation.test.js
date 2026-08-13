@@ -165,6 +165,172 @@ test('server closes unmasked client frames, including a byte-split header', asyn
   }
 })
 
+test('server rejects non-canonical and reserved WebSocket payload lengths', async () => {
+  const app = createApp()
+  const sockets = new Set()
+
+  let messageCount = 0
+
+  app.ws('/ws', {
+    maxPayloadLength: 128 * 1024,
+    message() {
+      messageCount++
+    }
+  })
+
+  const server = await NativeAppServer.listen(app)
+
+  try {
+    const frames = [
+      maskedFrameWithEncodedLength(Buffer.from('x'), 126),
+      maskedFrameWithEncodedLength(Buffer.from('x'), 127),
+      maskedFrameWithEncodedLength(Buffer.alloc(0), 127, 1n << 63n)
+    ]
+
+    for (const [index, frame] of frames.entries()) {
+      const socket = await upgradedSocket(server.port)
+      const closed = waitForClose(socket, {
+        message: `invalid WebSocket payload length ${index} did not close the connection`
+      })
+
+      sockets.add(socket)
+
+      if (index === 1) {
+        for (const byte of frame) {
+          if (socket.destroyed) {
+            break
+          }
+
+          socket.write(Buffer.of(byte))
+          await new Promise((resolve) => setImmediate(resolve))
+        }
+      } else {
+        socket.write(frame)
+      }
+
+      await closed
+    }
+
+    assert.equal(messageCount, 0)
+  } finally {
+    for (const socket of sockets) {
+      socket.destroy()
+    }
+
+    server.close()
+  }
+})
+
+test('server rejects a one-byte WebSocket close payload', async () => {
+  const app = createApp()
+  const closed = Promise.withResolvers()
+
+  app.ws('/ws', {
+    close(_socket, code) {
+      closed.resolve(code)
+    }
+  })
+
+  const server = await NativeAppServer.listen(app)
+  const socket = await upgradedSocket(server.port)
+
+  try {
+    const socketClosed = waitForClose(socket, {
+      message: 'one-byte WebSocket close payload did not close the connection'
+    })
+
+    socket.write(maskedShortFrame(0x08, Buffer.of(0)))
+    assert.equal(await withTimeout(closed.promise, 1_000, 'close callback did not run'), 1006)
+    await socketClosed
+  } finally {
+    socket.destroy()
+    server.close()
+  }
+})
+
+test('native ArrayBuffer ownership survives re-entrant dropped callbacks', async () => {
+  const app = createApp()
+  const opened = Promise.withResolvers()
+  const dropped = Promise.withResolvers()
+  const payloadBytes = 1024 * 1024
+  const original = new ArrayBuffer(payloadBytes)
+  const originalView = new Uint8Array(original)
+
+  originalView.fill(0x5a)
+
+  const serverSockets = []
+
+  let droppedCount = 0
+
+  app.ws('/ws', {
+    maxBackpressure: 1,
+    open(ws) {
+      serverSockets.push(ws)
+      ws.subscribe('ownership')
+
+      if (serverSockets.length === 2) {
+        opened.resolve()
+      }
+    },
+    dropped(_ws, message, isBinary) {
+      droppedCount++
+      assert.equal(isBinary, true)
+
+      if (droppedCount === 1) {
+        assert.equal(original.transfer(0).byteLength, 0)
+        assert.equal(original.byteLength, 0)
+      }
+
+      const churn = new Uint8Array(payloadBytes)
+
+      churn.fill(0xa5)
+      assert.equal(message.byteLength, payloadBytes)
+      assert.equal(new Uint8Array(message)[0], 0x5a)
+      assert.equal(new Uint8Array(message).at(-1), 0x5a)
+
+      if (droppedCount === 2) {
+        dropped.resolve()
+      }
+    }
+  })
+
+  const server = await NativeAppServer.listen(app)
+  const sockets = [await upgradedSocket(server.port), await upgradedSocket(server.port)]
+
+  try {
+    for (const socket of sockets) {
+      socket.pause()
+    }
+
+    await withTimeout(opened.promise, 1_000, 'server WebSocket did not open')
+
+    const filler = new Uint8Array(payloadBytes)
+
+    for (const serverSocket of serverSockets) {
+      let backpressureObserved = false
+
+      for (let attempt = 0; attempt < 256; attempt++) {
+        if (serverSocket.send(filler, true) === 0) {
+          backpressureObserved = true
+          break
+        }
+      }
+
+      assert.equal(backpressureObserved, true)
+    }
+
+    assert.equal(app.publish('ownership', original, true), true)
+    await withTimeout(dropped.promise, 1_000, 'both dropped callbacks did not run')
+    assert.equal(droppedCount, 2)
+  } finally {
+    for (const socket of sockets) {
+      socket.destroy()
+    }
+
+    server.close()
+  }
+})
+
 test('idleTimeout 0 disables automatic pings but retains the forced-close deadline', { timeout: 20_000 }, async () => {
   const app = createApp()
   const opened = Promise.withResolvers()
@@ -342,18 +508,39 @@ function handshakeRequest({
 }
 
 function maskedTextFrame(message) {
-  const payload = Buffer.from(message)
+  return maskedShortFrame(0x01, Buffer.from(message))
+}
+
+function maskedShortFrame(opcode, payload) {
   const mask = Buffer.from([0x12, 0x34, 0x56, 0x78])
   const frame = Buffer.alloc(6 + payload.length)
 
   assert.ok(payload.length < 126)
-  frame[0] = 0x81
+  frame[0] = 0x80 | opcode
   frame[1] = 0x80 | payload.length
   mask.copy(frame, 2)
 
   for (let i = 0; i < payload.length; i++) {
     frame[6 + i] = payload[i] ^ mask[i % 4]
   }
+
+  return frame
+}
+
+function maskedFrameWithEncodedLength(payload, lengthCode, declaredLength = BigInt(payload.length)) {
+  const extendedBytes = lengthCode === 126 ? 2 : 8
+  const frame = Buffer.alloc(2 + extendedBytes + 4 + payload.length)
+
+  frame[0] = 0x82
+  frame[1] = 0x80 | lengthCode
+
+  if (lengthCode === 126) {
+    frame.writeUInt16BE(Number(declaredLength), 2)
+  } else {
+    frame.writeBigUInt64BE(declaredLength, 2)
+  }
+
+  payload.copy(frame, 2 + extendedBytes + 4)
 
   return frame
 }

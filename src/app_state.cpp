@@ -1,6 +1,7 @@
 #include "app_state.h"
 
 #include "binding_environment.h"
+#include "listen_socket_handle.h"
 
 #include <algorithm>
 
@@ -11,6 +12,10 @@ AppState::AppState(BindingEnvironment &environment, std::unique_ptr<uWS::App> ap
 
 AppState::~AppState() {
     Close();
+    if (nativeClosePending_ && app_) {
+        nativeClosePending_ = false;
+        app_->close();
+    }
 }
 
 v8::Global<v8::Function> *AppState::OwnHandler(v8::Isolate *isolate,
@@ -24,27 +29,64 @@ v8::Global<v8::Function> *AppState::OwnHandler(std::unique_ptr<v8::Global<v8::Fu
     return ownedHandler;
 }
 
-void AppState::TrackListenSocket(us_listen_socket_t *socket) {
-    if (socket) listenSockets_.push_back(socket);
+ListenSocketHandle *AppState::TrackListenSocket(us_listen_socket_t *socket) {
+    if (!socket) return nullptr;
+    auto handle = std::make_unique<ListenSocketHandle>(environment_.Isolate(), socket);
+    ListenSocketHandle *ownedHandle = handle.get();
+    listenSockets_.push_back(std::move(handle));
+    return ownedHandle;
 }
 
-void AppState::ForgetListenSocket(us_listen_socket_t *socket) {
-    listenSockets_.erase(std::remove(listenSockets_.begin(), listenSockets_.end(), socket),
-                         listenSockets_.end());
+bool AppState::CloseListenSocket(v8::Local<v8::Value> token) {
+    const auto iterator =
+        std::find_if(listenSockets_.begin(), listenSockets_.end(), [token](const auto &handle) {
+            return handle->Matches(token);
+        });
+    if (iterator == listenSockets_.end()) return false;
+    (*iterator)->Close();
+    listenSockets_.erase(iterator);
+    return true;
 }
 
-void AppState::CloseListenSocket(us_listen_socket_t *socket) {
-    ForgetListenSocket(socket);
-    us_listen_socket_close(0, socket);
+bool AppState::CloseListenSocket(ListenSocketHandle *handle) {
+    const auto iterator =
+        std::find_if(listenSockets_.begin(), listenSockets_.end(), [handle](const auto &owned) {
+            return owned.get() == handle;
+        });
+    if (iterator == listenSockets_.end()) return false;
+    (*iterator)->Close();
+    listenSockets_.erase(iterator);
+    return true;
+}
+
+std::optional<int> AppState::ListenSocketLocalPort(v8::Local<v8::Value> token) const {
+    const auto iterator =
+        std::find_if(listenSockets_.begin(), listenSockets_.end(), [token](const auto &handle) {
+            return handle->Matches(token);
+        });
+    if (iterator == listenSockets_.end()) return std::nullopt;
+    return (*iterator)->LocalPort();
 }
 
 void AppState::Close() noexcept {
     if (closed_) return;
     closed_ = true;
-    for (us_listen_socket_t *socket : listenSockets_) {
-        us_listen_socket_close(0, socket);
+    for (const auto &socket : listenSockets_) {
+        socket->Close();
     }
     listenSockets_.clear();
+    if (nativeCallbackDepth_) {
+        nativeClosePending_ = true;
+        return;
+    }
+    if (app_) app_->close();
+}
+
+void AppState::LeaveNativeCallback() noexcept {
+    if (!nativeCallbackDepth_) return;
+    nativeCallbackDepth_--;
+    if (nativeCallbackDepth_ || !nativeClosePending_) return;
+    nativeClosePending_ = false;
     if (app_) app_->close();
 }
 

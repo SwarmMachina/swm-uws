@@ -4,6 +4,7 @@
 #include <v8.h>
 
 #include <array>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -43,25 +44,50 @@ public:
 
         if (value->IsArrayBufferView()) {
             v8::Local<v8::ArrayBufferView> view = value.As<v8::ArrayBufferView>();
-            std::shared_ptr<v8::BackingStore> backing = view->Buffer()->GetBackingStore();
-            data_ = static_cast<const char *>(backing->Data()) + view->ByteOffset();
+            backing_ = view->Buffer()->GetBackingStore();
             length_ = view->ByteLength();
+            const std::size_t offset = view->ByteOffset();
+            if (!backing_ || offset > backing_->ByteLength() ||
+                length_ > backing_->ByteLength() - offset ||
+                (!backing_->Data() && (offset != 0 || length_ != 0))) {
+                valid_ = false;
+                length_ = 0;
+                return;
+            }
+            const auto *base = static_cast<const char *>(backing_->Data());
+            data_ = base ? base + offset : "";
             return;
         }
 
         if (value->IsArrayBuffer()) {
-            std::shared_ptr<v8::BackingStore> backing =
-                value.As<v8::ArrayBuffer>()->GetBackingStore();
-            data_ = static_cast<const char *>(backing->Data());
-            length_ = backing->ByteLength();
+            backing_ = value.As<v8::ArrayBuffer>()->GetBackingStore();
+            if (!backing_) {
+                valid_ = false;
+                return;
+            }
+            length_ = backing_->ByteLength();
+            if (!backing_->Data() && length_ != 0) {
+                valid_ = false;
+                length_ = 0;
+                return;
+            }
+            data_ = backing_->Data() ? static_cast<const char *>(backing_->Data()) : "";
             return;
         }
 
         if (value->IsSharedArrayBuffer()) {
-            std::shared_ptr<v8::BackingStore> backing =
-                value.As<v8::SharedArrayBuffer>()->GetBackingStore();
-            data_ = static_cast<const char *>(backing->Data());
-            length_ = backing->ByteLength();
+            backing_ = value.As<v8::SharedArrayBuffer>()->GetBackingStore();
+            if (!backing_) {
+                valid_ = false;
+                return;
+            }
+            length_ = backing_->ByteLength();
+            if (!backing_->Data() && length_ != 0) {
+                valid_ = false;
+                length_ = 0;
+                return;
+            }
+            data_ = backing_->Data() ? static_cast<const char *>(backing_->Data()) : "";
             return;
         }
 
@@ -76,7 +102,11 @@ public:
     NativeBytes &operator=(const NativeBytes &) = delete;
 
     [[nodiscard]] bool IsValid() const noexcept {
-        return valid_;
+        return valid_ && length_ <= MaximumLength;
+    }
+
+    [[nodiscard]] bool IsTooLarge() const noexcept {
+        return valid_ && length_ > MaximumLength;
     }
 
     [[nodiscard]] std::string_view View() const noexcept {
@@ -84,6 +114,10 @@ public:
     }
 
 private:
+    // uSockets accepts signed-int lengths. Reserve enough room for the largest
+    // WebSocket frame header so header + payload cannot overflow that contract.
+    static constexpr std::size_t MaximumLength =
+        static_cast<std::size_t>(std::numeric_limits<int>::max()) - 14;
     static constexpr std::size_t ArenaSize = std::size_t{128} * 1024;
     static constexpr std::size_t ArenaAlignment = 8;
     inline static thread_local std::array<char, ArenaSize> arena_{};
@@ -106,7 +140,8 @@ private:
     }
 
     std::string fallback_;
-    const char *data_ = nullptr;
+    std::shared_ptr<v8::BackingStore> backing_;
+    const char *data_ = "";
     std::size_t length_ = 0;
     bool valid_ = true;
 };

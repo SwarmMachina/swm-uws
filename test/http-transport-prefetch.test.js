@@ -9,6 +9,21 @@ import { NativeAppServer } from './helpers/native-app-server.js'
 import { rawHttpExchange } from './helpers/raw-http.js'
 
 test('HTTP transport options validate synchronously without coercion', () => {
+  const hasOwnError = new Error('hasOwnProperty failed')
+  const throwingOptions = new Proxy(
+    {},
+    {
+      getOwnPropertyDescriptor() {
+        throw hasOwnError
+      }
+    }
+  )
+
+  assert.throws(
+    () => createApp(throwingOptions),
+    (error) => error === hasOwnError
+  )
+
   for (const http of [
     null,
     [],
@@ -17,6 +32,7 @@ test('HTTP transport options validate synchronously without coercion', () => {
     { maxHeaderSize: -1 },
     { maxHeaderSize: 1.5 },
     { maxHeaderSize: '4096' },
+    { maxHeaderSize: 64 * 1024 * 1024 + 1 },
     { maxHeaderCount: 101 },
     { headersTimeoutMs: 0 },
     { keepAliveTimeoutMs: Number.NaN },
@@ -69,7 +85,7 @@ test('UWS_HTTP_MAX_HEADERS_SIZE is a strict deprecated fallback and App option w
   const previous = process.env.UWS_HTTP_MAX_HEADERS_SIZE
 
   try {
-    const invalidValues = ['0', '-1', '1.5', '16kb', '9007199254740992', '1'.repeat(65)]
+    const invalidValues = ['0', '-1', '1.5', '16kb', String(64 * 1024 * 1024 + 1), '9007199254740992', '1'.repeat(65)]
 
     // Windows removes empty environment variables before native getenv can observe them.
     if (process.platform !== 'win32') {

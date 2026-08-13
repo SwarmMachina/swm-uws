@@ -42,6 +42,8 @@ export async function probePublicCaps() {
   const app = createApp()
   const bodyCapsChecked = Promise.withResolvers()
 
+  assert.throws(() => createApp({ http: { maxHeaderSize: MAX_INBOUND_BYTES + 1 } }), /within native range/)
+  createApp({ http: { maxHeaderSize: MAX_INBOUND_BYTES } }).close()
   assert.throws(
     () => app.ws('/too-large', { maxPayloadLength: MAX_INBOUND_BYTES + 1 }),
     /maxPayloadLength must be an integer between 1 and 67108864/

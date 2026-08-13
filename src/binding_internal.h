@@ -9,10 +9,16 @@
 #include "app_state.h"
 #include "async_response_state.h"
 #include "binding_environment.h"
+#include "ephemeral_array_buffer.h"
+#include "http_route_callback_scope.h"
 #include "native_bytes.h"
+#include "native_callback_scope.h"
 #include "request_prefetch_plan.h"
 #include "request_prefetch_snapshot.h"
+#include "response_callback_lifetime.h"
+#include "response_metadata.h"
 #include "socket_state.h"
+#include "upgrade_context_scope.h"
 
 #include <algorithm>
 #include <array>
@@ -67,12 +73,8 @@ enum class HttpMethod : std::uint8_t {
     Any,
 };
 
-struct ResponseMetadata {
-    std::optional<uintmax_t> tryEndTotal;
-    bool chunked = false;
-};
-
 inline void *GetInternalPointer(const Local<Object> &object, int index = 0) {
+    if (index < 0 || object->InternalFieldCount() <= index) return nullptr;
 #if V8_MAJOR_VERSION == 14
     return object->GetAlignedPointerFromInternalField(index, 0);
 #else
@@ -81,11 +83,58 @@ inline void *GetInternalPointer(const Local<Object> &object, int index = 0) {
 }
 
 inline void SetInternalPointer(const Local<Object> &object, void *pointer, int index = 0) {
+    if (index < 0 || object->InternalFieldCount() <= index) return;
 #if V8_MAJOR_VERSION == 14
     object->SetAlignedPointerInInternalField(index, pointer, 0);
 #else
     object->SetAlignedPointerInInternalField(index, pointer);
 #endif
+}
+
+enum class BindingObjectKind : std::uint8_t {
+    App,
+    Request,
+    Response,
+    Socket,
+    RequestPrefetchPlan,
+    RequestPrefetchSnapshot,
+};
+
+struct alignas(void *) BindingObjectTag final {};
+
+inline BindingObjectTag AppObjectTag;
+inline BindingObjectTag RequestObjectTag;
+inline BindingObjectTag ResponseObjectTag;
+inline BindingObjectTag SocketObjectTag;
+inline BindingObjectTag RequestPrefetchPlanObjectTag;
+inline BindingObjectTag RequestPrefetchSnapshotObjectTag;
+
+inline void *BindingObjectTagFor(BindingObjectKind kind) {
+    switch (kind) {
+    case BindingObjectKind::App:
+        return &AppObjectTag;
+    case BindingObjectKind::Request:
+        return &RequestObjectTag;
+    case BindingObjectKind::Response:
+        return &ResponseObjectTag;
+    case BindingObjectKind::Socket:
+        return &SocketObjectTag;
+    case BindingObjectKind::RequestPrefetchPlan:
+        return &RequestPrefetchPlanObjectTag;
+    case BindingObjectKind::RequestPrefetchSnapshot:
+        return &RequestPrefetchSnapshotObjectTag;
+    }
+    return nullptr;
+}
+
+inline bool
+HasBindingObjectKind(const Local<Object> &object, BindingObjectKind kind, int tagIndex) {
+    return GetInternalPointer(object, tagIndex) == BindingObjectTagFor(kind);
+}
+
+inline void
+SetBindingObjectKind(const Local<Object> &object, BindingObjectKind kind, int tagIndex) {
+    SetInternalPointer(object, BindingObjectTagFor(kind), tagIndex);
 }
 
 inline Local<String> NewString(Isolate *isolate, std::string_view value) {
@@ -110,6 +159,10 @@ inline void ThrowTypeError(Isolate *isolate, const char *message) {
 
 inline void ThrowError(Isolate *isolate, const char *message) {
     isolate->ThrowException(Exception::Error(NewString(isolate, message)));
+}
+
+inline void ThrowRangeError(Isolate *isolate, const char *message) {
+    isolate->ThrowException(Exception::RangeError(NewString(isolate, message)));
 }
 
 [[nodiscard]] inline bool
@@ -241,11 +294,31 @@ inline bool IsValidStatus(std::string_view status) {
 }
 
 inline HttpResponse *GetResponse(const FunctionCallbackInfo<Value> &args) {
+    if (!HasBindingObjectKind(args.This(), BindingObjectKind::Response, 3)) {
+        ThrowTypeError(args.GetIsolate(), "HTTP response method called with incompatible receiver");
+        return nullptr;
+    }
     HttpResponse *response = static_cast<HttpResponse *>(GetInternalPointer(args.This()));
     if (!response) {
         ThrowError(args.GetIsolate(), "HTTP response is no longer valid");
+        return nullptr;
+    }
+    auto *metadata = static_cast<ResponseMetadata *>(GetInternalPointer(args.This(), 2));
+    if (!metadata || !metadata->app || metadata->app->IsClosed()) {
+        ThrowError(args.GetIsolate(), "HTTP response is no longer valid");
+        return nullptr;
     }
     return response;
+}
+
+inline AppState *GetAppState(const FunctionCallbackInfo<Value> &args) {
+    if (!HasBindingObjectKind(args.This(), BindingObjectKind::App, 1)) {
+        ThrowTypeError(args.GetIsolate(), "App method called with incompatible receiver");
+        return nullptr;
+    }
+    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
+    if (!state) ThrowError(args.GetIsolate(), "App is no longer valid");
+    return state;
 }
 
 inline void SetPrototypeMethod(Isolate *isolate,
@@ -257,6 +330,8 @@ inline void SetPrototypeMethod(Isolate *isolate,
 }
 
 void InvalidateResponseObject(Local<Object> object);
+ResponseMetadata *GetResponseMetadata(Local<Object> object);
+void InvalidateResponseState(Local<Object> object);
 void CloseAsyncResponseAfterCallbackFailure(const std::shared_ptr<AsyncResponseState> &state);
 Local<ArrayBuffer> CopyToArrayBuffer(Isolate *isolate, std::string_view value);
 Local<ArrayBuffer> ExternalArrayBuffer(Isolate *isolate, std::string_view value);

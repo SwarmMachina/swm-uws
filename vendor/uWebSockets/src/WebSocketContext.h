@@ -184,6 +184,10 @@ private:
                 } else {
                     if (opCode == PING) {
                         webSocket->send(std::string_view(data, length), (OpCode) OpCode::PONG);
+                        if (us_socket_is_closed(SSL, (us_socket_t *) s) ||
+                            webSocketData->isShuttingDown) {
+                            return true;
+                        }
                         if (webSocketContextData->pingHandler) {
                             webSocketContextData->pingHandler(webSocket, {data, length});
                             if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
@@ -217,6 +221,10 @@ private:
                     } else {
                         if (opCode == PING) {
                             webSocket->send(std::string_view(controlBuffer, webSocketData->controlTipLength), (OpCode) OpCode::PONG);
+                            if (us_socket_is_closed(SSL, (us_socket_t *) s) ||
+                                webSocketData->isShuttingDown) {
+                                return true;
+                            }
                             if (webSocketContextData->pingHandler) {
                                 webSocketData->beginFragmentBufferView();
                                 webSocketContextData->pingHandler(webSocket, std::string_view(controlBuffer, webSocketData->controlTipLength));
@@ -268,29 +276,41 @@ private:
 
         /* Handle socket disconnections */
         us_socket_context_on_close(SSL, getSocketContext(), [](auto *s, int code, void *reason) {
-            /* For whatever reason, if we already have emitted close event, do not emit it again */
             WebSocketData *webSocketData = (WebSocketData *) (us_socket_ext(SSL, s));
-            if (!webSocketData->isShuttingDown) {
-                /* Emit close event */
-                auto *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
+            auto *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
+            auto *ws = (WebSocket<SSL, isServer, USERDATA> *) s;
 
-                /* At this point we iterate all currently held subscriptions and emit an event for all of them */
-                if (webSocketData->subscriber && webSocketContextData->subscriptionHandler) {
-                    for (Topic *t : webSocketData->subscriber->topics) {
-                        webSocketContextData->subscriptionHandler((WebSocket<SSL, isServer, USERDATA> *) s, t->name, (int) t->size() - 1, (int) t->size());
-                    }
+            /* Copy and unlink subscriptions before callbacks can mutate either
+             * side of the relationship while it is being traversed. */
+            auto subscriptionChanges = webSocketContextData->topicTree->freeSubscriber(
+                webSocketData->subscriber,
+                (bool)webSocketContextData->subscriptionHandler);
+            webSocketData->subscriber = nullptr;
+            if (webSocketContextData->subscriptionHandler) {
+                for (const auto &change : subscriptionChanges) {
+                    webSocketContextData->subscriptionHandler(
+                        ws,
+                        change.topic,
+                        change.newCount,
+                        change.oldCount);
                 }
+            }
 
-                /* Make sure to unsubscribe from any pub/sub node at exit */
-                webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
-                webSocketData->subscriber = nullptr;
-
-                auto *ws = (WebSocket<SSL, isServer, USERDATA> *) s;
+            if (!webSocketData->closeEventEmitted) {
+                webSocketData->closeEventEmitted = true;
                 if (webSocketContextData->closeHandler) {
                     webSocketContextData->closeHandler(ws, 1006, {(char *) reason, (size_t) code});
                 }
+            }
+            if (!webSocketData->userDataDestroyed) {
+                webSocketData->userDataDestroyed = true;
                 ((USERDATA *) ws->getUserData())->~USERDATA();
             }
+
+            /* A close callback must not be able to leave a newly-created
+             * subscriber linked after WebSocketData is destroyed. */
+            webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
+            webSocketData->subscriber = nullptr;
 
             /* Destruct in-placed data struct */
             webSocketData->~WebSocketData();
@@ -325,6 +345,12 @@ private:
 
             /* Uncorking a closed socekt is fine, in fact it is needed */
             asyncSocket->uncork();
+
+            /* User callbacks can synchronously close the socket and destroy
+             * WebSocketData while the protocol parser is on the stack. */
+            if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
+                return s;
+            }
 
             /* If uncorking was successful and we are in shutdown state then send TCP FIN */
             if (asyncSocket->getBufferedAmount() == 0) {

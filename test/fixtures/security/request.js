@@ -1,6 +1,74 @@
 import assert from 'node:assert/strict'
 
 export const requestCases = {
+  async 'request-for-each-reentrant-app-close'(fixture) {
+    const { app } = fixture
+
+    let callbackCount = 0
+
+    app.get('/close', (res, req) => {
+      req.forEach(() => {
+        callbackCount++
+        fixture.closeApp()
+      })
+
+      assert.equal(callbackCount, 1)
+      assert.throws(() => req.getUrl(), /HTTP request is no longer valid/)
+      assert.throws(() => res.end('late'), /HTTP response is no longer valid/)
+    })
+
+    const port = await fixture.listen()
+
+    await fixture.rawRequest(port, [
+      'GET /close HTTP/1.1\r\nHost: localhost\r\nX-One: 1\r\nX-Two: 2\r\nConnection: close\r\n\r\n'
+    ])
+    assert.equal(callbackCount, 1)
+  },
+
+  async 'request-for-each-reentrant-response-close'(fixture) {
+    const { app } = fixture
+
+    let callbackCount = 0
+
+    app.get('/close', (res, req) => {
+      req.forEach(() => {
+        callbackCount++
+        res.close()
+      })
+
+      assert.equal(callbackCount, 1)
+      assert.throws(() => req.getUrl(), /HTTP request is no longer valid/)
+    })
+
+    const port = await fixture.listen()
+
+    await fixture.rawRequest(port, [
+      'GET /close HTTP/1.1\r\nHost: localhost\r\nX-One: 1\r\nX-Two: 2\r\nConnection: close\r\n\r\n'
+    ])
+    assert.equal(callbackCount, 1)
+  },
+
+  async 'request-chunked-data-reentrant-app-close'(fixture) {
+    const { app } = fixture
+
+    let callbackCount = 0
+
+    app.post('/close', (res) => {
+      res.onData(() => {
+        callbackCount++
+        fixture.closeApp()
+      })
+    })
+
+    const port = await fixture.listen()
+
+    await fixture.rawRequest(port, [
+      'POST /close HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n' +
+        '3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n'
+    ])
+    assert.equal(callbackCount, 1)
+  },
+
   async 'request-data'(fixture) {
     const { app } = fixture
 

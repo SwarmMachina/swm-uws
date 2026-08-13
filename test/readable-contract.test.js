@@ -55,6 +55,7 @@ function arrayBuffer(bytes) {
 
 function rawRequest(port, chunks) {
   return rawHttpExchange({ host: '127.0.0.1', port }, chunks, {
+    acceptResetAfterData: true,
     yieldBetweenChunks: true,
     timeoutMessage: 'raw request'
   }).then((response) => response.toString())
@@ -110,17 +111,23 @@ test('native readable surface has a functional network contract', { timeout: 15_
     assert.equal(headers['x-contract'], 'Value')
 
     cover('HttpResponse', 'getRemoteAddress')
-    assert.ok([4, 16].includes(arrayBuffer(res.getRemoteAddress()).byteLength))
+    const remoteAddress = arrayBuffer(res.getRemoteAddress())
+
+    assert.ok([4, 16].includes(remoteAddress.byteLength))
     cover('HttpResponse', 'getRemoteAddressAsText')
-    assert.ok(arrayBuffer(res.getRemoteAddressAsText()).byteLength > 0)
+    const remoteAddressAsText = arrayBuffer(res.getRemoteAddressAsText())
+
+    assert.ok(remoteAddressAsText.byteLength > 0)
     cover('HttpResponse', 'getRemotePort')
-    assert.ok(res.getRemotePort() > 0)
+    const remotePort = res.getRemotePort()
+
+    assert.ok(remotePort > 0)
     cover('HttpResponse', 'getProxiedRemoteAddress')
-    assert.equal(arrayBuffer(res.getProxiedRemoteAddress()).byteLength, 0)
+    assert.deepEqual(arrayBuffer(res.getProxiedRemoteAddress()), remoteAddress)
     cover('HttpResponse', 'getProxiedRemoteAddressAsText')
-    assert.equal(arrayBuffer(res.getProxiedRemoteAddressAsText()).byteLength, 0)
+    assert.deepEqual(arrayBuffer(res.getProxiedRemoteAddressAsText()), remoteAddressAsText)
     cover('HttpResponse', 'getProxiedRemotePort')
-    assert.equal(res.getProxiedRemotePort(), 0)
+    assert.equal(res.getProxiedRemotePort(), remotePort)
     cover('HttpResponse', 'getWriteOffset')
     assert.equal(res.getWriteOffset(), 0)
 

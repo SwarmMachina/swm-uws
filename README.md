@@ -147,6 +147,8 @@ const app = uWS.App({
 ```
 
 Header-limit failures return `431` before an HTTP or WebSocket handler runs.
+`maxHeaderSize` is capped at `64 MiB` so configuration cannot bypass the
+binding's native inbound-memory ceiling.
 Read inexpensive per-application counters with `app.getHttpTransportStats()`:
 
 ```js
@@ -199,7 +201,8 @@ app.get('/stream', (res) => {
 
 Register `onWritable` before continuing a response after backpressure. A
 response may outlive a route callback only after registering `onData`,
-`onDataV2`, `onWritable`, `collectBody`, or `onAborted`.
+`onDataV2`, `onWritable`, `collectBody`, `collectBodyWithLength`, `discardBody`,
+or `onAborted`.
 
 ### Request bodies
 

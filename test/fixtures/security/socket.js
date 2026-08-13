@@ -139,5 +139,110 @@ export const socketCases = {
     descriptorClient.addEventListener('error', () => {}, { once: true })
     await descriptorError
     await new Promise((resolve) => setImmediate(resolve))
+  },
+
+  async 'socket-user-data-reentrant-close'(fixture) {
+    const { app } = fixture
+    const userData = new Proxy(
+      {},
+      {
+        ownKeys() {
+          fixture.closeApp()
+
+          return []
+        }
+      }
+    )
+
+    let openCount = 0
+
+    app.ws('/reentrant-close', {
+      upgrade(res, req, context) {
+        res.upgrade(userData, req.getHeader('sec-websocket-key'), '', '', context)
+      },
+      open() {
+        openCount++
+      }
+    })
+
+    const port = await fixture.listen()
+    const client = new WebSocket(`ws://127.0.0.1:${port}/reentrant-close`)
+    const terminated = new Promise((resolve) => {
+      const settle = (event) => {
+        client.removeEventListener('close', settle)
+        client.removeEventListener('error', settle)
+        resolve(event.type)
+      }
+
+      client.addEventListener('close', settle, { once: true })
+      client.addEventListener('error', settle, { once: true })
+    })
+    const terminationEvent = await terminated
+
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.match(terminationEvent, /^(close|error)$/)
+    assert.equal(openCount, 0)
+  },
+
+  async 'socket-user-data-prototype-has-reentrant-close'(fixture) {
+    const { app } = fixture
+
+    let hasCount = 0
+    let openCount = 0
+    let socketPrototype
+
+    app.ws('/seed', {
+      open(socket) {
+        socketPrototype = Object.getPrototypeOf(socket)
+        socket.send('ready')
+      }
+    })
+    app.ws('/trigger', {
+      upgrade(res, req, context) {
+        res.upgrade({ field: 1 }, req.getHeader('sec-websocket-key'), '', '', context)
+      },
+      open() {
+        openCount++
+      }
+    })
+
+    const port = await fixture.listen()
+    const seed = new WebSocket(`ws://127.0.0.1:${port}/seed`)
+    const seedMessage = await fixture.event(seed, 'message')
+
+    assert.equal(seedMessage.data, 'ready')
+    const seedClosed = fixture.event(seed, 'close')
+
+    seed.close()
+    await seedClosed
+
+    const originalParent = Object.getPrototypeOf(socketPrototype)
+    const parentProxy = new Proxy(originalParent, {
+      has(target, key) {
+        hasCount++
+        fixture.closeApp()
+
+        return Reflect.has(target, key)
+      }
+    })
+
+    Object.setPrototypeOf(socketPrototype, parentProxy)
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/trigger`)
+    const terminationEvent = await new Promise((resolve) => {
+      const settle = (event) => {
+        client.removeEventListener('close', settle)
+        client.removeEventListener('error', settle)
+        resolve(event.type)
+      }
+
+      client.addEventListener('close', settle, { once: true })
+      client.addEventListener('error', settle, { once: true })
+    })
+
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.match(terminationEvent, /^(close|error)$/)
+    assert.equal(hasCount, 1)
+    assert.equal(openCount, 0)
   }
 }

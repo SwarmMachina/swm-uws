@@ -1,0 +1,213 @@
+--- a/src/TopicTree.h
++++ b/src/TopicTree.h
+@@ -18,6 +18,7 @@
+ #ifndef UWS_TOPICTREE_H
+ #define UWS_TOPICTREE_H
+ 
++#include <cstdint>
+ #include <map>
+ #include <list>
+ #include <iostream>
+@@ -89,8 +90,8 @@
+ 
+ private:
+ 
+-    /* The drain callback must not publish, unsubscribe or subscribe.
+-     * It must only cork, uncork, send, write */
++    /* Drain callbacks can enter user code via WebSocket::send. Topology changes
++     * stop the current traversal before any invalidated iterator is advanced. */
+     std::function<bool(Subscriber *, T &, IteratorFlags)> cb;
+ 
+     /* The topics */
+@@ -102,6 +103,17 @@
+     /* Palette of outgoing messages, up to 64k */
+     std::vector<T> outgoingMessages;
+ 
++    /* Invalidates subscriber iterators when a callback mutates topic membership. */
++    std::uint64_t topologyVersion = 0;
++
++    /* Invalidates message indices when a nested drain clears the shared palette. */
++    std::uint64_t outgoingMessagesVersion = 0;
++
++    void clearOutgoingMessages() {
++        outgoingMessages.clear();
++        outgoingMessagesVersion++;
++    }
++
+     void checkIteratingSubscriber(Subscriber *s) {
+         /* Notify user that they are doing something wrong here */
+         if (iteratingSubscriber == s) {
+@@ -111,7 +123,7 @@
+     }
+ 
+     /* Warning: does NOT unlink from drainableSubscribers or modify next, prev. */
+-    void drainImpl(Subscriber *s) {
++    bool drainImpl(Subscriber *s) {
+         /* Before we call cb we need to make sure this subscriber will not report needsDrainage()
+          * since WebSocket::send will call drain from within the cb in that case.*/
+         int numMessageIndices = s->numMessageIndices;
+@@ -124,10 +136,16 @@
+             int flags = (i == numMessageIndices - 1) ? LAST : 0;
+ 
+             /* Returning true will stop drainage short (such as when backpressure is too high) */
+-            if (cb(s, outgoingMessage, (IteratorFlags)(flags | (i == 0 ? FIRST : 0)))) {
+-                break;
++            std::uint64_t topologyVersionBeforeCallback = topologyVersion;
++            std::uint64_t outgoingMessagesVersionBeforeCallback = outgoingMessagesVersion;
++            if (cb(s, outgoingMessage, (IteratorFlags)(flags | (i == 0 ? FIRST : 0))) ||
++                topologyVersionBeforeCallback != topologyVersion ||
++                outgoingMessagesVersionBeforeCallback != outgoingMessagesVersion) {
++                return true;
+             }
+         }
++
++        return false;
+     }
+ 
+     void unlinkDrainableSubscriber(Subscriber *s) {
+@@ -177,6 +195,7 @@
+             return nullptr;
+         }
+         topicPtr->insert(s);
++        topologyVersion++;
+ 
+         /* Success */
+         return topicPtr;
+@@ -198,6 +217,7 @@
+         if (s->topics.erase(topicPtr) == 0) {
+             return {false, false, -1};
+         }
++        topologyVersion++;
+ 
+         /* Remove us from topic */
+         topicPtr->erase(s);
+@@ -227,6 +247,10 @@
+             return;
+         }
+ 
++        if (s->topics.size()) {
++            topologyVersion++;
++        }
++
+         /* For all topics, unsubscribe */
+         for (Topic *topicPtr : s->topics) {
+             /* If we are the last subscriber, simply remove the whole topic */
+@@ -247,7 +271,7 @@
+     }
+ 
+     /* Mainly used by WebSocket::send to drain one socket before sending */
+-    void drain(Subscriber *s) {
++    bool drain(Subscriber *s) {
+         /* The list is undefined and cannot be touched unless needsDrainage(). */
+         if (s->needsDrainage()) {
+             /* This function differs from drainImpl by properly unlinking
+@@ -256,28 +280,31 @@
+ 
+             /* This one always resets needsDrainage before it calls any cb's.
+              * Otherwise we would stackoverflow when sending after publish but before drain. */
+-            drainImpl(s);
+-            
++            bool stopped = drainImpl(s);
++
+             /* If we drained last subscriber, also clear outgoingMessages */
+             if (!drainableSubscribers) {
+-                outgoingMessages.clear();
++                clearOutgoingMessages();
+             }
++            return stopped;
+         }
++        return false;
+     }
+ 
+     /* Called everytime we call send, to drain published messages so to sync outgoing messages */
+-    void drain() {
+-        if (drainableSubscribers) {
+-            /* Drain one socket a time */
+-            for (Subscriber *s = drainableSubscribers; s; s = s->next) {
+-                /* Instead of unlinking every single subscriber, we just leave the list undefined
+-                 * and reset drainableSubscribers ptr below. */
+-                drainImpl(s);
++    bool drain() {
++        while (drainableSubscribers) {
++            Subscriber *s = drainableSubscribers;
++            unlinkDrainableSubscriber(s);
++            if (drainImpl(s)) {
++                if (!drainableSubscribers) {
++                    clearOutgoingMessages();
++                }
++                return true;
+             }
+-            /* Drain always clears drainableSubscribers and outgoingMessages */
+-            drainableSubscribers = nullptr;
+-            outgoingMessages.clear();
+         }
++        clearOutgoingMessages();
++        return false;
+     }
+ 
+     /* Big messages bypass all buffering and land directly in backpressure */
+@@ -294,7 +321,11 @@
+ 
+             /* If we are sender then ignore us */
+             if (sender != s) {
++                std::uint64_t versionBeforeCallback = topologyVersion;
+                 cb(s, bigMessage);
++                if (versionBeforeCallback != topologyVersion) {
++                    return true;
++                }
+             }
+         }
+ 
+@@ -303,19 +334,21 @@
+ 
+     /* Linear in number of affected subscribers */
+     bool publish(Subscriber *sender, std::string_view topic, T &&message) {
+-        /* Do we even have this topic? */
+-        auto it = topics.find(topic);
+-        if (it == topics.end()) {
+-            return false;
+-        }
+-
+         /* If we have more than 65k messages we need to drain every socket. */
+         if (outgoingMessages.size() == UINT16_MAX) {
+             /* If there is a socket that is currently corked, this will be ugly as all sockets will drain
+              * to their own backpressure */
+-            drain();
++            if (drain()) {
++                return false;
++            }
+         }
+ 
++        /* Do we even have this topic? Re-resolve after drain callbacks. */
++        auto it = topics.find(topic);
++        if (it == topics.end()) {
++            return false;
++        }
++
+         /* If nobody references this message, don't buffer it */
+         bool referencedMessage = false;
+ 
+@@ -331,7 +364,9 @@
+                 /* If we already have too many outgoing messages on this subscriber, drain it now */
+                 if (s->numMessageIndices == 32) {
+                     /* This one does not need to check needsDrainage here but still does. */
+-                    drain(s);
++                    if (drain(s)) {
++                        return referencedMessage;
++                    }
+                 }
+ 
+                 /* Finally we can continue */
+--- a/src/WebSocket.h
++++ b/src/WebSocket.h
+@@ -158,7 +158,9 @@
+ 
+             if (webSocketData->subscriber) {
+                 /* This will call back into us, send. */
+-                webSocketContextData->topicTree->drain(webSocketData->subscriber);
++                if (webSocketContextData->topicTree->drain(webSocketData->subscriber)) {
++                    return DROPPED;
++                }
+             }
+ 
+             /* Transform the message to compressed domain if requested */

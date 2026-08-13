@@ -5,8 +5,12 @@ namespace swm::binding {
 constexpr unsigned int MAX_WEBSOCKET_PAYLOAD_LENGTH = 64U * 1024U * 1024U;
 
 SocketState *GetSocketState(const FunctionCallbackInfo<Value> &args) {
+    if (!HasBindingObjectKind(args.This(), BindingObjectKind::Socket, 1)) {
+        ThrowTypeError(args.GetIsolate(), "WebSocket method called with incompatible receiver");
+        return nullptr;
+    }
     auto *state = static_cast<SocketState *>(GetInternalPointer(args.This()));
-    if (!state || !state->Socket()) {
+    if (!state || !state->Socket() || state->App().IsClosed()) {
         ThrowError(args.GetIsolate(), "WebSocket is no longer valid");
         return nullptr;
     }
@@ -14,23 +18,14 @@ SocketState *GetSocketState(const FunctionCallbackInfo<Value> &args) {
 }
 
 void FailSocketCallback(SocketState *state) {
+    if (!state) return;
     state->MarkCallbackFailed();
     if (!state->Socket()) return;
     NativeWebSocket *socket = state->DetachSocket();
     if (state->HasObject()) {
         SetInternalPointer(state->Object(), nullptr);
     }
-    socket->close();
-}
-
-void FailSocketCallback(NativeWebSocket *socket, Local<Object> object) {
-    auto *state = static_cast<SocketState *>(GetInternalPointer(object));
-    if (state) {
-        FailSocketCallback(state);
-        return;
-    }
-    state = socket->getUserData()->state;
-    if (state) state->MarkCallbackFailed();
+    state->RequestClose(socket);
 }
 
 void SocketSend(const FunctionCallbackInfo<Value> &args) {
@@ -43,6 +38,10 @@ void SocketSend(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     NativeBytes message(args.GetIsolate(), args[0]);
+    if (message.IsTooLarge()) {
+        ThrowRangeError(args.GetIsolate(), "ws.send(message) exceeds the native transport limit");
+        return;
+    }
     if (!message.IsValid()) {
         ThrowTypeError(args.GetIsolate(), "ws.send(message) expects a string or buffer");
         return;
@@ -64,6 +63,11 @@ void SocketSendFirstFragment(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     NativeBytes message(args.GetIsolate(), args[0]);
+    if (message.IsTooLarge()) {
+        ThrowRangeError(args.GetIsolate(),
+                        "ws.sendFirstFragment(message) exceeds the native transport limit");
+        return;
+    }
     if (!message.IsValid()) {
         ThrowTypeError(args.GetIsolate(),
                        "ws.sendFirstFragment(message) expects a string or buffer");
@@ -84,6 +88,11 @@ void SocketSendFragment(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     NativeBytes message(args.GetIsolate(), args[0]);
+    if (message.IsTooLarge()) {
+        ThrowRangeError(args.GetIsolate(),
+                        "ws.sendFragment(message) exceeds the native transport limit");
+        return;
+    }
     if (!message.IsValid()) {
         ThrowTypeError(args.GetIsolate(), "ws.sendFragment(message) expects a string or buffer");
         return;
@@ -102,6 +111,11 @@ void SocketSendLastFragment(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     NativeBytes message(args.GetIsolate(), args[0]);
+    if (message.IsTooLarge()) {
+        ThrowRangeError(args.GetIsolate(),
+                        "ws.sendLastFragment(message) exceeds the native transport limit");
+        return;
+    }
     if (!message.IsValid()) {
         ThrowTypeError(args.GetIsolate(),
                        "ws.sendLastFragment(message) expects a string or buffer");
@@ -120,6 +134,10 @@ void SocketPing(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     NativeBytes message(args.GetIsolate(), args[0], true);
+    if (message.IsTooLarge()) {
+        ThrowRangeError(args.GetIsolate(), "ws.ping(message) exceeds the native transport limit");
+        return;
+    }
     if (!message.IsValid()) {
         ThrowTypeError(args.GetIsolate(), "ws.ping(message?) expects a string or buffer");
         return;
@@ -140,6 +158,10 @@ void SocketPublish(const FunctionCallbackInfo<Value> &args) {
     }
     NativeBytes topic(args.GetIsolate(), args[0]);
     NativeBytes message(args.GetIsolate(), args[1]);
+    if (topic.IsTooLarge() || message.IsTooLarge()) {
+        ThrowRangeError(args.GetIsolate(), "ws.publish() exceeds the native transport limit");
+        return;
+    }
     if (!topic.IsValid() || !message.IsValid()) {
         ThrowTypeError(args.GetIsolate(), "ws.publish() message expects a string or buffer");
         return;
@@ -166,11 +188,12 @@ void SocketCork(const FunctionCallbackInfo<Value> &args) {
     bool callbackSucceeded = true;
     Local<Value> callbackException;
     NativeWebSocket *socket = state->Socket();
+    std::shared_ptr<SocketState> stateLifetime = socket->getUserData()->state;
     socket->cork([isolate, handler, &callbackSucceeded, &callbackException]() {
         callbackSucceeded = CallJsDirect(isolate, handler, 0, nullptr, callbackException);
     });
     if (!callbackSucceeded) {
-        FailSocketCallback(socket, args.This());
+        FailSocketCallback(stateLifetime.get());
         if (!callbackException.IsEmpty()) isolate->ThrowException(callbackException);
         return;
     }
@@ -201,11 +224,17 @@ void SocketGetTopics(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     Isolate *isolate = args.GetIsolate();
+    Local<Context> context = isolate->GetCurrentContext();
     Local<Array> topics = Array::New(isolate);
-    state->Socket()->iterateTopics([isolate, topics](std::string_view topic) {
-        topics->Set(isolate->GetCurrentContext(), topics->Length(), NewString(isolate, topic))
-            .ToChecked();
-    });
+    std::uint32_t index = 0;
+    bool succeeded = true;
+    state->Socket()->iterateTopics(
+        [isolate, context, topics, &index, &succeeded](std::string_view topic) {
+            if (!succeeded) return;
+            succeeded = topics->CreateDataProperty(context, index++, NewString(isolate, topic))
+                            .FromMaybe(false);
+        });
+    if (!succeeded) return;
     args.GetReturnValue().Set(topics);
 }
 
@@ -305,7 +334,7 @@ void SocketClose(const FunctionCallbackInfo<Value> &args) {
     }
     NativeWebSocket *socket = state->DetachSocket();
     SetInternalPointer(args.This(), nullptr);
-    socket->close();
+    state->RequestClose(socket);
 }
 
 void SocketGetBufferedAmount(const FunctionCallbackInfo<Value> &args) {
@@ -492,60 +521,90 @@ StoreOptionalHandler(Isolate *isolate,
     return target->DefineProperty(currentContext, key, *descriptor).FromMaybe(false);
 }
 
-v8::MaybeLocal<Object> EnsureSocketObject(BindingEnvironment *context, NativeWebSocket *socket) {
+v8::MaybeLocal<Object>
+EnsureSocketObject(BindingEnvironment *context, AppState &app, NativeWebSocket *socket) {
     Isolate *isolate = context->Isolate();
-    SocketState *state = socket->getUserData()->state;
+    std::shared_ptr<SocketState> state = socket->getUserData()->state;
     if (!state) {
-        state = new SocketState(isolate);
+        state = std::make_shared<SocketState>(isolate, app);
         socket->getUserData()->state = state;
     }
-    state->AttachSocket(socket);
-    if (!state->HasObject()) {
-        Local<Object> object = context->CloneSocketTemplate();
-        if (state->HasUserData()) {
-            Local<Value> userData = state->UserData();
-            if (userData->IsObject()) {
-                Local<Object> source = userData.As<Object>();
-                Local<Context> currentContext = isolate->GetCurrentContext();
-                Local<Array> keys;
-                if (!source
-                         ->GetOwnPropertyNames(currentContext,
-                                               v8::ALL_PROPERTIES,
-                                               v8::KeyConversionMode::kConvertToString)
-                         .ToLocal(&keys)) {
-                    return {};
-                }
-                for (uint32_t index = 0; index < keys->Length(); index++) {
-                    Local<Value> keyValue;
-                    if (!keys->Get(currentContext, index).ToLocal(&keyValue) ||
-                        !keyValue->IsName()) {
-                        return {};
-                    }
-                    Local<v8::Name> key = keyValue.As<v8::Name>();
-                    v8::Maybe<bool> bindingOwnsKey = object->Has(currentContext, key);
-                    if (bindingOwnsKey.IsNothing()) return {};
-                    if (bindingOwnsKey.FromJust()) continue;
-                    if (!CopyOwnPropertyDescriptor(currentContext, source, key, object)) {
-                        return {};
-                    }
-                }
-            }
-            state->ResetUserData();
-        }
-        SetInternalPointer(object, state);
-        state->SetObject(object);
-        return object;
+    if (state->CallbackFailed()) return {};
+    const bool nativeClosed = us_socket_is_closed(0, reinterpret_cast<us_socket_t *>(socket));
+    if (state->HasObject()) {
+        if (nativeClosed) (void)state->DetachSocket();
+        return state->Object();
     }
-    return state->Object();
+    if (nativeClosed) {
+        (void)state->DetachSocket();
+        return {};
+    }
+    state->AttachSocket(socket);
+    auto fail = [&state]() -> v8::MaybeLocal<Object> {
+        FailSocketCallback(state.get());
+        return {};
+    };
+    Local<Object> object = context->CloneSocketTemplate();
+    if (state->HasUserData()) {
+        Local<Value> userData = state->UserData();
+        if (userData->IsObject()) {
+            Local<Object> source = userData.As<Object>();
+            Local<Context> currentContext = isolate->GetCurrentContext();
+            Local<Array> keys;
+            if (!source
+                     ->GetOwnPropertyNames(currentContext,
+                                           v8::ALL_PROPERTIES,
+                                           v8::KeyConversionMode::kConvertToString)
+                     .ToLocal(&keys)) {
+                return fail();
+            }
+            if (!state->Socket()) return fail();
+            for (uint32_t index = 0; index < keys->Length(); index++) {
+                Local<Value> keyValue;
+                if (!keys->Get(currentContext, index).ToLocal(&keyValue) || !keyValue->IsName()) {
+                    return fail();
+                }
+                Local<v8::Name> key = keyValue.As<v8::Name>();
+                v8::Maybe<bool> bindingOwnsKey = object->Has(currentContext, key);
+                if (bindingOwnsKey.IsNothing()) return fail();
+                if (!state->Socket()) return fail();
+                if (bindingOwnsKey.FromJust()) continue;
+                if (!CopyOwnPropertyDescriptor(currentContext, source, key, object)) {
+                    return fail();
+                }
+                if (!state->Socket()) return fail();
+            }
+        }
+        state->ResetUserData();
+    }
+    if (!state->Socket()) return fail();
+    SetInternalPointer(object, state.get());
+    state->SetObject(object);
+    return object;
 }
 
 void AppWs(const FunctionCallbackInfo<Value> &args) {
     Isolate *isolate = args.GetIsolate();
-    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    if (!state || args.Length() != 2 || !args[1]->IsObject()) {
+    auto *state = GetAppState(args);
+    if (!state) return;
+    if (state->IsClosed()) {
+        ThrowError(isolate, "app.ws() cannot be called after app.close()");
+        return;
+    }
+    if (state->IsInHttpRouteCallback()) {
+        ThrowError(isolate, "app.ws() cannot be called from an active HTTP route callback");
+        return;
+    }
+    if (args.Length() != 2 || !args[1]->IsObject()) {
         ThrowTypeError(isolate, "app.ws(path, behavior) expects a string and an object");
         return;
     }
+    NativeBytes path(isolate, args[0]);
+    if (!path.IsValid()) {
+        ThrowTypeError(isolate, "app.ws(path, behavior) path expects a string or buffer");
+        return;
+    }
+    const std::string pathString(path.View());
     Local<Object> options = args[1].As<Object>();
     uWS::App::WebSocketBehavior<PerSocketData> behavior;
     Local<Value> compression;
@@ -617,29 +676,51 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
     Global<Function> *close =
         StoreOptionalHandler(isolate, options, "close", &handlersValid, &pendingHandlers);
     if (!handlersValid) return;
+    if (state->IsClosed()) {
+        ThrowError(isolate, "app.ws() cannot be called after app.close()");
+        return;
+    }
+    if (state->IsInHttpRouteCallback()) {
+        ThrowError(isolate, "app.ws() cannot be called from an active HTTP route callback");
+        return;
+    }
     for (auto &handler : pendingHandlers) {
         state->OwnHandler(std::move(handler));
     }
 
     BindingEnvironment *context = &state->Environment();
     if (upgrade) {
-        behavior.upgrade = [context, upgrade](HttpResponse *response,
-                                              uWS::HttpRequest *request,
-                                              us_socket_context_t *socketContext) {
+        behavior.upgrade = [context, upgrade, state](HttpResponse *response,
+                                                     uWS::HttpRequest *request,
+                                                     us_socket_context_t *socketContext) {
+            HttpRouteCallbackScope routeCallbackScope{*state};
             Isolate *callbackIsolate = context->Isolate();
             HandleScope scope(callbackIsolate);
             Local<Object> responseObject = context->CloneResponseTemplate();
             Local<Object> requestObject = context->CloneRequestTemplate();
+            ResponseCallbackLifetime callbackLifetime{state};
+            ResponseMetadata responseMetadata{state, &callbackLifetime};
             SetInternalPointer(responseObject, response, 0);
+            SetInternalPointer(responseObject, &responseMetadata, 2);
             SetInternalPointer(requestObject, request);
-            Local<Value> argv[] = {
-                responseObject, requestObject, External::New(callbackIsolate, socketContext)};
+            SetInternalPointer(requestObject, &callbackLifetime, 2);
+            UpgradeContextScope upgradeContext(*context, response, socketContext);
+            Local<Value> argv[] = {responseObject, requestObject, upgradeContext.Token()};
             const bool callbackSucceeded =
                 CallJs(callbackIsolate, upgrade->Get(callbackIsolate), 3, argv);
+            callbackLifetime.Invalidate();
             SetInternalPointer(requestObject, nullptr);
+            SetInternalPointer(requestObject, nullptr, 2);
+            if (ResponseMetadata *metadata = GetResponseMetadata(responseObject)) {
+                metadata->callbackLifetime = nullptr;
+            }
+            if (state->IsClosed()) {
+                InvalidateResponseState(responseObject);
+                return;
+            }
             if (GetInternalPointer(responseObject) && !GetInternalPointer(responseObject, 1)) {
-                response->close();
                 InvalidateResponseObject(responseObject);
+                response->close();
             } else if (!callbackSucceeded && GetInternalPointer(responseObject, 1)) {
                 auto *async =
                     static_cast<AsyncResponseState *>(GetInternalPointer(responseObject, 1));
@@ -647,165 +728,165 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
             }
         };
     }
-    behavior.open = [context, open](NativeWebSocket *socket) {
+    behavior.open = [context, open, state](NativeWebSocket *socket) {
+        HttpRouteCallbackScope routeCallbackScope{*state};
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> socketObject;
-        if (!EnsureSocketObject(context, socket).ToLocal(&socketObject)) {
-            FailSocketCallback(socket->getUserData()->state);
+        if (!EnsureSocketObject(context, *state, socket).ToLocal(&socketObject)) {
             return;
         }
+        std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
         if (open) {
             Local<Value> argv[] = {socketObject};
             if (!CallJs(callbackIsolate, open->Get(callbackIsolate), 1, argv)) {
-                FailSocketCallback(socket, socketObject);
+                FailSocketCallback(socketState.get());
             }
         }
     };
-    behavior.message =
-        [context, message](NativeWebSocket *socket, std::string_view payload, uWS::OpCode opcode) {
-            if (!message) return;
-            Isolate *callbackIsolate = context->Isolate();
-            HandleScope scope(callbackIsolate);
-            Local<Object> socketObject;
-            if (!EnsureSocketObject(context, socket).ToLocal(&socketObject)) {
-                FailSocketCallback(socket->getUserData()->state);
-                return;
-            }
-            Local<ArrayBuffer> buffer = ExternalArrayBuffer(callbackIsolate, payload);
-            Local<Value> argv[] = {
-                socketObject, buffer, Boolean::New(callbackIsolate, opcode == uWS::OpCode::BINARY)};
-            const bool callbackSucceeded =
-                CallJs(callbackIsolate, message->Get(callbackIsolate), 3, argv);
-            buffer->Detach(Local<Value>()).FromMaybe(false);
-            if (!callbackSucceeded) {
-                FailSocketCallback(socket, socketObject);
-            }
-        };
-    behavior.dropped =
-        [context, dropped](NativeWebSocket *socket, std::string_view payload, uWS::OpCode opcode) {
-            if (!dropped) return;
-            Isolate *callbackIsolate = context->Isolate();
-            HandleScope scope(callbackIsolate);
-            Local<Object> socketObject;
-            if (!EnsureSocketObject(context, socket).ToLocal(&socketObject)) {
-                FailSocketCallback(socket->getUserData()->state);
-                return;
-            }
-            Local<ArrayBuffer> buffer = ExternalArrayBuffer(callbackIsolate, payload);
-            Local<Value> argv[] = {
-                socketObject, buffer, Boolean::New(callbackIsolate, opcode == uWS::OpCode::BINARY)};
-            const bool callbackSucceeded =
-                CallJs(callbackIsolate, dropped->Get(callbackIsolate), 3, argv);
-            buffer->Detach(Local<Value>()).FromMaybe(false);
-            if (!callbackSucceeded) {
-                FailSocketCallback(socket, socketObject);
-            }
-        };
-    behavior.drain = [context, drain](NativeWebSocket *socket) {
+    behavior.message = [context, message, state](
+                           NativeWebSocket *socket, std::string_view payload, uWS::OpCode opcode) {
+        if (!message) return;
+        Isolate *callbackIsolate = context->Isolate();
+        HandleScope scope(callbackIsolate);
+        Local<Object> socketObject;
+        if (!EnsureSocketObject(context, *state, socket).ToLocal(&socketObject)) {
+            return;
+        }
+        std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
+        NativeCallbackScope callbackScope(*state, socketState);
+        EphemeralArrayBuffer buffer(ExternalArrayBuffer(callbackIsolate, payload));
+        Local<Value> argv[] = {socketObject,
+                               buffer.Value(),
+                               Boolean::New(callbackIsolate, opcode == uWS::OpCode::BINARY)};
+        const bool callbackSucceeded =
+            CallJs(callbackIsolate, message->Get(callbackIsolate), 3, argv);
+        if (!callbackSucceeded) {
+            FailSocketCallback(socketState.get());
+        }
+    };
+    behavior.dropped = [context, dropped, state](
+                           NativeWebSocket *socket, std::string_view payload, uWS::OpCode opcode) {
+        if (!dropped) return;
+        Isolate *callbackIsolate = context->Isolate();
+        HandleScope scope(callbackIsolate);
+        Local<Object> socketObject;
+        if (!EnsureSocketObject(context, *state, socket).ToLocal(&socketObject)) {
+            return;
+        }
+        std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
+        /* A dropped callback may publish re-entrantly and invalidate TopicTree storage. */
+        EphemeralArrayBuffer buffer(CopyToArrayBuffer(callbackIsolate, payload));
+        Local<Value> argv[] = {socketObject,
+                               buffer.Value(),
+                               Boolean::New(callbackIsolate, opcode == uWS::OpCode::BINARY)};
+        const bool callbackSucceeded =
+            CallJs(callbackIsolate, dropped->Get(callbackIsolate), 3, argv);
+        if (!callbackSucceeded) {
+            FailSocketCallback(socketState.get());
+        }
+    };
+    behavior.drain = [context, drain, state](NativeWebSocket *socket) {
         if (!drain) return;
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> socketObject;
-        if (!EnsureSocketObject(context, socket).ToLocal(&socketObject)) {
-            FailSocketCallback(socket->getUserData()->state);
+        if (!EnsureSocketObject(context, *state, socket).ToLocal(&socketObject)) {
             return;
         }
+        std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
         Local<Value> argv[] = {socketObject};
         if (!CallJs(callbackIsolate, drain->Get(callbackIsolate), 1, argv)) {
-            FailSocketCallback(socket, socketObject);
+            FailSocketCallback(socketState.get());
         }
     };
-    behavior.ping = [context, ping](NativeWebSocket *socket, std::string_view payload) {
+    behavior.ping = [context, ping, state](NativeWebSocket *socket, std::string_view payload) {
         if (!ping) return;
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> socketObject;
-        if (!EnsureSocketObject(context, socket).ToLocal(&socketObject)) {
-            FailSocketCallback(socket->getUserData()->state);
+        if (!EnsureSocketObject(context, *state, socket).ToLocal(&socketObject)) {
             return;
         }
-        Local<ArrayBuffer> buffer = ExternalArrayBuffer(callbackIsolate, payload);
-        Local<Value> argv[] = {socketObject, buffer};
+        std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
+        NativeCallbackScope callbackScope(*state, socketState);
+        EphemeralArrayBuffer buffer(ExternalArrayBuffer(callbackIsolate, payload));
+        Local<Value> argv[] = {socketObject, buffer.Value()};
         const bool callbackSucceeded = CallJs(callbackIsolate, ping->Get(callbackIsolate), 2, argv);
-        buffer->Detach(Local<Value>()).FromMaybe(false);
         if (!callbackSucceeded) {
-            FailSocketCallback(socket, socketObject);
+            FailSocketCallback(socketState.get());
         }
     };
-    behavior.pong = [context, pong](NativeWebSocket *socket, std::string_view payload) {
+    behavior.pong = [context, pong, state](NativeWebSocket *socket, std::string_view payload) {
         if (!pong) return;
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> socketObject;
-        if (!EnsureSocketObject(context, socket).ToLocal(&socketObject)) {
-            FailSocketCallback(socket->getUserData()->state);
+        if (!EnsureSocketObject(context, *state, socket).ToLocal(&socketObject)) {
             return;
         }
-        Local<ArrayBuffer> buffer = ExternalArrayBuffer(callbackIsolate, payload);
-        Local<Value> argv[] = {socketObject, buffer};
+        std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
+        NativeCallbackScope callbackScope(*state, socketState);
+        EphemeralArrayBuffer buffer(ExternalArrayBuffer(callbackIsolate, payload));
+        Local<Value> argv[] = {socketObject, buffer.Value()};
         const bool callbackSucceeded = CallJs(callbackIsolate, pong->Get(callbackIsolate), 2, argv);
-        buffer->Detach(Local<Value>()).FromMaybe(false);
         if (!callbackSucceeded) {
-            FailSocketCallback(socket, socketObject);
+            FailSocketCallback(socketState.get());
         }
     };
-    behavior.subscription = [context, subscription](NativeWebSocket *socket,
-                                                    std::string_view topic,
-                                                    int newCount,
-                                                    int oldCount) {
+    behavior.subscription = [context, subscription, state](NativeWebSocket *socket,
+                                                           std::string_view topic,
+                                                           int newCount,
+                                                           int oldCount) {
         if (!subscription) return;
+        std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
+        if (socketState && socketState->CallbackFailed()) return;
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> socketObject;
-        if (!EnsureSocketObject(context, socket).ToLocal(&socketObject)) {
-            FailSocketCallback(socket->getUserData()->state);
+        if (!EnsureSocketObject(context, *state, socket).ToLocal(&socketObject)) {
             return;
         }
-        Local<ArrayBuffer> topicBuffer = ExternalArrayBuffer(callbackIsolate, topic);
+        socketState = socket->getUserData()->state;
+        NativeCallbackScope callbackScope(*state, socketState);
+        EphemeralArrayBuffer topicBuffer(ExternalArrayBuffer(callbackIsolate, topic));
         Local<Value> argv[] = {socketObject,
-                               topicBuffer,
+                               topicBuffer.Value(),
                                Number::New(callbackIsolate, newCount),
                                Number::New(callbackIsolate, oldCount)};
         const bool callbackSucceeded =
             CallJs(callbackIsolate, subscription->Get(callbackIsolate), 4, argv);
-        topicBuffer->Detach(Local<Value>()).FromMaybe(false);
         if (!callbackSucceeded) {
-            FailSocketCallback(socket, socketObject);
+            FailSocketCallback(socketState.get());
         }
     };
-    behavior.close = [context, close](NativeWebSocket *socket, int code, std::string_view reason) {
-        SocketState *socketState = socket->getUserData()->state;
-        if (!socketState) return;
-        Isolate *callbackIsolate = context->Isolate();
-        HandleScope scope(callbackIsolate);
-        Local<Object> socketObject;
-        const bool hasObject = socketState->HasObject();
-        if (hasObject) {
-            socketObject = socketState->Object();
-            SetInternalPointer(socketObject, nullptr);
-        }
-        (void)socketState->DetachSocket();
-        socket->getUserData()->state = nullptr;
-        if (close && !socketState->CallbackFailed() && hasObject) {
-            Local<ArrayBuffer> reasonBuffer = ExternalArrayBuffer(callbackIsolate, reason);
-            Local<Value> argv[] = {socketObject, Number::New(callbackIsolate, code), reasonBuffer};
-            const bool callbackSucceeded =
-                CallJs(callbackIsolate, close->Get(callbackIsolate), 3, argv);
-            reasonBuffer->Detach(Local<Value>()).FromMaybe(false);
-            if (!callbackSucceeded) socketState->MarkCallbackFailed();
-        }
-        socketState->ResetObject();
-        socketState->ResetUserData();
-        delete socketState;
-    };
+    behavior.close =
+        [context, close, state](NativeWebSocket *socket, int code, std::string_view reason) {
+            std::shared_ptr<SocketState> socketState = std::move(socket->getUserData()->state);
+            if (!socketState) return;
+            Isolate *callbackIsolate = context->Isolate();
+            HandleScope scope(callbackIsolate);
+            Local<Object> socketObject;
+            const bool hasObject = socketState->HasObject();
+            if (hasObject) {
+                socketObject = socketState->Object();
+                SetInternalPointer(socketObject, nullptr);
+            }
+            (void)socketState->DetachSocket();
+            if (close && !socketState->CallbackFailed() && hasObject) {
+                NativeCallbackScope callbackScope(*state, socketState);
+                EphemeralArrayBuffer reasonBuffer(ExternalArrayBuffer(callbackIsolate, reason));
+                Local<Value> argv[] = {
+                    socketObject, Number::New(callbackIsolate, code), reasonBuffer.Value()};
+                const bool callbackSucceeded =
+                    CallJs(callbackIsolate, close->Get(callbackIsolate), 3, argv);
+                if (!callbackSucceeded) socketState->MarkCallbackFailed();
+            }
+            socketState->ResetObject();
+            socketState->ResetUserData();
+        };
 
-    NativeBytes path(isolate, args[0]);
-    if (!path.IsValid()) {
-        ThrowTypeError(isolate, "app.ws(path, behavior) path expects a string or buffer");
-        return;
-    }
-    state->NativeApp().ws<PerSocketData>(std::string(path.View()), std::move(behavior));
+    state->NativeApp().ws<PerSocketData>(pathString, std::move(behavior));
     state->EnableWebSockets();
     args.GetReturnValue().Set(args.This());
 }
@@ -813,7 +894,7 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
 void InitializeWebSocketBinding(BindingEnvironment *context, Local<External>) {
     Isolate *isolate = context->Isolate();
     Local<FunctionTemplate> socket = FunctionTemplate::New(isolate);
-    socket->InstanceTemplate()->SetInternalFieldCount(1);
+    socket->InstanceTemplate()->SetInternalFieldCount(2);
     SetPrototypeMethod(isolate, socket, "send", SocketSend);
     SetPrototypeMethod(isolate, socket, "sendFirstFragment", SocketSendFirstFragment);
     SetPrototypeMethod(isolate, socket, "sendFragment", SocketSendFragment);
@@ -832,10 +913,12 @@ void InitializeWebSocketBinding(BindingEnvironment *context, Local<External>) {
     SetPrototypeMethod(isolate, socket, "unsubscribe", SocketUnsubscribe);
     SetPrototypeMethod(isolate, socket, "isSubscribed", SocketIsSubscribed);
     SetPrototypeMethod(isolate, socket, "getTopics", SocketGetTopics);
-    context->SetSocketTemplate(socket->GetFunction(isolate->GetCurrentContext())
-                                   .ToLocalChecked()
-                                   ->NewInstance(isolate->GetCurrentContext())
-                                   .ToLocalChecked());
+    Local<Object> socketTemplate = socket->GetFunction(isolate->GetCurrentContext())
+                                       .ToLocalChecked()
+                                       ->NewInstance(isolate->GetCurrentContext())
+                                       .ToLocalChecked();
+    SetBindingObjectKind(socketTemplate, BindingObjectKind::Socket, 1);
+    context->SetSocketTemplate(socketTemplate);
 }
 
 void InstallWebSocketAppMethods(Local<FunctionTemplate> app, Local<External> contextExternal) {

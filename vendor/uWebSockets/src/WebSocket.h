@@ -158,7 +158,9 @@ public:
 
             if (webSocketData->subscriber) {
                 /* This will call back into us, send. */
-                webSocketContextData->topicTree->drain(webSocketData->subscriber);
+                if (webSocketContextData->topicTree->drain(webSocketData->subscriber)) {
+                    return DROPPED;
+                }
             }
 
             /* Transform the message to compressed domain if requested */
@@ -236,6 +238,11 @@ public:
         size_t closePayloadLength = protocol::formatClosePayload(closePayload, (uint16_t) code, message.data(), length);
         bool ok = send(std::string_view(closePayload, closePayloadLength), OpCode::CLOSE);
 
+        /* A dropped handler can synchronously close this socket or its App. */
+        if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
+            return;
+        }
+
         /* FIN if we are ok and not corked */
         if (!this->isCorked()) {
             if (ok) {
@@ -252,22 +259,37 @@ public:
         /* Set shorter timeout (use ping-timeout) to avoid long hanging sockets after end() on broken connections */
         Super::timeout(webSocketContextData->idleTimeoutComponents.second);
 
-        /* At this point we iterate all currently held subscriptions and emit an event for all of them */
-        if (webSocketData->subscriber && webSocketContextData->subscriptionHandler) {
-            for (Topic *t : webSocketData->subscriber->topics) {
-                webSocketContextData->subscriptionHandler(this, t->name, (int) t->size() - 1, (int) t->size());
+        /* Stabilize the topic tree before user callbacks can unsubscribe, close
+         * this socket, or close the entire App re-entrantly. */
+        auto subscriptionChanges = webSocketContextData->topicTree->freeSubscriber(
+            webSocketData->subscriber,
+            (bool)webSocketContextData->subscriptionHandler);
+        webSocketData->subscriber = nullptr;
+        if (webSocketContextData->subscriptionHandler) {
+            for (const auto &change : subscriptionChanges) {
+                webSocketContextData->subscriptionHandler(
+                    this,
+                    change.topic,
+                    change.newCount,
+                    change.oldCount);
+                if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
+                    return;
+                }
             }
         }
 
-        /* Make sure to unsubscribe from any pub/sub node at exit */
-        webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
-        webSocketData->subscriber = nullptr;
-
         /* Emit close event */
+        webSocketData->closeEventEmitted = true;
         if (webSocketContextData->closeHandler) {
             webSocketContextData->closeHandler(this, code, message);
+            if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
+                return;
+            }
         }
+        webSocketData->userDataDestroyed = true;
         ((USERDATA *) this->getUserData())->~USERDATA();
+        webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
+        webSocketData->subscriber = nullptr;
     }
 
     /* Corks the response if possible. Leaves already corked socket be. */
@@ -275,6 +297,10 @@ public:
         if (!Super::isCorked() && Super::canCork()) {
             Super::cork();
             handler();
+
+            if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
+                return;
+            }
 
             /* There is no timeout when failing to uncork for WebSockets,
              * as that is handled by idleTimeout */

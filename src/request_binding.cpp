@@ -3,8 +3,16 @@
 namespace swm::binding {
 
 uWS::HttpRequest *GetRequest(const FunctionCallbackInfo<Value> &args) {
+    if (!HasBindingObjectKind(args.This(), BindingObjectKind::Request, 1)) {
+        ThrowTypeError(args.GetIsolate(), "HTTP request method called with incompatible receiver");
+        return nullptr;
+    }
     auto *request = static_cast<uWS::HttpRequest *>(GetInternalPointer(args.This()));
-    if (!request) ThrowError(args.GetIsolate(), "HTTP request is no longer valid");
+    auto *lifetime = static_cast<ResponseCallbackLifetime *>(GetInternalPointer(args.This(), 2));
+    if (!request || !lifetime || !lifetime->IsActive()) {
+        ThrowError(args.GetIsolate(), "HTTP request is no longer valid");
+        return nullptr;
+    }
     return request;
 }
 
@@ -132,6 +140,7 @@ void RequestForEach(const FunctionCallbackInfo<Value> &args) {
     }
     Isolate *isolate = args.GetIsolate();
     Local<Function> handler = args[0].As<Function>();
+    auto *lifetime = static_cast<ResponseCallbackLifetime *>(GetInternalPointer(args.This(), 2));
     for (const auto &[name, value] : *request) {
         Local<Value> argv[] = {NewString(isolate, name), NewString(isolate, value)};
         Local<Value> exception;
@@ -139,13 +148,15 @@ void RequestForEach(const FunctionCallbackInfo<Value> &args) {
             if (!exception.IsEmpty()) isolate->ThrowException(exception);
             return;
         }
+        if (!lifetime->IsActive()) return;
     }
 }
 
 using RequestPrefetchPlanPointer = std::shared_ptr<const swm::RequestPrefetchPlan>;
 
 RequestPrefetchPlanPointer *GetRequestPrefetchPlanHolder(Isolate *isolate, Local<Object> object) {
-    if (object->InternalFieldCount() != 1) {
+    if (object->InternalFieldCount() != 2 ||
+        !HasBindingObjectKind(object, BindingObjectKind::RequestPrefetchPlan, 1)) {
         ThrowTypeError(isolate, "invalid RequestPrefetchPlan receiver");
         return nullptr;
     }
@@ -159,7 +170,8 @@ RequestPrefetchPlanPointer *GetRequestPrefetchPlanHolder(Isolate *isolate, Local
 }
 
 swm::RequestPrefetchSnapshot *GetRequestPrefetchSnapshot(Isolate *isolate, Local<Object> object) {
-    if (object->InternalFieldCount() != 3) {
+    if (object->InternalFieldCount() != 4 ||
+        !HasBindingObjectKind(object, BindingObjectKind::RequestPrefetchSnapshot, 3)) {
         ThrowTypeError(isolate, "invalid RequestPrefetchSnapshot receiver");
         return nullptr;
     }
@@ -223,14 +235,15 @@ void RequestPrefetchPlanConstructor(const FunctionCallbackInfo<Value> &args) {
         allHeaders = true;
     } else if (headers->IsArray()) {
         Local<Array> selected = headers.As<Array>();
-        if (selected->Length() > std::numeric_limits<std::uint16_t>::max()) {
+        const std::uint32_t selectedCount = selected->Length();
+        if (selectedCount > std::numeric_limits<std::uint16_t>::max()) {
             ThrowTypeError(isolate, "RequestPrefetchPlan contains too many header names");
             return;
         }
-        headerNames.reserve(selected->Length());
+        headerNames.reserve(selectedCount);
         std::unordered_set<std::string> seen;
-        seen.reserve(selected->Length());
-        for (std::uint32_t index = 0; index < selected->Length(); index++) {
+        seen.reserve(selectedCount);
+        for (std::uint32_t index = 0; index < selectedCount; index++) {
             Local<Value> value;
             if (!selected->Get(context, index).ToLocal(&value)) return;
             if (!value->IsString()) {
@@ -261,14 +274,15 @@ void RequestPrefetchPlanConstructor(const FunctionCallbackInfo<Value> &args) {
         [](void *data, size_t, void *) { delete static_cast<RequestPrefetchPlanPointer *>(data); },
         nullptr);
     args.This()->SetInternalField(0, ArrayBuffer::New(isolate, std::move(backing)));
+    SetBindingObjectKind(args.This(), BindingObjectKind::RequestPrefetchPlan, 1);
 
     Local<Array> publicNames =
         Array::New(isolate, static_cast<int>((*holder)->HeaderNames().size()));
     for (std::size_t index = 0; index < (*holder)->HeaderNames().size(); index++) {
         if (!publicNames
-                 ->Set(context,
-                       static_cast<std::uint32_t>(index),
-                       NewOneByteString(isolate, (*holder)->HeaderNames()[index]))
+                 ->CreateDataProperty(context,
+                                      static_cast<std::uint32_t>(index),
+                                      NewOneByteString(isolate, (*holder)->HeaderNames()[index]))
                  .FromMaybe(false)) {
             return;
         }
@@ -284,7 +298,9 @@ void RequestPrefetchPlanConstructor(const FunctionCallbackInfo<Value> &args) {
              .FromMaybe(false)) {
         return;
     }
-    args.This()->SetIntegrityLevel(context, v8::IntegrityLevel::kFrozen).ToChecked();
+    if (!args.This()->SetIntegrityLevel(context, v8::IntegrityLevel::kFrozen).FromMaybe(false)) {
+        return;
+    }
     args.GetReturnValue().Set(args.This());
 }
 
@@ -319,13 +335,13 @@ void PrefetchSnapshotGetHeaderValues(const FunctionCallbackInfo<Value> &args) {
     for (std::size_t index = 0; index < snapshot->EntryCount(); index++) {
         if (!snapshot->EntryMatches(index, name)) continue;
         if (!values
-                 ->Set(
+                 ->CreateDataProperty(
                      context, outputIndex++, NewOneByteString(isolate, snapshot->EntryValue(index)))
                  .FromMaybe(false)) {
             return;
         }
     }
-    values->SetIntegrityLevel(context, v8::IntegrityLevel::kFrozen).ToChecked();
+    if (!values->SetIntegrityLevel(context, v8::IntegrityLevel::kFrozen).FromMaybe(false)) return;
     args.GetReturnValue().Set(values);
 }
 
@@ -377,19 +393,19 @@ void PrefetchSnapshotGetHeaderEntries(const FunctionCallbackInfo<Value> &args) {
     Local<Array> entries = Array::New(isolate, static_cast<int>(snapshot->EntryCount() * 2));
     for (std::size_t index = 0; index < snapshot->EntryCount(); index++) {
         if (!entries
-                 ->Set(context,
-                       static_cast<std::uint32_t>(index * 2),
-                       NewOneByteString(isolate, snapshot->EntryName(index)))
+                 ->CreateDataProperty(context,
+                                      static_cast<std::uint32_t>(index * 2),
+                                      NewOneByteString(isolate, snapshot->EntryName(index)))
                  .FromMaybe(false) ||
             !entries
-                 ->Set(context,
-                       static_cast<std::uint32_t>(index * 2 + 1),
-                       NewOneByteString(isolate, snapshot->EntryValue(index)))
+                 ->CreateDataProperty(context,
+                                      static_cast<std::uint32_t>(index * 2 + 1),
+                                      NewOneByteString(isolate, snapshot->EntryValue(index)))
                  .FromMaybe(false)) {
             return;
         }
     }
-    entries->SetIntegrityLevel(context, v8::IntegrityLevel::kFrozen).ToChecked();
+    if (!entries->SetIntegrityLevel(context, v8::IntegrityLevel::kFrozen).FromMaybe(false)) return;
     args.This()->SetInternalField(2, entries);
     args.GetReturnValue().Set(entries);
 }
@@ -430,7 +446,7 @@ void RequestPrefetch(const FunctionCallbackInfo<Value> &args) {
 void InitializeRequestBinding(BindingEnvironment *context, Local<External> contextExternal) {
     Isolate *isolate = context->Isolate();
     Local<FunctionTemplate> request = FunctionTemplate::New(isolate);
-    request->InstanceTemplate()->SetInternalFieldCount(1);
+    request->InstanceTemplate()->SetInternalFieldCount(3);
     SetPrototypeMethod(isolate, request, "getMethod", RequestGetMethod);
     SetPrototypeMethod(isolate, request, "getCaseSensitiveMethod", RequestGetCaseSensitiveMethod);
     SetPrototypeMethod(isolate, request, "getUrl", RequestGetUrl);
@@ -440,13 +456,17 @@ void InitializeRequestBinding(BindingEnvironment *context, Local<External> conte
     SetPrototypeMethod(isolate, request, "setYield", RequestSetYield);
     SetPrototypeMethod(isolate, request, "forEach", RequestForEach);
     SetPrototypeMethod(isolate, request, "prefetch", RequestPrefetch, contextExternal);
-    context->SetRequestTemplate(request->GetFunction(isolate->GetCurrentContext())
-                                    .ToLocalChecked()
-                                    ->NewInstance(isolate->GetCurrentContext())
-                                    .ToLocalChecked());
+    Local<Object> requestTemplate = request->GetFunction(isolate->GetCurrentContext())
+                                        .ToLocalChecked()
+                                        ->NewInstance(isolate->GetCurrentContext())
+                                        .ToLocalChecked();
+    SetInternalPointer(requestTemplate, nullptr, 0);
+    SetBindingObjectKind(requestTemplate, BindingObjectKind::Request, 1);
+    SetInternalPointer(requestTemplate, nullptr, 2);
+    context->SetRequestTemplate(requestTemplate);
 
     Local<FunctionTemplate> prefetchSnapshot = FunctionTemplate::New(isolate);
-    prefetchSnapshot->InstanceTemplate()->SetInternalFieldCount(3);
+    prefetchSnapshot->InstanceTemplate()->SetInternalFieldCount(4);
     SetPrototypeMethod(isolate, prefetchSnapshot, "getHeader", PrefetchSnapshotGetHeader);
     SetPrototypeMethod(
         isolate, prefetchSnapshot, "getHeaderValues", PrefetchSnapshotGetHeaderValues);
@@ -459,6 +479,7 @@ void InitializeRequestBinding(BindingEnvironment *context, Local<External> conte
             .ToLocalChecked()
             ->NewInstance(isolate->GetCurrentContext())
             .ToLocalChecked();
+    SetBindingObjectKind(prefetchSnapshotTemplate, BindingObjectKind::RequestPrefetchSnapshot, 3);
     context->SetRequestPrefetchSnapshotTemplate(prefetchSnapshotTemplate);
     context->SetRequestPrefetchHeadersTemplate(
         Object::New(isolate, Null(isolate), nullptr, nullptr, 0));
@@ -466,7 +487,7 @@ void InitializeRequestBinding(BindingEnvironment *context, Local<External> conte
     Local<FunctionTemplate> prefetchPlan =
         FunctionTemplate::New(isolate, RequestPrefetchPlanConstructor, contextExternal);
     prefetchPlan->SetClassName(NewString(isolate, "RequestPrefetchPlan"));
-    prefetchPlan->InstanceTemplate()->SetInternalFieldCount(1);
+    prefetchPlan->InstanceTemplate()->SetInternalFieldCount(2);
     context->SetRequestPrefetchPlanConstructor(
         prefetchPlan->GetFunction(isolate->GetCurrentContext()).ToLocalChecked());
 }

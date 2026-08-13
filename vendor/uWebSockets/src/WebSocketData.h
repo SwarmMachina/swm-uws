@@ -42,6 +42,8 @@ private:
     bool fragmentBufferClearPending = false;
     bool fragmentBufferViewActive = false;
     bool isShuttingDown = 0;
+    bool closeEventEmitted = false;
+    bool userDataDestroyed = false;
     bool hasTimedOut = false;
     enum CompressionStatus : char {
         DISABLED,

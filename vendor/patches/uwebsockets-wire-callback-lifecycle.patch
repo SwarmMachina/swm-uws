@@ -1,0 +1,444 @@
+diff --git a/src/HttpContext.h b/src/HttpContext.h
+index 93207a5..bb56152 100644
+--- a/src/HttpContext.h
++++ b/src/HttpContext.h
+@@ -95,6 +95,9 @@ private:
+             /* Call filter */
+             for (auto &f : httpContextData->filterHandlers) {
+                 f((HttpResponse<SSL> *) s, 1);
++                if (us_socket_is_closed(SSL, s)) {
++                    return s;
++                }
+             }
+
+             return s;
+@@ -353,8 +356,16 @@ private:
+                 /* This path is only for upgraded websockets */
+                 AsyncSocket<SSL> *asyncSocket = (AsyncSocket<SSL> *) httpContextData->upgradedWebSocket;
+ 
+                 /* Uncork here as well (note: what if we failed to uncork and we then pub/sub before we even upgraded?) */
+                 auto [written, failed] = asyncSocket->uncork();
+ 
++                /* The open handler can synchronously close the upgraded socket.
++                 * Uncork first to release loop state, then stop before reading
++                 * the already-destroyed WebSocketData extension. */
++                if (us_socket_is_closed(SSL, (us_socket_t *) asyncSocket)) {
++                    httpContextData->upgradedWebSocket = nullptr;
++                    return (us_socket_t *) asyncSocket;
++                }
++
+                 /* If we succeeded in uncorking, check if we have sent WebSocket FIN */
+                 if (!failed) {
+@@ -396,6 +406,12 @@ private:
+                  * If write was never called, the developer should still return true so that we may drain. */
+                 bool success = httpResponseData->callOnWritable(httpResponseData->offset);
+ 
++                /* User code may close this socket or its entire context. Do not
++                 * touch HttpResponseData after that callback. */
++                if (us_socket_is_closed(SSL, s)) {
++                    return s;
++                }
++
+                 /* The developer indicated that their onWritable failed. */
+                 if (!success) {
+                     httpResponseData->transportPhase = HttpTransportPhase::ResponseBlocked;
+diff --git a/src/HttpParser.h b/src/HttpParser.h
+index a26043b..290fe59 100644
+--- a/src/HttpParser.h
++++ b/src/HttpParser.h
+@@ -664,7 +664,13 @@ private:
+                     /* Go ahead and parse it (todo: better heuristics for emitting FIN to the app level) */
+                     std::string_view dataToConsume(data, length);
+                     for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
+-                        dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                        void *returnedUser =
++                            dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                        if (returnedUser != user) {
++                            consumedTotal +=
++                                length - (unsigned int)dataToConsume.length();
++                            return {consumedTotal, returnedUser};
++                        }
+                     }
+                     if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
+                         return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+@@ -677,16 +683,25 @@ private:
+             } else if (hasContentLength) {
+                 if (!CONSUME_MINIMALLY) {
+                     unsigned int emittable = (unsigned int) std::min<uint64_t>(remainingStreamingBytes, length);
+-                    dataHandler(user, std::string_view(data, emittable), remainingStreamingBytes - emittable);
+-                    remainingStreamingBytes -= emittable;
++                    std::string_view chunk(data, emittable);
++                    uint64_t remainingAfterChunk = remainingStreamingBytes - emittable;
++                    remainingStreamingBytes = remainingAfterChunk;
+ 
+                     data += emittable;
+                     length -= emittable;
+                     consumedTotal += emittable;
++
++                    void *returnedUser = dataHandler(user, chunk, remainingAfterChunk);
++                    if (returnedUser != user) {
++                        return {consumedTotal, returnedUser};
++                    }
+                 }
+             } else {
+                 /* If we came here without a body; emit an empty data chunk to signal no data */
+-                dataHandler(user, {}, 0);
++                void *returnedUser = dataHandler(user, {}, 0);
++                if (returnedUser != user) {
++                    return {consumedTotal, returnedUser};
++                }
+             }
+ 
+             /* Consume minimally should break as easrly as possible */
+@@ -745,7 +760,11 @@ public:
+                 std::string_view dataToConsume(data, length);
+                 for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
+                     /* If we got the zero size chunk, maxRemainingBodyLength is 0, else it is practically infinity */
+-                    dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                    void *returnedUser =
++                        dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                    if (returnedUser != user) {
++                        return {0, returnedUser};
++                    }
+                 }
+                 if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
+                     return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+@@ -756,16 +775,20 @@ public:
+                 // this is exactly the same as below!
+                 // todo: refactor this
+                 if (remainingStreamingBytes >= length) {
+-                    void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes - length);
+-                    remainingStreamingBytes -= length;
++                    uint64_t remainingAfterChunk = remainingStreamingBytes - length;
++                    remainingStreamingBytes = remainingAfterChunk;
++                    void *returnedUser =
++                        dataHandler(user, std::string_view(data, length), remainingAfterChunk);
+                     return {0, returnedUser};
+                 } else {
+-                    void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), 0);
++                    unsigned int emittable = (unsigned int)remainingStreamingBytes;
++                    std::string_view chunk(data, emittable);
++                    remainingStreamingBytes = 0;
+ 
+-                    data += (unsigned int) remainingStreamingBytes;
+-                    length -= (unsigned int) remainingStreamingBytes;
++                    data += emittable;
++                    length -= emittable;
+ 
+-                    remainingStreamingBytes = 0;
++                    void *returnedUser = dataHandler(user, chunk, 0);
+ 
+                     if (returnedUser != user) {
+                         return {0, returnedUser};
+@@ -802,7 +825,11 @@ public:
+                     if (isParsingChunkedEncoding(remainingStreamingBytes)) {
+                         std::string_view dataToConsume(data, length);
+                         for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
+-                            dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                            void *returnedUser =
++                                dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                            if (returnedUser != user) {
++                                return {0, returnedUser};
++                            }
+                         }
+                         if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
+                             return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+@@ -812,16 +839,20 @@ public:
+                     } else {
+                         // this is exactly the same as above!
+                         if (remainingStreamingBytes >= (unsigned int) length) {
+-                            void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes - (unsigned int) length);
+-                            remainingStreamingBytes -= length;
++                            uint64_t remainingAfterChunk = remainingStreamingBytes - length;
++                            remainingStreamingBytes = remainingAfterChunk;
++                            void *returnedUser =
++                                dataHandler(user, std::string_view(data, length), remainingAfterChunk);
+                             return {0, returnedUser};
+                         } else {
+-                            void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), 0);
++                            unsigned int emittable = (unsigned int)remainingStreamingBytes;
++                            std::string_view chunk(data, emittable);
++                            remainingStreamingBytes = 0;
+ 
+-                            data += (unsigned int) remainingStreamingBytes;
+-                            length -= (unsigned int) remainingStreamingBytes;
++                            data += emittable;
++                            length -= emittable;
+ 
+-                            remainingStreamingBytes = 0;
++                            void *returnedUser = dataHandler(user, chunk, 0);
+ 
+                             if (returnedUser != user) {
+                                 return {0, returnedUser};
+diff --git a/src/HttpResponse.h b/src/HttpResponse.h
+index 0577c9d..0f623b9 100644
+--- a/src/HttpResponse.h
++++ b/src/HttpResponse.h
+@@ -604,6 +604,14 @@ public:
+              * from here downwards. The corking is done with corkUnchecked() in upgrade. It steals cork. */
+             auto *newCorkedSocket = loopData->corkedSocket;
+ 
++            /* The handler can close either the HTTP socket or a reallocated
++             * upgraded socket. Only inspect the current corked allocation. */
++            if (newCorkedSocket &&
++                us_socket_is_closed(SSL, (us_socket_t *) newCorkedSocket)) {
++                static_cast<Super *>(newCorkedSocket)->uncork();
++                return static_cast<HttpResponse *>(newCorkedSocket);
++            }
++
+             /* If nobody is corked, it means most probably that large amounts of data has
+              * been written and the cork buffer has already been sent off and uncorked.
+              * We are done here, if that is the case. */
+diff --git a/src/TopicTree.h b/src/TopicTree.h
+index ef0fda2..ce07601 100644
+--- a/src/TopicTree.h
++++ b/src/TopicTree.h
+@@ -85,6 +85,12 @@ struct TopicTree {
+         FIRST = 2
+     };
+ 
++    struct SubscriptionChange {
++        std::string topic;
++        int newCount;
++        int oldCount;
++    };
++
+     /* Whomever is iterating this topic is locked to not modify its own list */
+     Subscriber *iteratingSubscriber = nullptr;
+ 
+@@ -229,16 +235,25 @@ public:
+         return new Subscriber();
+     }
+ 
+-    /* This is used to end a Subscriber, before freeing it */
+-    void freeSubscriber(Subscriber *s) {
++    /* This is used to end a Subscriber, before freeing it. When requested,
++     * removal notifications are copied before any Topic can be deleted so
++     * user callbacks can run only after the topology is stable. */
++    std::vector<SubscriptionChange> freeSubscriber(Subscriber *s, bool captureChanges = false) {
++        std::vector<SubscriptionChange> changes;
+ 
+         /* I guess we call this one even if we are not subscribers */
+         if (!s) {
+-            return;
++            return changes;
+         }
+ 
+-        if (s->topics.size()) {
+-            topologyVersion++;
++        topologyVersion++;
++        if (captureChanges) {
++            changes.reserve(s->topics.size());
++            for (Topic *topicPtr : s->topics) {
++                changes.push_back({topicPtr->name,
++                                   (int)topicPtr->size() - 1,
++                                   (int)topicPtr->size()});
++            }
+         }
+ 
+         /* For all topics, unsubscribe */
+@@ -258,6 +273,7 @@ public:
+         }
+ 
+         delete s;
++        return changes;
+     }
+ 
+     /* Mainly used by WebSocket::send to drain one socket before sending */
+diff --git a/src/WebSocket.h b/src/WebSocket.h
+index 0ea9ac2..647f969 100644
+--- a/src/WebSocket.h
++++ b/src/WebSocket.h
+@@ -238,6 +238,11 @@ public:
+         size_t closePayloadLength = protocol::formatClosePayload(closePayload, (uint16_t) code, message.data(), length);
+         bool ok = send(std::string_view(closePayload, closePayloadLength), OpCode::CLOSE);
+ 
++        /* A dropped handler can synchronously close this socket or its App. */
++        if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
++            return;
++        }
++
+         /* FIN if we are ok and not corked */
+         if (!this->isCorked()) {
+             if (ok) {
+@@ -254,22 +259,37 @@ public:
+         /* Set shorter timeout (use ping-timeout) to avoid long hanging sockets after end() on broken connections */
+         Super::timeout(webSocketContextData->idleTimeoutComponents.second);
+ 
+-        /* At this point we iterate all currently held subscriptions and emit an event for all of them */
+-        if (webSocketData->subscriber && webSocketContextData->subscriptionHandler) {
+-            for (Topic *t : webSocketData->subscriber->topics) {
+-                webSocketContextData->subscriptionHandler(this, t->name, (int) t->size() - 1, (int) t->size());
++        /* Stabilize the topic tree before user callbacks can unsubscribe, close
++         * this socket, or close the entire App re-entrantly. */
++        auto subscriptionChanges = webSocketContextData->topicTree->freeSubscriber(
++            webSocketData->subscriber,
++            (bool)webSocketContextData->subscriptionHandler);
++        webSocketData->subscriber = nullptr;
++        if (webSocketContextData->subscriptionHandler) {
++            for (const auto &change : subscriptionChanges) {
++                webSocketContextData->subscriptionHandler(
++                    this,
++                    change.topic,
++                    change.newCount,
++                    change.oldCount);
++                if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
++                    return;
++                }
+             }
+         }
+ 
+-        /* Make sure to unsubscribe from any pub/sub node at exit */
+-        webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
+-        webSocketData->subscriber = nullptr;
+-
+         /* Emit close event */
++        webSocketData->closeEventEmitted = true;
+         if (webSocketContextData->closeHandler) {
+             webSocketContextData->closeHandler(this, code, message);
++            if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
++                return;
++            }
+         }
++        webSocketData->userDataDestroyed = true;
+         ((USERDATA *) this->getUserData())->~USERDATA();
++        webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
++        webSocketData->subscriber = nullptr;
+     }
+ 
+     /* Corks the response if possible. Leaves already corked socket be. */
+@@ -278,6 +298,10 @@ public:
+             Super::cork();
+             handler();
+ 
++            if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
++                return;
++            }
++
+             /* There is no timeout when failing to uncork for WebSockets,
+              * as that is handled by idleTimeout */
+             auto [written, failed] = Super::uncork();
+diff --git a/src/WebSocketContext.h b/src/WebSocketContext.h
+index 8c9f699..9622e61 100644
+--- a/src/WebSocketContext.h
++++ b/src/WebSocketContext.h
+@@ -184,6 +184,10 @@ private:
+                 } else {
+                     if (opCode == PING) {
+                         webSocket->send(std::string_view(data, length), (OpCode) OpCode::PONG);
++                        if (us_socket_is_closed(SSL, (us_socket_t *) s) ||
++                            webSocketData->isShuttingDown) {
++                            return true;
++                        }
+                         if (webSocketContextData->pingHandler) {
+                             webSocketContextData->pingHandler(webSocket, {data, length});
+                             if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
+@@ -217,6 +221,10 @@ private:
+                     } else {
+                         if (opCode == PING) {
+                             webSocket->send(std::string_view(controlBuffer, webSocketData->controlTipLength), (OpCode) OpCode::PONG);
++                            if (us_socket_is_closed(SSL, (us_socket_t *) s) ||
++                                webSocketData->isShuttingDown) {
++                                return true;
++                            }
+                             if (webSocketContextData->pingHandler) {
+                                 webSocketData->beginFragmentBufferView();
+                                 webSocketContextData->pingHandler(webSocket, std::string_view(controlBuffer, webSocketData->controlTipLength));
+@@ -268,30 +276,42 @@ private:
+ 
+         /* Handle socket disconnections */
+         us_socket_context_on_close(SSL, getSocketContext(), [](auto *s, int code, void *reason) {
+-            /* For whatever reason, if we already have emitted close event, do not emit it again */
+             WebSocketData *webSocketData = (WebSocketData *) (us_socket_ext(SSL, s));
+-            if (!webSocketData->isShuttingDown) {
+-                /* Emit close event */
+-                auto *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
+-
+-                /* At this point we iterate all currently held subscriptions and emit an event for all of them */
+-                if (webSocketData->subscriber && webSocketContextData->subscriptionHandler) {
+-                    for (Topic *t : webSocketData->subscriber->topics) {
+-                        webSocketContextData->subscriptionHandler((WebSocket<SSL, isServer, USERDATA> *) s, t->name, (int) t->size() - 1, (int) t->size());
+-                    }
++            auto *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
++            auto *ws = (WebSocket<SSL, isServer, USERDATA> *) s;
++
++            /* Copy and unlink subscriptions before callbacks can mutate either
++             * side of the relationship while it is being traversed. */
++            auto subscriptionChanges = webSocketContextData->topicTree->freeSubscriber(
++                webSocketData->subscriber,
++                (bool)webSocketContextData->subscriptionHandler);
++            webSocketData->subscriber = nullptr;
++            if (webSocketContextData->subscriptionHandler) {
++                for (const auto &change : subscriptionChanges) {
++                    webSocketContextData->subscriptionHandler(
++                        ws,
++                        change.topic,
++                        change.newCount,
++                        change.oldCount);
+                 }
++            }
+ 
+-                /* Make sure to unsubscribe from any pub/sub node at exit */
+-                webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
+-                webSocketData->subscriber = nullptr;
+-
+-                auto *ws = (WebSocket<SSL, isServer, USERDATA> *) s;
++            if (!webSocketData->closeEventEmitted) {
++                webSocketData->closeEventEmitted = true;
+                 if (webSocketContextData->closeHandler) {
+                     webSocketContextData->closeHandler(ws, 1006, {(char *) reason, (size_t) code});
+                 }
++            }
++            if (!webSocketData->userDataDestroyed) {
++                webSocketData->userDataDestroyed = true;
+                 ((USERDATA *) ws->getUserData())->~USERDATA();
+             }
+ 
++            /* A close callback must not be able to leave a newly-created
++             * subscriber linked after WebSocketData is destroyed. */
++            webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
++            webSocketData->subscriber = nullptr;
++
+             /* Destruct in-placed data struct */
+             webSocketData->~WebSocketData();
+ 
+@@ -326,6 +346,12 @@ private:
+             /* Uncorking a closed socekt is fine, in fact it is needed */
+             asyncSocket->uncork();
+ 
++            /* User callbacks can synchronously close the socket and destroy
++             * WebSocketData while the protocol parser is on the stack. */
++            if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
++                return s;
++            }
++
+             /* If uncorking was successful and we are in shutdown state then send TCP FIN */
+             if (asyncSocket->getBufferedAmount() == 0) {
+                 /* We can now be in shutdown state */
+diff --git a/src/WebSocketData.h b/src/WebSocketData.h
+index df443fc..ec5b7c9 100644
+--- a/src/WebSocketData.h
++++ b/src/WebSocketData.h
+@@ -42,6 +42,8 @@ private:
+     bool fragmentBufferClearPending = false;
+     bool fragmentBufferViewActive = false;
+     bool isShuttingDown = 0;
++    bool closeEventEmitted = false;
++    bool userDataDestroyed = false;
+     bool hasTimedOut = false;
+     enum CompressionStatus : char {
+         DISABLED,
+diff --git a/src/WebSocketProtocol.h b/src/WebSocketProtocol.h
+index 00226c0..fe3b708 100644
+--- a/src/WebSocketProtocol.h
++++ b/src/WebSocketProtocol.h
+@@ -183,6 +183,9 @@ struct CloseFrame {
+ static inline CloseFrame parseClosePayload(char *src, size_t length) {
+     /* If we get no code or message, default to reporting 1005 no status code present */
+     CloseFrame cf = {1005, nullptr, 0};
++    if (length == 1) {
++        return {1006, (char *) ERR_INVALID_CLOSE_PAYLOAD.data(), ERR_INVALID_CLOSE_PAYLOAD.length()};
++    }
+     if (length >= 2) {
+         memcpy(&cf.code, src, 2);
+         cf = {cond_byte_swap<uint16_t>(cf.code), src + 2, length - 2};

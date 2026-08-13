@@ -1,13 +1,25 @@
 #include "binding_internal.h"
+#include "listen_socket_handle.h"
 
 namespace swm::binding {
+
+constexpr std::uint64_t MAX_HTTP_HEADER_SIZE = 64ULL * 1024ULL * 1024ULL;
 
 void RegisterHttpRoute(const FunctionCallbackInfo<Value> &args,
                        HttpMethod method,
                        const char *methodName) {
     Isolate *isolate = args.GetIsolate();
-    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    if (!state || args.Length() != 2 || !args[1]->IsFunction()) {
+    auto *state = GetAppState(args);
+    if (!state) return;
+    if (state->IsClosed()) {
+        ThrowError(isolate, "app routes cannot be registered after app.close()");
+        return;
+    }
+    if (state->IsInHttpRouteCallback()) {
+        ThrowError(isolate, "app routes cannot be registered from an active HTTP route callback");
+        return;
+    }
+    if (args.Length() != 2 || !args[1]->IsFunction()) {
         std::string message =
             "app." + std::string(methodName) + "(path, handler) expects a string and a function";
         ThrowTypeError(isolate, message.c_str());
@@ -21,26 +33,41 @@ void RegisterHttpRoute(const FunctionCallbackInfo<Value> &args,
     }
     Global<Function> *handlerPointer = state->OwnHandler(isolate, args[1].As<Function>());
     BindingEnvironment *context = &state->Environment();
-    auto routeHandler = [context, handlerPointer](HttpResponse *response,
-                                                  uWS::HttpRequest *request) {
+    auto routeHandler = [context, handlerPointer, state](HttpResponse *response,
+                                                         uWS::HttpRequest *request) {
+        HttpRouteCallbackScope routeCallbackScope{*state};
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> responseObject = context->CloneResponseTemplate();
         Local<Object> requestObject = context->CloneRequestTemplate();
+        ResponseCallbackLifetime callbackLifetime{state};
+        ResponseMetadata responseMetadata{state, &callbackLifetime};
         SetInternalPointer(responseObject, response, 0);
+        SetInternalPointer(responseObject, &responseMetadata, 2);
         SetInternalPointer(requestObject, request);
+        SetInternalPointer(requestObject, &callbackLifetime, 2);
         Local<Value> argv[] = {responseObject, requestObject};
         const bool callbackSucceeded =
             CallJs(callbackIsolate, handlerPointer->Get(callbackIsolate), 2, argv);
+        callbackLifetime.Invalidate();
         SetInternalPointer(requestObject, nullptr);
+        SetInternalPointer(requestObject, nullptr, 2);
+        if (ResponseMetadata *metadata = GetResponseMetadata(responseObject)) {
+            metadata->callbackLifetime = nullptr;
+        }
+
+        if (state->IsClosed()) {
+            InvalidateResponseState(responseObject);
+            return;
+        }
 
         if (GetInternalPointer(responseObject)) {
             auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(responseObject, 1));
             if (!callbackSucceeded && async) {
                 CloseAsyncResponseAfterCallbackFailure(async->shared_from_this());
             } else if (!async) {
-                response->close();
                 InvalidateResponseObject(responseObject);
+                response->close();
             }
         }
     };
@@ -113,9 +140,9 @@ void AppAny(const FunctionCallbackInfo<Value> &args) {
 }
 
 void AppPublish(const FunctionCallbackInfo<Value> &args) {
-    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    if (!state || args.Length() < 2 || args.Length() > 4 ||
-        (args.Length() > 2 && !args[2]->IsBoolean()) ||
+    auto *state = GetAppState(args);
+    if (!state) return;
+    if (args.Length() < 2 || args.Length() > 4 || (args.Length() > 2 && !args[2]->IsBoolean()) ||
         (args.Length() > 3 && !args[3]->IsBoolean())) {
         ThrowTypeError(
             args.GetIsolate(),
@@ -124,12 +151,16 @@ void AppPublish(const FunctionCallbackInfo<Value> &args) {
     }
     NativeBytes topic(args.GetIsolate(), args[0]);
     NativeBytes message(args.GetIsolate(), args[1]);
+    if (topic.IsTooLarge() || message.IsTooLarge()) {
+        ThrowRangeError(args.GetIsolate(), "app.publish() exceeds the native transport limit");
+        return;
+    }
     if (!topic.IsValid() || !message.IsValid()) {
         ThrowTypeError(args.GetIsolate(),
                        "app.publish topic and message expect strings or buffers");
         return;
     }
-    if (!state->HasWebSockets()) {
+    if (state->IsClosed() || !state->HasWebSockets()) {
         args.GetReturnValue().Set(false);
         return;
     }
@@ -144,8 +175,9 @@ void AppPublish(const FunctionCallbackInfo<Value> &args) {
 }
 
 void AppNumSubscribers(const FunctionCallbackInfo<Value> &args) {
-    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    if (!state || args.Length() != 1) {
+    auto *state = GetAppState(args);
+    if (!state) return;
+    if (args.Length() != 1) {
         ThrowTypeError(args.GetIsolate(), "app.numSubscribers(topic) expects a topic");
         return;
     }
@@ -154,7 +186,7 @@ void AppNumSubscribers(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(args.GetIsolate(), "app.numSubscribers(topic) expects a string or buffer");
         return;
     }
-    if (!state->HasWebSockets()) {
+    if (state->IsClosed() || !state->HasWebSockets()) {
         args.GetReturnValue().Set(0);
         return;
     }
@@ -163,12 +195,13 @@ void AppNumSubscribers(const FunctionCallbackInfo<Value> &args) {
 
 void AppListen(const FunctionCallbackInfo<Value> &args) {
     Isolate *isolate = args.GetIsolate();
-    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
+    auto *state = GetAppState(args);
+    if (!state) return;
     const bool portOnly = args.Length() >= 2 && args.Length() <= 3 && args[0]->IsNumber() &&
                           args[args.Length() - 1]->IsFunction();
     const bool withHost = args.Length() >= 3 && args.Length() <= 4 && !args[0]->IsNumber() &&
                           args[1]->IsNumber() && args[args.Length() - 1]->IsFunction();
-    if (!state || (!portOnly && !withHost) ||
+    if ((!portOnly && !withHost) ||
         (((portOnly && args.Length() == 3) || (withHost && args.Length() == 4)) &&
          !args[args.Length() - 2]->IsNumber())) {
         ThrowTypeError(isolate,
@@ -202,28 +235,32 @@ void AppListen(const FunctionCallbackInfo<Value> &args) {
         }
         options = static_cast<int>(optionsNumber);
     }
+    std::string host;
+    if (withHost) {
+        NativeBytes nativeHost(isolate, args[0]);
+        if (!nativeHost.IsValid()) {
+            ThrowTypeError(isolate, "app.listen() host expects a string or buffer");
+            return;
+        }
+        host.assign(nativeHost.View());
+    }
     Global<Function> *callbackPointer =
         state->OwnHandler(isolate, args[callbackIndex].As<Function>());
     bool callbackSucceeded = true;
     auto listener =
         [state, isolate, callbackPointer, &callbackSucceeded](us_listen_socket_t *socket) {
-            state->TrackListenSocket(socket);
+            ListenSocketHandle *handle = state->TrackListenSocket(socket);
             HandleScope scope(isolate);
             Local<Value> socketValue = v8::False(isolate);
-            if (socket) socketValue = External::New(isolate, socket);
+            if (handle) socketValue = handle->Token();
             Local<Value> argv[] = {socketValue};
             callbackSucceeded = CallJs(isolate, callbackPointer->Get(isolate), 1, argv);
-            if (!callbackSucceeded && socket) {
-                state->CloseListenSocket(socket);
+            if (!callbackSucceeded && handle) {
+                (void)state->CloseListenSocket(handle);
             }
         };
     if (withHost) {
-        NativeBytes host(isolate, args[0]);
-        if (!host.IsValid()) {
-            ThrowTypeError(isolate, "app.listen() host expects a string or buffer");
-            return;
-        }
-        state->NativeApp().listen(std::string(host.View()), port, options, std::move(listener));
+        state->NativeApp().listen(host, port, options, std::move(listener));
     } else {
         state->NativeApp().listen(port, options, std::move(listener));
     }
@@ -233,10 +270,11 @@ void AppListen(const FunctionCallbackInfo<Value> &args) {
 
 void AppListenUnix(const FunctionCallbackInfo<Value> &args) {
     Isolate *isolate = args.GetIsolate();
-    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
+    auto *state = GetAppState(args);
+    if (!state) return;
     const bool withoutOptions = args.Length() == 2 && args[0]->IsFunction();
     const bool withOptions = args.Length() == 3 && args[0]->IsNumber() && args[1]->IsFunction();
-    if (!state || (!withoutOptions && !withOptions)) {
+    if (!withoutOptions && !withOptions) {
         ThrowTypeError(isolate,
                        "app.listen_unix() expects (callback, path) or (options, callback, path)");
         return;
@@ -270,14 +308,14 @@ void AppListenUnix(const FunctionCallbackInfo<Value> &args) {
     state->NativeApp().listen(
         options,
         [state, isolate, callbackPointer, &callbackSucceeded](us_listen_socket_t *socket) {
-            state->TrackListenSocket(socket);
+            ListenSocketHandle *handle = state->TrackListenSocket(socket);
             HandleScope scope(isolate);
             Local<Value> socketValue = v8::False(isolate);
-            if (socket) socketValue = External::New(isolate, socket);
+            if (handle) socketValue = handle->Token();
             Local<Value> argv[] = {socketValue};
             callbackSucceeded = CallJs(isolate, callbackPointer->Get(isolate), 1, argv);
-            if (!callbackSucceeded && socket) {
-                state->CloseListenSocket(socket);
+            if (!callbackSucceeded && handle) {
+                (void)state->CloseListenSocket(handle);
             }
         },
         std::string(path.View()));
@@ -287,31 +325,48 @@ void AppListenUnix(const FunctionCallbackInfo<Value> &args) {
 
 void AppFilter(const FunctionCallbackInfo<Value> &args) {
     Isolate *isolate = args.GetIsolate();
-    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    if (!state || args.Length() != 1 || !args[0]->IsFunction()) {
+    auto *state = GetAppState(args);
+    if (!state) return;
+    if (state->IsClosed()) {
+        ThrowError(isolate, "app.filter() cannot be called after app.close()");
+        return;
+    }
+    if (state->IsInFilterCallback()) {
+        ThrowError(isolate, "app.filter() cannot be called from a filter callback");
+        return;
+    }
+    if (args.Length() != 1 || !args[0]->IsFunction()) {
         ThrowTypeError(isolate, "app.filter(handler) expects a function");
         return;
     }
     Global<Function> *handlerPointer = state->OwnHandler(isolate, args[0].As<Function>());
     BindingEnvironment *context = &state->Environment();
-    state->NativeApp().filter([context, handlerPointer](HttpResponse *response, int count) {
+    state->NativeApp().filter([context, handlerPointer, state](HttpResponse *response, int count) {
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> responseObject = context->CloneResponseTemplate();
+        ResponseMetadata responseMetadata{state};
         SetInternalPointer(responseObject, response, 0);
+        SetInternalPointer(responseObject, &responseMetadata, 2);
         Local<Value> argv[] = {responseObject, Number::New(callbackIsolate, count)};
+        state->EnterFilterCallback();
         const bool callbackSucceeded =
             CallJs(callbackIsolate, handlerPointer->Get(callbackIsolate), 2, argv);
-        if (!callbackSucceeded && count > 0 && GetInternalPointer(responseObject)) {
+        state->LeaveFilterCallback();
+        const bool responseWasValid = GetInternalPointer(responseObject);
+        InvalidateResponseState(responseObject);
+        if (state->IsClosed()) {
+            return;
+        }
+        if (!callbackSucceeded && count > 0 && responseWasValid) {
             response->close();
         }
-        if (GetInternalPointer(responseObject)) InvalidateResponseObject(responseObject);
     });
     args.GetReturnValue().Set(args.This());
 }
 
 void AppClose(const FunctionCallbackInfo<Value> &args) {
-    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
+    auto *state = GetAppState(args);
     if (!state) return;
     if (args.Length() != 0) {
         ThrowTypeError(args.GetIsolate(), "app.close() does not accept arguments");
@@ -322,11 +377,8 @@ void AppClose(const FunctionCallbackInfo<Value> &args) {
 }
 
 void AppGetHttpTransportStats(const FunctionCallbackInfo<Value> &args) {
-    auto *state = static_cast<AppState *>(GetInternalPointer(args.This()));
-    if (!state) {
-        ThrowError(args.GetIsolate(), "App is no longer valid");
-        return;
-    }
+    auto *state = GetAppState(args);
+    if (!state) return;
     if (args.Length() != 0) {
         ThrowTypeError(args.GetIsolate(), "app.getHttpTransportStats() does not accept arguments");
         return;
@@ -360,6 +412,13 @@ std::optional<uWS::HttpTransportConfig>
 ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
     Isolate *isolate = args.GetIsolate();
     Local<Context> context = isolate->GetCurrentContext();
+    auto hasOwnProperty =
+        [context](Local<Object> object, Local<v8::Name> key, bool *result) -> bool {
+        v8::Maybe<bool> has = object->HasOwnProperty(context, key);
+        if (has.IsNothing()) return false;
+        *result = has.FromJust();
+        return true;
+    };
     if (args.Length() > 1 || (args.Length() == 1 && !args[0]->IsUndefined() &&
                               (!args[0]->IsObject() || args[0]->IsNull() || args[0]->IsArray() ||
                                args[0]->IsFunction()))) {
@@ -388,8 +447,8 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
     if (args.Length() == 1 && !args[0]->IsUndefined()) {
         Local<Object> options = args[0].As<Object>();
         const Local<String> httpKey = NewString(isolate, "http");
-        const bool hasHttp = options->HasOwnProperty(context, httpKey).FromMaybe(false);
-        if (isolate->IsExecutionTerminating()) return std::nullopt;
+        bool hasHttp = false;
+        if (!hasOwnProperty(options, httpKey, &hasHttp)) return std::nullopt;
         if (hasHttp) {
             Local<Value> httpValue;
             if (!options->Get(context, httpKey).ToLocal(&httpValue)) {
@@ -441,8 +500,8 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
                                std::uint64_t *output,
                                bool *present = nullptr) -> bool {
             Local<String> key = NewString(isolate, name);
-            const bool has = http->HasOwnProperty(context, key).FromMaybe(false);
-            if (isolate->IsExecutionTerminating()) return false;
+            bool has = false;
+            if (!hasOwnProperty(http, key, &has)) return false;
             if (present) *present = has;
             if (!has) return true;
             Local<Value> value;
@@ -475,7 +534,7 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
             return true;
         };
 
-        if (!readInteger("maxHeaderSize", 9007199254740991ULL, &parsed, &optionHasMaxHeaderSize)) {
+        if (!readInteger("maxHeaderSize", MAX_HTTP_HEADER_SIZE, &parsed, &optionHasMaxHeaderSize)) {
             return std::nullopt;
         }
         if (optionHasMaxHeaderSize) maxHeaderSize = static_cast<std::size_t>(parsed);
@@ -502,7 +561,8 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
         }
 
         const Local<String> rateKey = NewString(isolate, "minBodyRateBytesPerSec");
-        const bool hasRate = http->HasOwnProperty(context, rateKey).FromMaybe(false);
+        bool hasRate = false;
+        if (!hasOwnProperty(http, rateKey, &hasRate)) return std::nullopt;
         if (hasRate) {
             Local<Value> value;
             if (!http->Get(context, rateKey).ToLocal(&value)) return std::nullopt;
@@ -522,9 +582,8 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
         }
 
         const Local<String> trustedProxyKey = NewString(isolate, "trustedProxy");
-        const bool hasTrustedProxy =
-            http->HasOwnProperty(context, trustedProxyKey).FromMaybe(false);
-        if (isolate->IsExecutionTerminating()) return std::nullopt;
+        bool hasTrustedProxy = false;
+        if (!hasOwnProperty(http, trustedProxyKey, &hasTrustedProxy)) return std::nullopt;
         if (hasTrustedProxy) {
             Local<Value> trustedProxyValue;
             if (!http->Get(context, trustedProxyKey).ToLocal(&trustedProxyValue)) {
@@ -561,7 +620,9 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
             }
 
             const Local<String> headerKey = NewString(isolate, "header");
-            if (!trustedProxy->HasOwnProperty(context, headerKey).FromMaybe(false)) {
+            bool hasHeader = false;
+            if (!hasOwnProperty(trustedProxy, headerKey, &hasHeader)) return std::nullopt;
+            if (!hasHeader) {
                 ThrowTypeError(isolate, "HTTP trustedProxy.header is required");
                 return std::nullopt;
             }
@@ -587,8 +648,8 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
             }
 
             const Local<String> hopsKey = NewString(isolate, "hops");
-            const bool hasHops = trustedProxy->HasOwnProperty(context, hopsKey).FromMaybe(false);
-            if (isolate->IsExecutionTerminating()) return std::nullopt;
+            bool hasHops = false;
+            if (!hasOwnProperty(trustedProxy, hopsKey, &hasHops)) return std::nullopt;
             if (hasHops) {
                 Local<Value> hopsValue;
                 if (!trustedProxy->Get(context, hopsKey).ToLocal(&hopsValue)) {
@@ -622,7 +683,8 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
         if (environmentStatus != UV_ENOENT) {
             if (environmentStatus != 0) {
                 ThrowTypeError(isolate,
-                               "UWS_HTTP_MAX_HEADERS_SIZE must be a positive decimal safe integer");
+                               "UWS_HTTP_MAX_HEADERS_SIZE must be a decimal integer between 1 and "
+                               "67108864");
                 return std::nullopt;
             }
             const std::string_view text(environmentValue.data(), environmentValueSize);
@@ -631,9 +693,10 @@ ParseHttpTransportConfig(const FunctionCallbackInfo<Value> &args) {
                 std::from_chars(text.data(), text.data() + text.size(), parsed);
             if (text.empty() || result.ec != std::errc() ||
                 result.ptr != text.data() + text.size() || parsed == 0 ||
-                parsed > 9007199254740991ULL) {
+                parsed > MAX_HTTP_HEADER_SIZE) {
                 ThrowTypeError(isolate,
-                               "UWS_HTTP_MAX_HEADERS_SIZE must be a positive decimal safe integer");
+                               "UWS_HTTP_MAX_HEADERS_SIZE must be a decimal integer between 1 and "
+                               "67108864");
                 return std::nullopt;
             }
             maxHeaderSize = static_cast<std::size_t>(parsed);
@@ -670,6 +733,7 @@ void CreateApp(const FunctionCallbackInfo<Value> &args) {
     Local<Object> app =
         context->AppConstructor()->NewInstance(isolate->GetCurrentContext()).ToLocalChecked();
     SetInternalPointer(app, statePointer);
+    SetBindingObjectKind(app, BindingObjectKind::App, 1);
     args.GetReturnValue().Set(app);
 }
 
@@ -703,21 +767,26 @@ void CloseListenSocket(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(args.GetIsolate(), "us_listen_socket_close(socket) expects a listen socket");
         return;
     }
-    auto *socket = static_cast<us_listen_socket_t *>(args[0].As<External>()->Value());
-    if (!socket) return;
     auto *context = static_cast<BindingEnvironment *>(args.Data().As<External>()->Value());
-    context->ForgetListenSocket(socket);
-    us_listen_socket_close(0, socket);
+    if (!context->CloseListenSocket(args[0])) {
+        ThrowTypeError(args.GetIsolate(),
+                       "us_listen_socket_close(socket) expects a live listen socket");
+    }
 }
 
 void SocketLocalPort(const FunctionCallbackInfo<Value> &args) {
     if (args.Length() != 1 || !args[0]->IsExternal()) {
-        ThrowTypeError(args.GetIsolate(),
-                       "us_socket_local_port(socket) expects a socket or listen socket");
+        ThrowTypeError(args.GetIsolate(), "us_socket_local_port(socket) expects a listen socket");
         return;
     }
-    auto *socket = static_cast<us_socket_t *>(args[0].As<External>()->Value());
-    args.GetReturnValue().Set(Number::New(args.GetIsolate(), us_socket_local_port(0, socket)));
+    auto *context = static_cast<BindingEnvironment *>(args.Data().As<External>()->Value());
+    const std::optional<int> port = context->ListenSocketLocalPort(args[0]);
+    if (!port) {
+        ThrowTypeError(args.GetIsolate(),
+                       "us_socket_local_port(socket) expects a live listen socket");
+        return;
+    }
+    args.GetReturnValue().Set(Number::New(args.GetIsolate(), *port));
 }
 
 void InitializeAppBinding(BindingEnvironment *context,
@@ -725,7 +794,7 @@ void InitializeAppBinding(BindingEnvironment *context,
                           Local<Object> exports) {
     Isolate *isolate = context->Isolate();
     Local<FunctionTemplate> app = FunctionTemplate::New(isolate);
-    app->InstanceTemplate()->SetInternalFieldCount(1);
+    app->InstanceTemplate()->SetInternalFieldCount(2);
     SetPrototypeMethod(isolate, app, "get", AppGet);
     SetPrototypeMethod(isolate, app, "post", AppPost);
     SetPrototypeMethod(isolate, app, "put", AppPut);
@@ -781,7 +850,7 @@ void InitializeAppBinding(BindingEnvironment *context,
     exports
         ->Set(isolate->GetCurrentContext(),
               NewString(isolate, "us_socket_local_port"),
-              FunctionTemplate::New(isolate, SocketLocalPort)
+              FunctionTemplate::New(isolate, SocketLocalPort, contextExternal)
                   ->GetFunction(isolate->GetCurrentContext())
                   .ToLocalChecked())
         .ToChecked();

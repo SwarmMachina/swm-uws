@@ -4,6 +4,9 @@
 #include <App.h>
 #include <v8.h>
 
+#include "response_metadata.h"
+
+#include <cstddef>
 #include <memory>
 
 namespace swm::binding {
@@ -34,6 +37,10 @@ public:
         return object_.Get(isolate_);
     }
 
+    [[nodiscard]] ResponseMetadata &Metadata() noexcept {
+        return metadata_;
+    }
+
     void Invalidate() {
         response_ = nullptr;
         valid_ = false;
@@ -41,6 +48,28 @@ public:
         abortedHandler_.Reset();
         writableHandler_.Reset();
         object_.Reset();
+    }
+
+    void EnterNativeCallback() noexcept {
+        nativeCallbackDepth_++;
+    }
+
+    void LeaveNativeCallback() noexcept {
+        if (!nativeCallbackDepth_) return;
+        nativeCallbackDepth_--;
+        if (nativeCallbackDepth_ || !pendingClose_) return;
+        HttpResponse *response = pendingClose_;
+        pendingClose_ = nullptr;
+        response->close();
+    }
+
+    void RequestClose(HttpResponse *response) noexcept {
+        if (!response) return;
+        if (nativeCallbackDepth_) {
+            pendingClose_ = response;
+            return;
+        }
+        response->close();
     }
 
     [[nodiscard]] bool HasDataHandler() const noexcept {
@@ -101,6 +130,8 @@ public:
 private:
     v8::Isolate *isolate_;
     HttpResponse *response_;
+    HttpResponse *pendingClose_ = nullptr;
+    std::size_t nativeCallbackDepth_ = 0;
     bool valid_;
     bool dataHandlerRegistered_ = false;
     bool abortedHandlerRegistered_ = false;
@@ -109,6 +140,7 @@ private:
     v8::Global<v8::Function> abortedHandler_;
     v8::Global<v8::Function> writableHandler_;
     v8::Global<v8::Object> object_;
+    ResponseMetadata metadata_;
 };
 
 } // namespace swm::binding

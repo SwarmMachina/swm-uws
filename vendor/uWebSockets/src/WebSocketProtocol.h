@@ -183,6 +183,9 @@ struct CloseFrame {
 static inline CloseFrame parseClosePayload(char *src, size_t length) {
     /* If we get no code or message, default to reporting 1005 no status code present */
     CloseFrame cf = {1005, nullptr, 0};
+    if (length == 1) {
+        return {1006, (char *) ERR_INVALID_CLOSE_PAYLOAD.data(), ERR_INVALID_CLOSE_PAYLOAD.length()};
+    }
     if (length >= 2) {
         memcpy(&cf.code, src, 2);
         cf = {cond_byte_swap<uint16_t>(cf.code), src + 2, length - 2};
@@ -510,13 +513,28 @@ public:
                 } else if (payloadLength(src) == 126) {
                     if (length < MEDIUM_MESSAGE_HEADER) {
                         break;
-                    } else if(consumeMessage<MEDIUM_MESSAGE_HEADER, uint16_t>(protocol::cond_byte_swap<uint16_t>(protocol::bit_cast<uint16_t>(src + 2)), src, length, wState, user)) {
+                    }
+                    uint16_t extendedLength =
+                        protocol::cond_byte_swap<uint16_t>(protocol::bit_cast<uint16_t>(src + 2));
+                    if (extendedLength < 126) {
+                        Impl::forceClose(wState, user, ERR_PROTOCOL);
+                        return;
+                    }
+                    if (consumeMessage<MEDIUM_MESSAGE_HEADER, uint16_t>(extendedLength, src, length, wState, user)) {
                         return;
                     }
                 } else if (length < LONG_MESSAGE_HEADER) {
                     break;
-                } else if (consumeMessage<LONG_MESSAGE_HEADER, uint64_t>(protocol::cond_byte_swap<uint64_t>(protocol::bit_cast<uint64_t>(src + 2)), src, length, wState, user)) {
-                    return;
+                } else {
+                    uint64_t extendedLength =
+                        protocol::cond_byte_swap<uint64_t>(protocol::bit_cast<uint64_t>(src + 2));
+                    if (extendedLength <= UINT16_MAX || (extendedLength >> 63)) {
+                        Impl::forceClose(wState, user, ERR_PROTOCOL);
+                        return;
+                    }
+                    if (consumeMessage<LONG_MESSAGE_HEADER, uint64_t>(extendedLength, src, length, wState, user)) {
+                        return;
+                    }
                 }
             }
             if (length) {

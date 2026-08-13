@@ -2,22 +2,17 @@
 
 namespace swm::binding {
 
+constexpr std::uint32_t MAX_END_BATCH_HEADER_PAIRS = std::numeric_limits<std::uint16_t>::max();
+
 void InvalidateResponseObject(Local<Object> object) {
-    SetInternalPointer(object, nullptr, 0);
     auto *metadata = static_cast<ResponseMetadata *>(GetInternalPointer(object, 2));
-    if (metadata) {
-        SetInternalPointer(object, nullptr, 2);
-        delete metadata;
-    }
+    if (metadata && metadata->callbackLifetime) metadata->callbackLifetime->Invalidate();
+    SetInternalPointer(object, nullptr, 0);
+    SetInternalPointer(object, nullptr, 2);
 }
 
 ResponseMetadata *GetResponseMetadata(Local<Object> object) {
-    auto *metadata = static_cast<ResponseMetadata *>(GetInternalPointer(object, 2));
-    if (!metadata) {
-        metadata = new ResponseMetadata;
-        SetInternalPointer(object, metadata, 2);
-    }
-    return metadata;
+    return static_cast<ResponseMetadata *>(GetInternalPointer(object, 2));
 }
 
 void InvalidateAsyncResponse(const std::shared_ptr<AsyncResponseState> &state) {
@@ -28,11 +23,21 @@ void InvalidateAsyncResponse(const std::shared_ptr<AsyncResponseState> &state) {
     state->Invalidate();
 }
 
+void InvalidateResponseState(Local<Object> object) {
+    auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(object, 1));
+    if (async) {
+        std::shared_ptr<AsyncResponseState> state = async->shared_from_this();
+        if (state->IsValid()) InvalidateAsyncResponse(state);
+        return;
+    }
+    InvalidateResponseObject(object);
+}
+
 void CloseAsyncResponseAfterCallbackFailure(const std::shared_ptr<AsyncResponseState> &state) {
     if (!state->IsValid()) return;
     HttpResponse *response = state->Response();
     InvalidateAsyncResponse(state);
-    response->close();
+    state->RequestClose(response);
 }
 
 std::shared_ptr<AsyncResponseState> PromoteResponse(const FunctionCallbackInfo<Value> &args) {
@@ -45,10 +50,15 @@ std::shared_ptr<AsyncResponseState> PromoteResponse(const FunctionCallbackInfo<V
         args.GetIsolate(),
         static_cast<HttpResponse *>(GetInternalPointer(args.This())),
         args.This());
+    if (ResponseMetadata *metadata = GetResponseMetadata(args.This())) {
+        state->Metadata() = *metadata;
+    }
     SetInternalPointer(args.This(), state.get(), 1);
+    SetInternalPointer(args.This(), &state->Metadata(), 2);
     state->Response()->onAborted([state]() {
         Isolate *isolate = state->Isolate();
         HandleScope scope(isolate);
+        NativeCallbackScope callbackScope(*state->Metadata().app, state);
         Local<Function> handler;
         const bool hasHandler = state->HasActiveAbortedHandler();
         if (hasHandler) handler = state->AbortedHandler();
@@ -69,6 +79,10 @@ void ResponseEnd(const FunctionCallbackInfo<Value> &args) {
     }
 
     NativeBytes body(args.GetIsolate(), args[0], true);
+    if (body.IsTooLarge()) {
+        ThrowRangeError(args.GetIsolate(), "res.end(body) exceeds the native transport limit");
+        return;
+    }
     if (!body.IsValid()) {
         ThrowTypeError(args.GetIsolate(), "res.end(body) expects a string or buffer");
         return;
@@ -77,8 +91,8 @@ void ResponseEnd(const FunctionCallbackInfo<Value> &args) {
     auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
     if (async) {
         std::shared_ptr<AsyncResponseState> asyncState = async->shared_from_this();
-        response->end(body.View(), closeConnection);
         InvalidateAsyncResponse(asyncState);
+        response->end(body.View(), closeConnection);
     } else {
         InvalidateResponseObject(args.This());
         response->end(body.View(), closeConnection);
@@ -131,8 +145,14 @@ void ResponseClose(const FunctionCallbackInfo<Value> &args) {
     std::shared_ptr<AsyncResponseState> asyncState =
         async ? async->shared_from_this() : std::shared_ptr<AsyncResponseState>();
     if (asyncState) {
-        response->close();
-        if (asyncState->IsValid()) InvalidateAsyncResponse(asyncState);
+        Local<Function> abortedHandler;
+        const bool deliverAborted = asyncState->HasActiveAbortedHandler();
+        if (deliverAborted) abortedHandler = asyncState->AbortedHandler();
+        InvalidateAsyncResponse(asyncState);
+        asyncState->RequestClose(response);
+        if (deliverAborted) {
+            (void)CallJs(args.GetIsolate(), abortedHandler, 0, nullptr);
+        }
     } else {
         InvalidateResponseObject(args.This());
         response->close();
@@ -159,20 +179,25 @@ void ResponseEndBatch(const FunctionCallbackInfo<Value> &args) {
     }
 
     Local<Array> lines = args[1].As<Array>();
-    if ((lines->Length() & 1U) != 0) {
+    const std::uint32_t lineCount = lines->Length();
+    if (lineCount > MAX_END_BATCH_HEADER_PAIRS * 2U) {
+        ThrowTypeError(isolate, "res.endBatch() accepts at most 65535 header name/value pairs");
+        return;
+    }
+    if ((lineCount & 1U) != 0) {
         ThrowTypeError(isolate, "res.endBatch() headerLines must contain name/value pairs");
         return;
     }
 
     std::vector<std::pair<std::string, std::string>> headers;
-    headers.reserve(lines->Length() / 2);
-    for (uint32_t index = 0; index < lines->Length(); index += 2) {
+    headers.reserve(lineCount / 2);
+    for (uint32_t index = 0; index < lineCount; index += 2) {
         Local<Value> nameValue;
         Local<Value> headerValue;
-        if (!lines->Get(context, index).ToLocal(&nameValue) ||
-            !lines->Get(context, index + 1).ToLocal(&headerValue)) {
-            return;
-        }
+        if (!lines->Get(context, index).ToLocal(&nameValue)) return;
+        if (GetResponse(args) != response) return;
+        if (!lines->Get(context, index + 1).ToLocal(&headerValue)) return;
+        if (GetResponse(args) != response) return;
         if (!nameValue->IsString() || !headerValue->IsString()) {
             ThrowTypeError(isolate, "res.endBatch() headerLines entries must be strings");
             return;
@@ -196,14 +221,21 @@ void ResponseEndBatch(const FunctionCallbackInfo<Value> &args) {
     Local<Value> bodyValue = v8::Undefined(isolate);
     if (args.Length() == 3) bodyValue = args[2];
     NativeBytes body(isolate, bodyValue, true);
+    if (body.IsTooLarge()) {
+        ThrowRangeError(isolate, "res.endBatch() body exceeds the native transport limit");
+        return;
+    }
     if (!body.IsValid()) {
         ThrowTypeError(isolate, "res.endBatch() body expects a string or buffer");
         return;
     }
+    if (GetResponse(args) != response) return;
 
     auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
     std::shared_ptr<AsyncResponseState> asyncState =
         async ? async->shared_from_this() : std::shared_ptr<AsyncResponseState>();
+    if (asyncState) InvalidateAsyncResponse(asyncState);
+    else InvalidateResponseObject(args.This());
     response->cork([response, &status, &headers, &body]() {
         response->writeStatus(status.View());
         for (const auto &[name, value] : headers) {
@@ -211,9 +243,6 @@ void ResponseEndBatch(const FunctionCallbackInfo<Value> &args) {
         }
         response->end(body.View());
     });
-
-    if (asyncState) InvalidateAsyncResponse(asyncState);
-    else InvalidateResponseObject(args.This());
     args.GetReturnValue().Set(args.This());
 }
 
@@ -298,6 +327,8 @@ void ResponseCork(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     Isolate *isolate = args.GetIsolate();
+    ResponseMetadata *metadata = GetResponseMetadata(args.This());
+    AppState *app = metadata ? metadata->app : nullptr;
     Local<Function> handler = args[0].As<Function>();
     bool callbackSucceeded = true;
     Local<Value> callbackException;
@@ -305,6 +336,11 @@ void ResponseCork(const FunctionCallbackInfo<Value> &args) {
         response->cork([isolate, handler, &callbackSucceeded, &callbackException]() {
             callbackSucceeded = CallJsDirect(isolate, handler, 0, nullptr, callbackException);
         });
+    if (app && app->IsClosed()) {
+        InvalidateResponseState(args.This());
+        if (!callbackException.IsEmpty()) isolate->ThrowException(callbackException);
+        return;
+    }
     if (!callbackSucceeded) {
         if (GetInternalPointer(args.This())) {
             auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
@@ -330,7 +366,12 @@ void ResponseBeginWrite(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     response->beginWrite();
-    GetResponseMetadata(args.This())->chunked = true;
+    ResponseMetadata *metadata = GetResponseMetadata(args.This());
+    if (!metadata) {
+        ThrowError(args.GetIsolate(), "HTTP response metadata is no longer valid");
+        return;
+    }
+    metadata->chunked = true;
     args.GetReturnValue().Set(args.This());
 }
 
@@ -342,11 +383,20 @@ void ResponseWrite(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     NativeBytes chunk(args.GetIsolate(), args[0]);
+    if (chunk.IsTooLarge()) {
+        ThrowRangeError(args.GetIsolate(), "res.write(chunk) exceeds the native transport limit");
+        return;
+    }
     if (!chunk.IsValid()) {
         ThrowTypeError(args.GetIsolate(), "res.write(chunk) expects a string or buffer");
         return;
     }
-    GetResponseMetadata(args.This())->chunked = true;
+    ResponseMetadata *metadata = GetResponseMetadata(args.This());
+    if (!metadata) {
+        ThrowError(args.GetIsolate(), "HTTP response metadata is no longer valid");
+        return;
+    }
+    metadata->chunked = true;
     args.GetReturnValue().Set(Boolean::New(args.GetIsolate(), response->write(chunk.View())));
 }
 
@@ -359,6 +409,10 @@ void ResponseTryEnd(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     NativeBytes chunk(args.GetIsolate(), args[0]);
+    if (chunk.IsTooLarge()) {
+        ThrowRangeError(args.GetIsolate(), "res.tryEnd(chunk) exceeds the native transport limit");
+        return;
+    }
     const double totalNumber =
         args[1]->NumberValue(args.GetIsolate()->GetCurrentContext()).FromMaybe(-1);
     if (!chunk.IsValid() || !std::isfinite(totalNumber) || totalNumber < 0 ||
@@ -368,10 +422,14 @@ void ResponseTryEnd(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     ResponseMetadata *metadata = GetResponseMetadata(args.This());
+    if (!metadata) {
+        ThrowError(args.GetIsolate(), "HTTP response metadata is no longer valid");
+        return;
+    }
     const uintmax_t totalSize = totalNumber == 0 ? static_cast<uintmax_t>(chunk.View().size())
                                                  : static_cast<uintmax_t>(totalNumber);
+    const uintmax_t offset = response->getWriteOffset();
     if (!metadata->chunked) {
-        const uintmax_t offset = response->getWriteOffset();
         if ((metadata->tryEndTotal && *metadata->tryEndTotal != totalSize) || offset > totalSize ||
             chunk.View().size() > totalSize - offset) {
             ThrowTypeError(args.GetIsolate(),
@@ -384,15 +442,25 @@ void ResponseTryEnd(const FunctionCallbackInfo<Value> &args) {
     auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
     std::shared_ptr<AsyncResponseState> asyncState =
         async ? async->shared_from_this() : std::shared_ptr<AsyncResponseState>();
+    // Hide the native pointer during the terminal attempt so a synchronous
+    // close/filter callback cannot re-enter this response. Restore it only
+    // when native backpressure proves the response is still incomplete.
+    SetInternalPointer(args.This(), nullptr, 0);
     const auto [ok, done] = response->tryEnd(chunk.View(), totalSize);
-    Local<Array> result = Array::New(args.GetIsolate(), 2);
-    result->Set(args.GetIsolate()->GetCurrentContext(), 0, Boolean::New(args.GetIsolate(), ok))
-        .ToChecked();
-    result->Set(args.GetIsolate()->GetCurrentContext(), 1, Boolean::New(args.GetIsolate(), done))
-        .ToChecked();
-    if (done) {
+    const bool closed = us_socket_is_closed(0, reinterpret_cast<us_socket_t *>(response));
+    if (done || closed) {
         if (asyncState) InvalidateAsyncResponse(asyncState);
         else InvalidateResponseObject(args.This());
+    } else if (!asyncState || asyncState->IsValid()) {
+        SetInternalPointer(args.This(), response, 0);
+    }
+    Local<Array> result = Array::New(args.GetIsolate(), 2);
+    Local<Context> context = args.GetIsolate()->GetCurrentContext();
+    if (!result->CreateDataProperty(context, 0, Boolean::New(args.GetIsolate(), ok))
+             .FromMaybe(false) ||
+        !result->CreateDataProperty(context, 1, Boolean::New(args.GetIsolate(), done))
+             .FromMaybe(false)) {
+        return;
     }
     args.GetReturnValue().Set(result);
 }
@@ -413,6 +481,7 @@ void ResponseOnWritable(const FunctionCallbackInfo<Value> &args) {
         if (!state->IsValid() || !state->HasActiveWritableHandler()) return false;
         Isolate *isolate = state->Isolate();
         HandleScope scope(isolate);
+        NativeCallbackScope callbackScope(*state->Metadata().app, state);
         Local<Value> argv[] = {Number::New(isolate, static_cast<double>(offset))};
         Local<Value> result;
         if (!CallJsValue(isolate, state->WritableHandler(), 1, argv, &result)) {
@@ -531,19 +600,27 @@ void ResponseUpgrade(const FunctionCallbackInfo<Value> &args) {
                        "res.upgrade() key, protocol and extensions expect strings or buffers");
         return;
     }
-    auto *socketState = new SocketState(isolate);
+    auto *environment = static_cast<BindingEnvironment *>(args.Data().As<External>()->Value());
+    us_socket_context_t *socketContext = environment->ResolveUpgradeContext(args[4], response);
+    if (!socketContext) {
+        ThrowTypeError(isolate,
+                       "res.upgrade() expects the active WebSocket upgrade context for this "
+                       "response");
+        return;
+    }
+    ResponseMetadata *metadata = GetResponseMetadata(args.This());
+    auto socketState = std::make_shared<SocketState>(isolate, *metadata->app);
     socketState->SetUserData(args[0]);
     auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
     std::shared_ptr<AsyncResponseState> asyncState =
         async ? async->shared_from_this() : std::shared_ptr<AsyncResponseState>();
-    response->upgrade<PerSocketData>(
-        PerSocketData{socketState},
-        key.View(),
-        protocol.View(),
-        extensions.View(),
-        static_cast<us_socket_context_t *>(args[4].As<External>()->Value()));
     if (asyncState) InvalidateAsyncResponse(asyncState);
     else InvalidateResponseObject(args.This());
+    response->upgrade<PerSocketData>(PerSocketData{std::move(socketState)},
+                                     key.View(),
+                                     protocol.View(),
+                                     extensions.View(),
+                                     socketContext);
 }
 
 void ResponseOnData(const FunctionCallbackInfo<Value> &args) {
@@ -563,15 +640,10 @@ void ResponseOnData(const FunctionCallbackInfo<Value> &args) {
         if (!state->IsValid() || !state->HasActiveDataHandler()) return;
         Isolate *isolate = state->Isolate();
         HandleScope scope(isolate);
-        std::unique_ptr<v8::BackingStore> backing = ArrayBuffer::NewBackingStore(
-            const_cast<char *>(chunk.data()),
-            chunk.length(),
-            [](void *, size_t, void *) {},
-            nullptr);
-        Local<ArrayBuffer> buffer = ArrayBuffer::New(isolate, std::move(backing));
-        Local<Value> argv[] = {buffer, Boolean::New(isolate, isLast)};
+        NativeCallbackScope callbackScope(*state->Metadata().app, state);
+        EphemeralArrayBuffer buffer(ExternalArrayBuffer(isolate, chunk));
+        Local<Value> argv[] = {buffer.Value(), Boolean::New(isolate, isLast)};
         const bool callbackSucceeded = CallJs(isolate, state->DataHandler(), 2, argv);
-        buffer->Detach(Local<Value>()).FromMaybe(false);
         if (!callbackSucceeded) CloseAsyncResponseAfterCallbackFailure(state);
     });
     args.GetReturnValue().Set(args.This());
@@ -594,10 +666,11 @@ void ResponseOnDataV2(const FunctionCallbackInfo<Value> &args) {
         if (!state->IsValid() || !state->HasActiveDataHandler()) return;
         Isolate *isolate = state->Isolate();
         HandleScope scope(isolate);
-        Local<ArrayBuffer> buffer = ExternalArrayBuffer(isolate, chunk);
-        Local<Value> argv[] = {buffer, BigInt::NewFromUnsigned(isolate, maxRemainingBodyLength)};
+        NativeCallbackScope callbackScope(*state->Metadata().app, state);
+        EphemeralArrayBuffer buffer(ExternalArrayBuffer(isolate, chunk));
+        Local<Value> argv[] = {buffer.Value(),
+                               BigInt::NewFromUnsigned(isolate, maxRemainingBodyLength)};
         const bool callbackSucceeded = CallJs(isolate, state->DataHandler(), 2, argv);
-        buffer->Detach(Local<Value>()).FromMaybe(false);
         if (!callbackSucceeded) CloseAsyncResponseAfterCallbackFailure(state);
     });
     args.GetReturnValue().Set(args.This());
@@ -655,6 +728,7 @@ void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool retur
         if (collection->bytes.size() > maxSize ||
             chunk.size() > maxSize - collection->bytes.size()) {
             collection->completed = true;
+            NativeCallbackScope callbackScope(*state->Metadata().app, state);
             Local<Value> argv[] = {Null(callbackIsolate)};
             const bool callbackSucceeded = CallJs(callbackIsolate, state->DataHandler(), 1, argv);
             state->ResetDataHandler();
@@ -669,6 +743,7 @@ void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool retur
         auto *owned = new std::vector<char>(std::move(collection->bytes));
         if (owned->empty()) {
             delete owned;
+            NativeCallbackScope callbackScope(*state->Metadata().app, state);
             Local<ArrayBuffer> body = ArrayBuffer::New(callbackIsolate, 0);
             Local<Value> argv[] = {body};
             const bool callbackSucceeded = CallJs(callbackIsolate, state->DataHandler(), 1, argv);
@@ -683,6 +758,7 @@ void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool retur
                 delete static_cast<std::vector<char> *>(deleterData);
             },
             owned);
+        NativeCallbackScope callbackScope(*state->Metadata().app, state);
         Local<ArrayBuffer> body = ArrayBuffer::New(callbackIsolate, std::move(backing));
         Local<Value> argv[] = {body};
         const bool callbackSucceeded = CallJs(callbackIsolate, state->DataHandler(), 1, argv);
@@ -762,7 +838,7 @@ void ResponseOnAborted(const FunctionCallbackInfo<Value> &args) {
 void InitializeResponseBinding(BindingEnvironment *context, Local<External> contextExternal) {
     Isolate *isolate = context->Isolate();
     Local<FunctionTemplate> response = FunctionTemplate::New(isolate);
-    response->InstanceTemplate()->SetInternalFieldCount(3);
+    response->InstanceTemplate()->SetInternalFieldCount(4);
     SetPrototypeMethod(isolate, response, "end", ResponseEnd);
     SetPrototypeMethod(isolate, response, "endWithoutBody", ResponseEndWithoutBody);
     SetPrototypeMethod(isolate, response, "close", ResponseClose);
@@ -784,7 +860,7 @@ void InitializeResponseBinding(BindingEnvironment *context, Local<External> cont
     SetPrototypeMethod(
         isolate, response, "getProxiedRemoteAddressAsText", ResponseGetProxiedRemoteAddressAsText);
     SetPrototypeMethod(isolate, response, "getProxiedRemotePort", ResponseGetProxiedRemotePort);
-    SetPrototypeMethod(isolate, response, "upgrade", ResponseUpgrade);
+    SetPrototypeMethod(isolate, response, "upgrade", ResponseUpgrade, contextExternal);
     SetPrototypeMethod(isolate, response, "onData", ResponseOnData);
     SetPrototypeMethod(isolate, response, "onDataV2", ResponseOnDataV2);
     SetPrototypeMethod(isolate, response, "collectBody", ResponseCollectBody);
@@ -801,6 +877,7 @@ void InitializeResponseBinding(BindingEnvironment *context, Local<External> cont
     SetInternalPointer(responseTemplate, nullptr, 0);
     SetInternalPointer(responseTemplate, nullptr, 1);
     SetInternalPointer(responseTemplate, nullptr, 2);
+    SetBindingObjectKind(responseTemplate, BindingObjectKind::Response, 3);
     context->SetResponseTemplate(responseTemplate);
 }
 
