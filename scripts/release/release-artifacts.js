@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { gunzipSync } from 'node:zlib'
 
 import { execNpmSync } from './npm-cli.js'
 
 const PACKAGE_NAME = '@swarmmachina/swm-uws'
 const MANIFEST_VERSION = 1
+const TAR_BLOCK_BYTES = 512
+const MAX_UNPACKED_CANDIDATE_BYTES = 256 * 1024 * 1024
 const root = fileURLToPath(new URL('../..', import.meta.url))
 
 export const expectedPrebuilds = Object.freeze([
@@ -186,15 +188,16 @@ export function createCandidateManifest({ releaseRoot, environment }) {
   const workflow = workflowIdentity(environment)
   const tarballPath = findTarball(releaseRoot)
   const tarball = readFileSync(tarballPath)
-  const packedPackage = readPackedJson(tarballPath, 'package/package.json')
-  const prebuildManifest = readPackedJson(tarballPath, 'package/prebuilds/manifest.json')
+  const packedArchive = unpackCandidate(tarball)
+  const packedPackage = readPackedJson(packedArchive, 'package/package.json')
+  const prebuildManifest = readPackedJson(packedArchive, 'package/prebuilds/manifest.json')
   const packageJson = readPackageJson(releaseRoot)
 
   assertPackageIdentity(packedPackage, packageJson)
   assertReleasePackageIdentity(prebuildManifest.package, packageJson)
   assertSourceIdentity(prebuildManifest.source, source)
   assertWorkflowIdentity(prebuildManifest.workflow, workflow)
-  verifyPackedArtifacts(tarballPath, prebuildManifest)
+  verifyPackedArtifacts(packedArchive, prebuildManifest)
 
   const manifest = {
     schemaVersion: MANIFEST_VERSION,
@@ -256,15 +259,16 @@ export function verifyCandidateManifest({ releaseRoot, environment }) {
     throw new Error('Invalid dist/SHA256SUMS')
   }
 
-  const packedPackageJson = readPackedJson(tarballPath, 'package/package.json')
-  const prebuildManifestText = readPackedText(tarballPath, 'package/prebuilds/manifest.json')
+  const packedArchive = unpackCandidate(tarball)
+  const packedPackageJson = readPackedJson(packedArchive, 'package/package.json')
+  const prebuildManifestText = readPackedText(packedArchive, 'package/prebuilds/manifest.json')
   const prebuildManifest = parseJson(prebuildManifestText, 'package/prebuilds/manifest.json')
 
   assertPackageIdentity(packedPackageJson, rootPackageJson)
   assertReleasePackageIdentity(prebuildManifest.package, rootPackageJson)
   assertSourceIdentity(prebuildManifest.source, source)
   assertWorkflowIdentity(prebuildManifest.workflow, workflow)
-  verifyPackedArtifacts(tarballPath, prebuildManifest)
+  verifyPackedArtifacts(packedArchive, prebuildManifest)
 
   if (manifest.prebuildManifest.sha256 !== digest(Buffer.from(prebuildManifestText))) {
     throw new Error('Packed prebuild manifest digest mismatch')
@@ -391,7 +395,7 @@ function validateReleaseManifest(manifest, actualArtifacts, packageJson) {
   return errors
 }
 
-function verifyPackedArtifacts(tarballPath, manifest) {
+function verifyPackedArtifacts(packedArchive, manifest) {
   if (manifest.schemaVersion !== MANIFEST_VERSION || manifest.kind !== 'swm-uws-release-prebuilds') {
     throw new Error('Invalid packed prebuild manifest schema')
   }
@@ -408,7 +412,7 @@ function verifyPackedArtifacts(tarballPath, manifest) {
       throw new Error(`Packed prebuild manifest is missing ${expected.path}`)
     }
 
-    const bytes = readPackedEntry(tarballPath, `package/${expected.path}`)
+    const bytes = readPackedEntry(packedArchive, `package/${expected.path}`)
 
     if (!hasMagic(bytes, expected.magic)) {
       throw new Error(`Invalid packed ${expected.format} prebuild: ${expected.path}`)
@@ -434,7 +438,7 @@ function verifyPackedArtifacts(tarballPath, manifest) {
     }
   }
 
-  const checksums = readPackedText(tarballPath, 'package/prebuilds/SHA256SUMS')
+  const checksums = readPackedText(packedArchive, 'package/prebuilds/SHA256SUMS')
 
   if (checksums !== renderChecksums(manifest.artifacts)) {
     throw new Error('Invalid packed prebuilds/SHA256SUMS')
@@ -509,23 +513,128 @@ function assertCandidateTarball(manifest, releaseRoot) {
   }
 }
 
-function readPackedJson(tarballPath, entry) {
-  return parseJson(readPackedText(tarballPath, entry), entry)
+function readPackedJson(packedArchive, entry) {
+  return parseJson(readPackedText(packedArchive, entry), entry)
 }
 
-function readPackedText(tarballPath, entry) {
-  return readPackedEntry(tarballPath, entry).toString('utf8')
+function readPackedText(packedArchive, entry) {
+  return readPackedEntry(packedArchive, entry).toString('utf8')
 }
 
-function readPackedEntry(tarballPath, entry) {
+function unpackCandidate(tarball) {
   try {
-    return execFileSync('tar', ['-xOf', tarballPath, entry], {
-      encoding: 'buffer',
-      maxBuffer: 16 * 1024 * 1024
+    return gunzipSync(tarball, {
+      maxOutputLength: MAX_UNPACKED_CANDIDATE_BYTES
     })
   } catch {
+    throw new Error('Invalid or oversized release candidate gzip archive')
+  }
+}
+
+function readPackedEntry(packedArchive, entry) {
+  let match
+  let terminated = false
+
+  for (let offset = 0; offset + TAR_BLOCK_BYTES <= packedArchive.length;) {
+    const header = packedArchive.subarray(offset, offset + TAR_BLOCK_BYTES)
+
+    if (header.every((byte) => byte === 0)) {
+      const trailer = packedArchive.subarray(offset)
+
+      if (trailer.length < TAR_BLOCK_BYTES * 2 || !trailer.every((byte) => byte === 0)) {
+        throw new Error('Invalid packed tar end marker')
+      }
+
+      terminated = true
+      break
+    }
+
+    verifyTarHeader(header)
+
+    const name = tarPath(header)
+    const size = tarNumber(header.subarray(124, 136), `size for ${name || '<unnamed>'}`)
+    const dataOffset = offset + TAR_BLOCK_BYTES
+
+    if (size > packedArchive.length - dataOffset) {
+      throw new Error(`Truncated packed entry: ${name || '<unnamed>'}`)
+    }
+
+    const paddedBytes = Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES
+    const nextOffset = dataOffset + paddedBytes
+
+    if (nextOffset > packedArchive.length) {
+      throw new Error(`Truncated packed entry: ${name || '<unnamed>'}`)
+    }
+
+    if (name === entry) {
+      const type = header[156]
+
+      if (type !== 0 && type !== 0x30) {
+        throw new Error(`Packed entry is not a regular file: ${entry}`)
+      }
+
+      if (match) {
+        throw new Error(`Duplicate packed entry: ${entry}`)
+      }
+
+      match = packedArchive.subarray(dataOffset, dataOffset + size)
+    }
+
+    offset = nextOffset
+  }
+
+  if (!terminated) {
+    throw new Error('Missing packed tar end marker')
+  }
+
+  if (!match) {
     throw new Error(`Missing or unreadable packed entry: ${entry}`)
   }
+
+  return match
+}
+
+function verifyTarHeader(header) {
+  const expected = tarNumber(header.subarray(148, 156), 'header checksum')
+
+  let actual = 0
+
+  for (let index = 0; index < header.length; index++) {
+    actual += index >= 148 && index < 156 ? 0x20 : header[index]
+  }
+
+  if (actual !== expected) {
+    throw new Error('Invalid packed tar header checksum')
+  }
+}
+
+function tarPath(header) {
+  const name = tarString(header.subarray(0, 100))
+  const prefix = tarString(header.subarray(345, 500))
+
+  return prefix ? `${prefix}/${name}` : name
+}
+
+function tarString(field) {
+  const zero = field.indexOf(0)
+
+  return field.subarray(0, zero === -1 ? field.length : zero).toString('utf8')
+}
+
+function tarNumber(field, label) {
+  const value = tarString(field).trim()
+
+  if (!/^[0-7]+$/.test(value)) {
+    throw new Error(`Invalid packed tar ${label}`)
+  }
+
+  const parsed = Number.parseInt(value, 8)
+
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`Oversized packed tar ${label}`)
+  }
+
+  return parsed
 }
 
 function readPackageJson(releaseRoot) {

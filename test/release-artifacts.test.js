@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
+import { gzipSync, gunzipSync } from 'node:zlib'
 
 import {
   assembleReleaseManifest,
@@ -128,6 +129,46 @@ test('candidate creation rejects an invalid packed prebuild manifest schema', ()
   })
 })
 
+test('candidate inspection does not require a system tar executable', () => {
+  withReleaseFixture((releaseRoot) => {
+    assembleReleaseManifest({ releaseRoot, environment })
+    mkdirSync(join(releaseRoot, 'dist'))
+    packReleaseFixture(releaseRoot)
+
+    const originalPath = process.env.PATH
+
+    try {
+      process.env.PATH = ''
+
+      const manifest = createCandidateManifest({ releaseRoot, environment })
+
+      assert.equal(verifyCandidateManifest({ releaseRoot, environment }).tarball.sha256, manifest.tarball.sha256)
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH
+      } else {
+        process.env.PATH = originalPath
+      }
+    }
+  })
+})
+
+test('candidate inspection rejects a tar header with an invalid checksum', () => {
+  withReleaseFixture((releaseRoot) => {
+    assembleReleaseManifest({ releaseRoot, environment })
+    mkdirSync(join(releaseRoot, 'dist'))
+    packReleaseFixture(releaseRoot)
+
+    const tarball = releaseTarballPath(releaseRoot)
+    const archive = gunzipSync(readFileSync(tarball))
+
+    archive[0] ^= 1
+    writeFileSync(tarball, gzipSync(archive))
+
+    assert.throws(() => createCandidateManifest({ releaseRoot, environment }), /Invalid packed tar header checksum/)
+  })
+})
+
 function packReleaseFixture(releaseRoot) {
   execNpmSync(['pack', '--ignore-scripts', '--pack-destination', 'dist'], {
     cwd: releaseRoot,
@@ -137,6 +178,15 @@ function packReleaseFixture(releaseRoot) {
     },
     stdio: 'pipe'
   })
+}
+
+function releaseTarballPath(releaseRoot) {
+  const dist = join(releaseRoot, 'dist')
+  const tarball = readdirSync(dist).find((entry) => entry.endsWith('.tgz'))
+
+  assert.ok(tarball)
+
+  return join(dist, tarball)
 }
 
 function withReleaseFixture(run) {
