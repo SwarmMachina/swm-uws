@@ -37,19 +37,24 @@ test('RSS probe detects a resident allocation near the 64 MiB cap', () => {
 
 test('large fragmented messages do not retain one RSS peak per live WebSocket', () => {
   const metrics = runProbe('websocket-retention')
+  // macOS libmalloc can keep one recently freed large allocation resident.
+  // Amplifying the workload to seven measured sockets leaves a clear gap
+  // between that allocator cache and a per-socket retention regression.
+  const allocatorSlackBytes = metrics.messageBytes * 2
 
-  assert.equal(metrics.activeConnections, 4)
+  assert.equal(metrics.activeConnections, 8)
   assert.equal(metrics.messageBytes, 16 * 1024 * 1024)
+  assert.equal(metrics.primingMessages, metrics.activeConnections)
   assert.ok(
-    metrics.firstMessage.peakRssDeltaBytes > 12 * 1024 * 1024,
-    `first fragmented message raised peak RSS by only ${formatMiB(metrics.firstMessage.peakRssDeltaBytes)}`
+    metrics.primedConnection.peakRssDeltaBytes > 12 * 1024 * 1024,
+    `fragmented-message priming raised peak RSS by only ${formatMiB(metrics.primedConnection.peakRssDeltaBytes)}`
   )
   assert.ok(
-    metrics.additionalRssBytes < 12 * 1024 * 1024,
-    `three additional live WebSockets retained another ${formatMiB(metrics.additionalRssBytes)}`
+    metrics.additionalRssBytes < allocatorSlackBytes,
+    `seven additional live WebSockets retained another ${formatMiB(metrics.additionalRssBytes)}`
   )
   assert.ok(
-    metrics.additionalPeakRssBytes < 40 * 1024 * 1024,
+    metrics.additionalPeakRssBytes < allocatorSlackBytes,
     `subsequent fragmented messages raised peak RSS by another ${formatMiB(metrics.additionalPeakRssBytes)}`
   )
 })

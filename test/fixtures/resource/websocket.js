@@ -46,6 +46,12 @@ export async function probeWebSocketAllocation() {
 export async function probeWebSocketRetention() {
   const app = createApp()
   const pendingMessages = []
+  const activeConnections = 8
+  // Give the process allocator the same number of allocation/free cycles as
+  // the measured workload before attributing RSS growth to live sockets. A
+  // retained-buffer regression still primes only the first socket and then
+  // grows by one full message for every additional connection.
+  const primingMessages = activeConnections
 
   app.ws('/retention', {
     maxPayloadLength: MAX_INBOUND_BYTES,
@@ -64,13 +70,13 @@ export async function probeWebSocketRetention() {
   const clients = []
 
   let baseline
-  let afterFirstMessage
+  let afterPrimingMessages
   let afterAllMessages
   let cleanupError
   let result
 
   try {
-    for (let connection = 0; connection < 4; connection++) {
+    for (let connection = 0; connection < activeConnections; connection++) {
       const client = retentionClient(server.port)
 
       clients.push(client)
@@ -80,21 +86,25 @@ export async function probeWebSocketRetention() {
         baseline = await rssSnapshot()
       }
 
-      const messageReceived = Promise.withResolvers()
+      const messageCount = connection === 0 ? primingMessages : 1
 
-      pendingMessages.push(messageReceived)
-      client.process.stdin.write('SEND\n')
-      const receivedBytes = await withTimeout(
-        messageReceived.promise,
-        5_000,
-        'large fragmented WebSocket message was not delivered'
-      )
+      for (let message = 0; message < messageCount; message++) {
+        const messageReceived = Promise.withResolvers()
 
-      assert.equal(receivedBytes, RETENTION_PROBE_BYTES)
-      await delay(10)
+        pendingMessages.push(messageReceived)
+        client.process.stdin.write('SEND\n')
+        const receivedBytes = await withTimeout(
+          messageReceived.promise,
+          5_000,
+          'large fragmented WebSocket message was not delivered'
+        )
+
+        assert.equal(receivedBytes, RETENTION_PROBE_BYTES)
+        await delay(10)
+      }
 
       if (connection === 0) {
-        afterFirstMessage = await rssSnapshot()
+        afterPrimingMessages = await rssSnapshot()
       }
     }
 
@@ -106,10 +116,11 @@ export async function probeWebSocketRetention() {
 
     result = {
       activeConnections: clients.length,
-      additionalPeakRssBytes: Math.max(0, afterAllMessages.peakRssBytes - afterFirstMessage.peakRssBytes),
-      additionalRssBytes: Math.max(0, afterAllMessages.rssBytes - afterFirstMessage.rssBytes),
-      firstMessage: rssDelta(baseline, afterFirstMessage),
-      messageBytes: RETENTION_PROBE_BYTES
+      additionalPeakRssBytes: Math.max(0, afterAllMessages.peakRssBytes - afterPrimingMessages.peakRssBytes),
+      additionalRssBytes: Math.max(0, afterAllMessages.rssBytes - afterPrimingMessages.rssBytes),
+      messageBytes: RETENTION_PROBE_BYTES,
+      primedConnection: rssDelta(baseline, afterPrimingMessages),
+      primingMessages
     }
   } finally {
     const exits = await Promise.all(clients.map(stopRetentionClient))
