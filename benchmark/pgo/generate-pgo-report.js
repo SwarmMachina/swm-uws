@@ -258,7 +258,7 @@ function upstreamPath(feature) {
     'collect-length': 'onDataV2 + allocate/copy body',
     'end-batch': 'cork + status/header writes + end',
     'discard-body': 'onDataV2 callback drain',
-    prefetch: 'retain two getHeader values'
+    prefetch: 'forEach + retain selected entries'
   }
 
   return paths[feature] || 'manual upstream path'

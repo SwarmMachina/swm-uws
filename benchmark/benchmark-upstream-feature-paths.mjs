@@ -336,18 +336,37 @@ function installUpstreamFeature({ app, feature, maxBodySize, state }) {
       res.onAborted(() => {
         aborted = true
       })
-      const headers = Object.create(null)
+      const entries = []
 
-      for (const name of selectedHeaderNames) {
-        headers[name] = req.getHeader(name)
-      }
+      // RequestPrefetchSnapshot owns every selected occurrence so it can
+      // preserve duplicates and wire order after the route callback. The
+      // upstream equivalent must retain the same information; two getHeader
+      // calls would retain only first values and benchmark a weaker contract.
+      req.forEach((name, value) => {
+        if (selectedHeaderNames.includes(name)) {
+          entries.push(name, value)
+        }
+      })
 
       setImmediate(() => {
         if (aborted) {
           return
         }
 
-        state.value += headers['x-selected-0'].length + headers['x-selected-1'].length
+        let selected0
+        let selected1
+
+        for (let index = 0; index < entries.length; index += 2) {
+          if (entries[index] === 'x-selected-0' && selected0 === undefined) {
+            selected0 = entries[index + 1]
+          }
+
+          if (entries[index] === 'x-selected-1' && selected1 === undefined) {
+            selected1 = entries[index + 1]
+          }
+        }
+
+        state.value += (selected0?.length ?? 0) + (selected1?.length ?? 0)
         res.cork(() => res.end('ok'))
       })
     })
@@ -446,7 +465,7 @@ function featureDescription(feature) {
     'collect-length': 'collectBodyWithLength versus upstream manual onDataV2',
     'end-batch': 'endBatch versus upstream corked writeStatus/writeHeader/end',
     'discard-body': 'discardBody versus upstream manual onDataV2 drain',
-    prefetch: 'request prefetch versus upstream retained getHeader record'
+    prefetch: 'request prefetch versus upstream retained selected-header entries'
   }
 
   return descriptions[feature] ?? feature
