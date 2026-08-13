@@ -50,6 +50,30 @@ void verifyTopicTreeMessagePaletteReentrancy() {
     tree.freeSubscriber(nestedSubscriber);
 }
 
+void verifyTopicTreeBackpressureFairness() {
+    using TopicTree = uWS::TopicTree<int, int>;
+
+    std::vector<uWS::Subscriber *> subscribers;
+    int callbackCount = 0;
+    TopicTree tree([&](uWS::Subscriber *, int &, TopicTree::IteratorFlags) {
+        callbackCount++;
+        return true;
+    });
+
+    for (int index = 0; index < 6; index++) {
+        uWS::Subscriber *subscriber = tree.createSubscriber();
+        subscribers.push_back(subscriber);
+        tree.subscribe(subscriber, "topic");
+    }
+    if (!tree.publish(nullptr, "topic", 1) || tree.drain() || callbackCount != 6) {
+        __builtin_trap();
+    }
+
+    for (uWS::Subscriber *subscriber : subscribers) {
+        tree.freeSubscriber(subscriber);
+    }
+}
+
 void fuzzChunkedContiguous(const std::uint8_t *data, std::size_t size) {
     const char empty = 0;
     std::string_view remaining(size ? reinterpret_cast<const char *>(data) : &empty, size);
@@ -176,6 +200,7 @@ void fuzzWebSocketByteSplit(const std::uint8_t *data, std::size_t size) {
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t *data, std::size_t size) {
     static const bool verifiedTopicTreeReentrancy = [] {
         verifyTopicTreeMessagePaletteReentrancy();
+        verifyTopicTreeBackpressureFairness();
         return true;
     }();
     (void)verifiedTopicTreeReentrancy;

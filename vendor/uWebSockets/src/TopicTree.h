@@ -96,6 +96,12 @@ struct TopicTree {
 
 private:
 
+    enum class DrainResult {
+        Complete,
+        Stopped,
+        Invalidated
+    };
+
     /* Drain callbacks can enter user code via WebSocket::send. Topology changes
      * stop the current traversal before any invalidated iterator is advanced. */
     std::function<bool(Subscriber *, T &, IteratorFlags)> cb;
@@ -129,7 +135,7 @@ private:
     }
 
     /* Warning: does NOT unlink from drainableSubscribers or modify next, prev. */
-    bool drainImpl(Subscriber *s) {
+    DrainResult drainImpl(Subscriber *s) {
         /* Before we call cb we need to make sure this subscriber will not report needsDrainage()
          * since WebSocket::send will call drain from within the cb in that case.*/
         int numMessageIndices = s->numMessageIndices;
@@ -144,14 +150,17 @@ private:
             /* Returning true will stop drainage short (such as when backpressure is too high) */
             std::uint64_t topologyVersionBeforeCallback = topologyVersion;
             std::uint64_t outgoingMessagesVersionBeforeCallback = outgoingMessagesVersion;
-            if (cb(s, outgoingMessage, (IteratorFlags)(flags | (i == 0 ? FIRST : 0))) ||
-                topologyVersionBeforeCallback != topologyVersion ||
+            bool stopped = cb(s, outgoingMessage, (IteratorFlags)(flags | (i == 0 ? FIRST : 0)));
+            if (topologyVersionBeforeCallback != topologyVersion ||
                 outgoingMessagesVersionBeforeCallback != outgoingMessagesVersion) {
-                return true;
+                return DrainResult::Invalidated;
+            }
+            if (stopped) {
+                return DrainResult::Stopped;
             }
         }
 
-        return false;
+        return DrainResult::Complete;
     }
 
     void unlinkDrainableSubscriber(Subscriber *s) {
@@ -296,23 +305,24 @@ public:
 
             /* This one always resets needsDrainage before it calls any cb's.
              * Otherwise we would stackoverflow when sending after publish but before drain. */
-            bool stopped = drainImpl(s);
+            DrainResult result = drainImpl(s);
 
             /* If we drained last subscriber, also clear outgoingMessages */
             if (!drainableSubscribers) {
                 clearOutgoingMessages();
             }
-            return stopped;
+            return result != DrainResult::Complete;
         }
         return false;
     }
 
     /* Called everytime we call send, to drain published messages so to sync outgoing messages */
+    /* Returns true only when re-entrancy invalidates the shared traversal. */
     bool drain() {
         while (drainableSubscribers) {
             Subscriber *s = drainableSubscribers;
             unlinkDrainableSubscriber(s);
-            if (drainImpl(s)) {
+            if (drainImpl(s) == DrainResult::Invalidated) {
                 if (!drainableSubscribers) {
                     clearOutgoingMessages();
                 }

@@ -93,7 +93,9 @@ otherwise changes topic membership. A monotonic topology version prevents an
 invalidated `unordered_set` or drainage-list iterator from being advanced. A
 separate message-palette version stops an outer drain when a nested drain clears
 the shared message storage, and `WebSocket::send()` stops when its pre-send
-drain was interrupted.
+drain was interrupted. A normal backpressure stop remains local to one
+subscriber, so the loop-level drain still reports drops for every stalled
+subscriber in the batch.
 
 The normal publish path adds only constant-time version checks and does not
 allocate. The copied payload used by the binding's exceptional `dropped` path
