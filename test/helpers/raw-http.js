@@ -7,6 +7,7 @@ export function rawHttpExchange(
   {
     prefix,
     acceptResetAfterData = false,
+    acceptResetWithoutData = false,
     delayMs = 0,
     yieldBetweenChunks = false,
     resolveOn = 'end',
@@ -22,15 +23,30 @@ export function rawHttpExchange(
     throw new TypeError('acceptResetAfterData must be a boolean')
   }
 
+  if (typeof acceptResetWithoutData !== 'boolean') {
+    throw new TypeError('acceptResetWithoutData must be a boolean')
+  }
+
   return new Promise((resolve, reject) => {
     const socket = createConnection(connection)
     const response = []
 
     socket.setTimeout(timeoutMs, () => socket.destroy(new Error(`${timeoutMessage} timed out`)))
     socket.on('data', (chunk) => response.push(chunk))
-    socket.once(resolveOn, () => resolve(Buffer.concat(response)))
+    socket.once(resolveOn, () => {
+      if (acceptResetWithoutData && response.length === 0) {
+        reject(new Error(`${timeoutMessage} closed without response data or ECONNRESET`))
+
+        return
+      }
+
+      resolve(Buffer.concat(response))
+    })
     socket.once('error', (error) => {
-      if (acceptResetAfterData && error.code === 'ECONNRESET' && response.length > 0) {
+      if (
+        error.code === 'ECONNRESET' &&
+        ((acceptResetAfterData && response.length > 0) || (acceptResetWithoutData && response.length === 0))
+      ) {
         resolve(Buffer.concat(response))
 
         return

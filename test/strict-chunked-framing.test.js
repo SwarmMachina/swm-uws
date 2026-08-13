@@ -79,7 +79,7 @@ test(
 )
 
 test(
-  'malformed chunked framing returns one 400, closes, and never dispatches a pipeline',
+  'malformed chunked framing returns one 400 or a Windows reset and never dispatches a pipeline',
   { timeout: 30_000 },
   async () => {
     const requests = []
@@ -149,12 +149,12 @@ test(
         const request = Buffer.concat([chunkedRequestHead, framing, pipelinedRequest])
         const response = await rawExchange(server.port, [request], {
           acceptResetAfterData: true,
+          acceptResetWithoutData: process.platform === 'win32',
           resolveOn: 'close'
         })
         const handled = requests.at(-1)
 
-        assert.match(response.toString('latin1'), /^HTTP\/1\.1 400 Bad Request\r\n/, name)
-        assert.equal(countOccurrences(response, Buffer.from('HTTP/1.1 ')), 1, name)
+        assertMalformedRejection(response, name)
         assert.equal(handled.completed, false, name)
         assert.equal(Buffer.concat(handled.body).toString('latin1'), expectedBody, name)
         assert.equal(nextHandled, 0, name)
@@ -171,6 +171,7 @@ test(
             [framing.subarray(0, split), framing.subarray(split), pipelinedRequest],
             {
               acceptResetAfterData: true,
+              acceptResetWithoutData: process.platform === 'win32',
               prefix: chunkedRequestHead,
               resolveOn: 'close',
               yieldBetweenChunks: true
@@ -179,8 +180,7 @@ test(
           const handled = requests.at(-1)
           const label = `${name}, split ${split}`
 
-          assert.match(response.toString('latin1'), /^HTTP\/1\.1 400 Bad Request\r\n/, label)
-          assert.equal(countOccurrences(response, Buffer.from('HTTP/1.1 ')), 1, label)
+          assertMalformedRejection(response, label)
           assert.equal(handled.completed, false, label)
           assert.equal(Buffer.concat(handled.body).toString('latin1'), expectedBody, label)
           assert.equal(nextHandled, 0, label)
@@ -206,6 +206,19 @@ function countOccurrences(haystack, needle) {
   }
 
   return count
+}
+
+function assertMalformedRejection(response, label) {
+  if (response.length === 0) {
+    // Winsock can discard queued response bytes when the server resets a socket
+    // that still has unread pipelined input. The reset itself remains fail-closed.
+    assert.equal(process.platform, 'win32', `${label}: only Winsock may discard the 400 response on reset`)
+
+    return
+  }
+
+  assert.match(response.toString('latin1'), /^HTTP\/1\.1 400 Bad Request\r\n/, label)
+  assert.equal(countOccurrences(response, Buffer.from('HTTP/1.1 ')), 1, label)
 }
 
 function isAsciiHexByte(byte) {

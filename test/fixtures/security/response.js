@@ -143,14 +143,27 @@ export const responseCases = {
     const { app } = fixture
     const checked = Promise.withResolvers()
     const payload = new Uint8Array(32 * 1024 * 1024)
+    const totalSize = Number.MAX_SAFE_INTEGER
 
     app.get('/partial', (res) => {
-      const [ok, done] = res.tryEnd(payload, payload.length)
+      let backpressureObserved = false
 
-      assert.equal(ok, false)
-      assert.equal(done, false)
+      // Kernel send-buffer capacity varies by platform. Keep the declared body
+      // incomplete and retry until the optional write reports backpressure.
+      for (let attempt = 0; attempt < 64; attempt++) {
+        const [ok, done] = res.tryEnd(payload, totalSize)
+
+        assert.equal(done, false)
+        assert.ok(res.getWriteOffset() < totalSize)
+
+        if (!ok) {
+          backpressureObserved = true
+          break
+        }
+      }
+
+      assert.equal(backpressureObserved, true)
       assert.ok(res.getWriteOffset() >= 0)
-      assert.ok(res.getWriteOffset() < payload.length)
       res.close()
       checked.resolve()
     })

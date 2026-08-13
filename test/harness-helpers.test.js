@@ -125,6 +125,7 @@ test('raw HTTP exchange supports end and close completion without changing wire 
     assert.equal(closeResponse.toString(), 'close\n')
     assert.throws(() => rawHttpExchange(address, [], { resolveOn: 'invalid' }), /either 'end' or 'close'/)
     assert.throws(() => rawHttpExchange(address, [], { acceptResetAfterData: 'yes' }), /must be a boolean/)
+    assert.throws(() => rawHttpExchange(address, [], { acceptResetWithoutData: 'yes' }), /must be a boolean/)
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
   }
@@ -150,6 +151,45 @@ test(
     }
   }
 )
+
+test('raw HTTP exchange distinguishes an empty reset from a clean empty close', async () => {
+  let connectionCount = 0
+
+  const server = createServer((socket) => {
+    socket.once('data', () => {
+      connectionCount++
+
+      if (connectionCount === 1) {
+        socket.end()
+
+        return
+      }
+
+      socket.resetAndDestroy()
+    })
+  })
+  const address = await listen(server)
+
+  try {
+    await assert.rejects(
+      rawHttpExchange(address, ['close\n'], {
+        acceptResetWithoutData: true,
+        resolveOn: 'close',
+        timeoutMessage: 'clean empty close'
+      }),
+      /clean empty close closed without response data or ECONNRESET/
+    )
+
+    const response = await rawHttpExchange(address, ['reset\n'], {
+      acceptResetWithoutData: true,
+      resolveOn: 'close'
+    })
+
+    assert.equal(response.length, 0)
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+  }
+})
 
 test('PROXY v2 IPv4 builder validates and serializes addresses and ports', () => {
   const header = proxyProtocolV2Ipv4Header({

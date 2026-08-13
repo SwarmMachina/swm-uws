@@ -4,6 +4,8 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { execNpmSync } from './npm-cli.js'
+
 const PACKAGE_NAME = '@swarmmachina/swm-uws'
 const MANIFEST_VERSION = 1
 const root = fileURLToPath(new URL('../..', import.meta.url))
@@ -569,7 +571,7 @@ function digest(bytes) {
 }
 
 function npmVersion() {
-  return execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim()
+  return execNpmSync(['--version'], { encoding: 'utf8' }).trim()
 }
 
 function requireValue(value, name) {

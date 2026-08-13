@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -13,6 +12,7 @@ import {
   verifyCandidateManifest,
   verifyReleasePrebuilds
 } from '../scripts/release/release-artifacts.js'
+import { execNpmSync } from '../scripts/release/npm-cli.js'
 
 const environment = {
   GITHUB_REPOSITORY: 'SwarmMachina/swm-uws',
@@ -97,14 +97,7 @@ test('candidate verification rejects a tarball changed after package assembly', 
   withReleaseFixture((releaseRoot) => {
     assembleReleaseManifest({ releaseRoot, environment })
     mkdirSync(join(releaseRoot, 'dist'))
-    execFileSync('npm', ['pack', '--ignore-scripts', '--pack-destination', 'dist'], {
-      cwd: releaseRoot,
-      env: {
-        ...process.env,
-        npm_config_cache: join(releaseRoot, '.npm-cache')
-      },
-      stdio: 'pipe'
-    })
+    packReleaseFixture(releaseRoot)
 
     const manifest = createCandidateManifest({ releaseRoot, environment })
 
@@ -126,14 +119,7 @@ test('candidate creation rejects an invalid packed prebuild manifest schema', ()
     manifest.kind = 'untrusted-prebuilds'
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
     mkdirSync(join(releaseRoot, 'dist'))
-    execFileSync('npm', ['pack', '--ignore-scripts', '--pack-destination', 'dist'], {
-      cwd: releaseRoot,
-      env: {
-        ...process.env,
-        npm_config_cache: join(releaseRoot, '.npm-cache')
-      },
-      stdio: 'pipe'
-    })
+    packReleaseFixture(releaseRoot)
 
     assert.throws(
       () => createCandidateManifest({ releaseRoot, environment }),
@@ -141,6 +127,17 @@ test('candidate creation rejects an invalid packed prebuild manifest schema', ()
     )
   })
 })
+
+function packReleaseFixture(releaseRoot) {
+  execNpmSync(['pack', '--ignore-scripts', '--pack-destination', 'dist'], {
+    cwd: releaseRoot,
+    env: {
+      ...process.env,
+      npm_config_cache: join(releaseRoot, '.npm-cache')
+    },
+    stdio: 'pipe'
+  })
+}
 
 function withReleaseFixture(run) {
   const releaseRoot = mkdtempSync(join(tmpdir(), 'swm-uws-release-artifacts-'))

@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import ts from 'typescript'
 
+import { execNpmSync } from './npm-cli.js'
+
 const root = resolve(import.meta.dirname, '../..')
 const temp = mkdtempSync(join(tmpdir(), 'swm-uws-packed-types-'))
 
@@ -89,9 +91,13 @@ try {
   mkdirSync(consumer)
 
   const [packed] = JSON.parse(
-    execFileSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', artifacts], {
+    execNpmSync(['pack', '--json', '--ignore-scripts', '--pack-destination', artifacts], {
       cwd: root,
-      encoding: 'utf8'
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        npm_config_cache: join(temp, '.npm-cache')
+      }
     })
   )
   const tarball = join(artifacts, basename(packed.filename))
@@ -105,8 +111,12 @@ try {
     )
   )
   cpSync(join(root, 'test/fixtures/types'), join(consumer, 'fixtures'), { recursive: true })
-  execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], {
+  execNpmSync(['install', '--ignore-scripts', '--no-audit', '--no-fund'], {
     cwd: consumer,
+    env: {
+      ...process.env,
+      npm_config_cache: join(temp, '.npm-cache')
+    },
     stdio: 'inherit'
   })
 
@@ -143,10 +153,14 @@ try {
         2
       )
     )
-    execFileSync(join(root, 'node_modules/.bin/tsc'), ['--project', config, '--pretty', 'false'], {
-      cwd: consumer,
-      stdio: 'inherit'
-    })
+    execFileSync(
+      process.execPath,
+      [join(root, 'node_modules/typescript/bin/tsc'), '--project', config, '--pretty', 'false'],
+      {
+        cwd: consumer,
+        stdio: 'inherit'
+      }
+    )
 
     const options = ts.convertCompilerOptionsFromJson(
       { ...shared, module: mode.module, moduleResolution: mode.moduleResolution },

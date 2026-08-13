@@ -1,17 +1,22 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+
+import { execNpmSync } from './npm-cli.js'
 
 const root = resolve(import.meta.dirname, '../..')
 const temp = mkdtempSync(join(tmpdir(), 'swm-uws-package-'))
 
 try {
   const [packed] = JSON.parse(
-    execFileSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp], {
+    execNpmSync(['pack', '--json', '--ignore-scripts', '--pack-destination', temp], {
       cwd: root,
-      encoding: 'utf8'
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        npm_config_cache: join(temp, '.npm-cache')
+      }
     })
   )
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))

@@ -412,6 +412,11 @@ test('idleTimeout 0 disables automatic pings but retains the forced-close deadli
       drainPulseRemaining = 1024 * 1024
       resolveDrainPulse = resolve
     })
+    const closeStartedAt = Date.now()
+    const closed = waitForClose(socket, {
+      timeoutMs: 8_000,
+      message: 'WebSocket forced-close deadline did not close the unresponsive peer'
+    })
 
     serverSocket.end(1000, 'shutdown probe')
     assert.equal(closeCount, 1)
@@ -420,21 +425,25 @@ test('idleTimeout 0 disables automatic pings but retains the forced-close deadli
     await withTimeout(drainPulse, 1_000, 'could not trigger a writable event after WebSocket end()')
     await delay(4_500)
 
-    const closed = waitForClose(socket, {
-      timeoutMs: 3_000,
-      message: 'WebSocket forced-close deadline did not close the unresponsive peer'
-    })
-
     socket.resume()
     await closed
+
+    const closeElapsedMs = Date.now() - closeStartedAt
+
+    assert.ok(closeElapsedMs >= 4_000, `forced close fired before its deadline: ${closeElapsedMs}ms`)
+    assert.ok(closeElapsedMs < 8_000, `forced close exceeded its deadline allowance: ${closeElapsedMs}ms`)
 
     const receivedByteCount = receivedFrames.reduce((total, chunk) => total + chunk.length, 0)
     const sentWireBytes = sentFrameCount * (payload.length + 10)
 
-    assert.ok(
-      receivedByteCount < sentWireBytes - minimumBufferedAmount / 2,
-      'forced close drained the entire queued payload instead of discarding backpressure at the deadline'
-    )
+    // Winsock may move the full userspace backlog into its kernel send buffer
+    // during the drain pulse, making client-visible bytes non-diagnostic there.
+    if (process.platform !== 'win32') {
+      assert.ok(
+        receivedByteCount < sentWireBytes - minimumBufferedAmount / 2,
+        'forced close drained the entire queued payload instead of discarding backpressure at the deadline'
+      )
+    }
   } finally {
     socket?.destroy()
     server.close()
