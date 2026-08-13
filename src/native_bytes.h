@@ -3,6 +3,7 @@
 
 #include <v8.h>
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <memory>
@@ -28,6 +29,31 @@ public:
 
         if (value->IsString()) {
             v8::Local<v8::String> string = value.As<v8::String>();
+            if (string->IsOneByte()) {
+                const int characterLength = string->Length();
+                char *oneByteData = Allocate(static_cast<std::size_t>(characterLength));
+#if V8_MAJOR_VERSION >= 13
+                string->WriteOneByteV2(isolate,
+                                       0,
+                                       static_cast<std::uint32_t>(characterLength),
+                                       reinterpret_cast<std::uint8_t *>(oneByteData));
+#else
+                string->WriteOneByte(isolate,
+                                     reinterpret_cast<std::uint8_t *>(oneByteData),
+                                     0,
+                                     characterLength,
+                                     v8::String::NO_NULL_TERMINATION);
+#endif
+                const bool ascii =
+                    std::all_of(oneByteData,
+                                oneByteData + characterLength,
+                                [](unsigned char character) { return character < 0x80; });
+                if (ascii) {
+                    data_ = oneByteData;
+                    length_ = static_cast<std::size_t>(characterLength);
+                    return;
+                }
+            }
 #if V8_MAJOR_VERSION >= 13
             const size_t length = string->Utf8LengthV2(isolate);
             char *data = Allocate(length);
@@ -113,6 +139,13 @@ public:
         return {data_, length_};
     }
 
+    // String bytes in the shared arena remain valid until the outermost
+    // NativeBytes instance is destroyed. This lets callers retain a view
+    // across inner NativeBytes destructors without copying on the hot path.
+    [[nodiscard]] bool IsArenaBacked() const noexcept {
+        return arenaBacked_;
+    }
+
 private:
     // uSockets accepts signed-int lengths. Reserve enough room for the largest
     // WebSocket frame header so header + payload cannot overflow that contract.
@@ -125,12 +158,14 @@ private:
     inline static thread_local std::size_t arenaDepth_ = 0;
 
     char *Allocate(std::size_t length) {
+        arenaBacked_ = false;
         const std::size_t remaining = arena_.size() - arenaOffset_;
         if (length <= remaining) {
             const std::size_t alignedLength = (length + ArenaAlignment - 1) & ~(ArenaAlignment - 1);
             if (alignedLength <= remaining) {
                 char *data = arena_.data() + arenaOffset_;
                 arenaOffset_ += alignedLength;
+                arenaBacked_ = true;
                 return data;
             }
         }
@@ -144,6 +179,7 @@ private:
     const char *data_ = "";
     std::size_t length_ = 0;
     bool valid_ = true;
+    bool arenaBacked_ = false;
 };
 
 } // namespace swm::binding

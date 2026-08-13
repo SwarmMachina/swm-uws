@@ -8,6 +8,7 @@ import { rawHttpExchange } from './helpers/raw-http.js'
 
 test('raw HTTP framing remains unambiguous across fast paths and pipelining', { timeout: 15_000 }, async () => {
   const app = createApp()
+  const largeBatchHeader = 'a'.repeat(128 * 1024 + 1)
 
   let discardedBodyCallbacks = 0
   let discardedDeclaredLength
@@ -24,6 +25,35 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
   })
   app.get('/batch', (res) => {
     res.endBatch('201 Created', ['x-batch', 'yes'], 'batch')
+  })
+  app.get('/batch-utf8', (res) => {
+    res.endBatch('200 OK', ['x-label', 'café'], 'café')
+  })
+  app.get('/batch-arena-overflow', (res) => {
+    res.endBatch(
+      '200 OK',
+      [
+        'x-one',
+        '1',
+        'x-two',
+        '2',
+        'x-three',
+        '3',
+        'x-four',
+        '4',
+        'x-five',
+        '5',
+        'x-six',
+        '6',
+        'x-seven',
+        '7',
+        'x-eight',
+        '8',
+        'x-arena',
+        largeBatchHeader
+      ],
+      'overflow'
+    )
   })
   app.get('/empty', (res) => res.end())
   app.get('/exact', (res) => {
@@ -107,6 +137,7 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
       ['/multi', 200, 'alpha\r\n0\r\n\r\nomega', 'chunked'],
       ['/begin-try', 200, 'chunk', 'chunked'],
       ['/batch', 201, 'batch', 'content-length'],
+      ['/batch-utf8', 200, 'café', 'content-length'],
       ['/empty', 200, '', 'content-length'],
       ['/exact', 200, 'exact', 'content-length'],
       ['/larger', 200, 'rejected', 'content-length'],
@@ -123,6 +154,18 @@ test('raw HTTP framing remains unambiguous across fast paths and pipelining', { 
       assert.equal(responses[0].body.toString(), body)
       assert.equal(responses[0].framing, framing)
     }
+
+    const [arenaOverflow] = await requestAndParse(
+      port,
+      ['GET /batch-arena-overflow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'],
+      1
+    )
+
+    assert.equal(arenaOverflow.status, 200)
+    assert.equal(arenaOverflow.headers.get('x-eight'), '8')
+    assert.equal(arenaOverflow.headers.get('x-arena'), largeBatchHeader)
+    assert.equal(arenaOverflow.body.toString(), 'overflow')
+    assert.equal(arenaOverflow.framing, 'content-length')
 
     const pipelined = await requestAndParse(
       port,

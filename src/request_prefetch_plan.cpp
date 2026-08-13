@@ -55,19 +55,18 @@ const std::vector<std::string> &RequestPrefetchPlan::HeaderNames() const {
 
 std::optional<std::uint16_t> RequestPrefetchPlan::Find(std::string_view lowercaseName) const {
     if (allHeaders_) return std::nullopt;
-    const std::uint32_t hash = Hash(lowercaseName);
 
     if (lookupTable_.empty()) {
         for (std::size_t index = 0; index < headerNames_.size(); index++) {
             const CompiledName &compiled = compiledNames_[index];
-            if (compiled.hash == hash && compiled.length == lowercaseName.size() &&
-                headerNames_[index] == lowercaseName) {
+            if (compiled.length == lowercaseName.size() && headerNames_[index] == lowercaseName) {
                 return static_cast<std::uint16_t>(index);
             }
         }
         return std::nullopt;
     }
 
+    const std::uint32_t hash = Hash(lowercaseName);
     std::size_t slot = hash & (lookupTable_.size() - 1);
     while (lookupTable_[slot] != -1) {
         const std::size_t index = static_cast<std::size_t>(lookupTable_[slot]);

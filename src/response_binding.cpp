@@ -3,6 +3,21 @@
 namespace swm::binding {
 
 constexpr std::uint32_t MAX_END_BATCH_HEADER_PAIRS = std::numeric_limits<std::uint16_t>::max();
+constexpr std::size_t INLINE_END_BATCH_HEADER_PAIRS = 8;
+
+struct EndBatchHeaderView final {
+    std::string_view name;
+    std::string_view value;
+};
+
+bool ResponseStillMatches(const FunctionCallbackInfo<Value> &args, HttpResponse *expected) {
+    if (GetInternalPointer(args.This()) == expected) {
+        ResponseMetadata *metadata = GetResponseMetadata(args.This());
+        if (metadata && metadata->app && !metadata->app->IsClosed()) return true;
+    }
+    ThrowError(args.GetIsolate(), "HTTP response is no longer valid");
+    return false;
+}
 
 void InvalidateResponseObject(Local<Object> object) {
     auto *metadata = static_cast<ResponseMetadata *>(GetInternalPointer(object, 2));
@@ -189,15 +204,29 @@ void ResponseEndBatch(const FunctionCallbackInfo<Value> &args) {
         return;
     }
 
-    std::vector<std::pair<std::string, std::string>> headers;
-    headers.reserve(lineCount / 2);
+    const std::size_t headerCount = lineCount / 2;
+    std::array<EndBatchHeaderView, INLINE_END_BATCH_HEADER_PAIRS> inlineHeaders;
+    std::vector<EndBatchHeaderView> overflowHeaders;
+    EndBatchHeaderView *headers = inlineHeaders.data();
+    if (headerCount > inlineHeaders.size()) {
+        overflowHeaders.resize(headerCount);
+        headers = overflowHeaders.data();
+    }
+    std::vector<std::unique_ptr<std::string>> overflowBytes;
+    const auto retain = [&overflowBytes](const NativeBytes &bytes) {
+        if (bytes.IsArenaBacked()) return bytes.View();
+        auto owned = std::make_unique<std::string>(bytes.View());
+        const std::string_view view = *owned;
+        overflowBytes.push_back(std::move(owned));
+        return view;
+    };
     for (uint32_t index = 0; index < lineCount; index += 2) {
         Local<Value> nameValue;
         Local<Value> headerValue;
         if (!lines->Get(context, index).ToLocal(&nameValue)) return;
-        if (GetResponse(args) != response) return;
+        if (!ResponseStillMatches(args, response)) return;
         if (!lines->Get(context, index + 1).ToLocal(&headerValue)) return;
-        if (GetResponse(args) != response) return;
+        if (!ResponseStillMatches(args, response)) return;
         if (!nameValue->IsString() || !headerValue->IsString()) {
             ThrowTypeError(isolate, "res.endBatch() headerLines entries must be strings");
             return;
@@ -215,7 +244,7 @@ void ResponseEndBatch(const FunctionCallbackInfo<Value> &args) {
                 "res.endBatch() manages Content-Length and Transfer-Encoding automatically");
             return;
         }
-        headers.emplace_back(name.View(), value.View());
+        headers[index / 2] = {retain(name), retain(value)};
     }
 
     Local<Value> bodyValue = v8::Undefined(isolate);
@@ -229,17 +258,17 @@ void ResponseEndBatch(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(isolate, "res.endBatch() body expects a string or buffer");
         return;
     }
-    if (GetResponse(args) != response) return;
+    if (!ResponseStillMatches(args, response)) return;
 
     auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
     std::shared_ptr<AsyncResponseState> asyncState =
         async ? async->shared_from_this() : std::shared_ptr<AsyncResponseState>();
     if (asyncState) InvalidateAsyncResponse(asyncState);
     else InvalidateResponseObject(args.This());
-    response->cork([response, &status, &headers, &body]() {
+    response->cork([response, &status, headers, headerCount, &body]() {
         response->writeStatus(status.View());
-        for (const auto &[name, value] : headers) {
-            response->writeHeader(name, value);
+        for (std::size_t index = 0; index < headerCount; index++) {
+            response->writeHeader(headers[index].name, headers[index].value);
         }
         response->end(body.View());
     });
