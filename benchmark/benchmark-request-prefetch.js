@@ -229,10 +229,7 @@ function parseOptions(args) {
 function startTarget() {
   const targetCommand =
     process.platform === 'linux' && options.serverCpu >= 0
-      ? [
-          'taskset',
-          ['-c', String(options.serverCpu), process.execPath, 'benchmark/benchmark-prefetch-server.js']
-        ]
+      ? ['taskset', ['-c', String(options.serverCpu), process.execPath, 'benchmark/benchmark-prefetch-server.js']]
       : [process.execPath, ['benchmark/benchmark-prefetch-server.js']]
 
   return BenchmarkTargetProcess.start({

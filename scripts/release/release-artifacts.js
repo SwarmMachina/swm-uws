@@ -22,6 +22,7 @@ export const expectedPrebuilds = Object.freeze([
 export function verifyReleasePrebuilds(releaseRoot, { requireManifest = true } = {}) {
   const errors = []
   const artifacts = []
+  const packageJson = readPackageJson(releaseRoot)
 
   for (const expected of expectedPrebuilds) {
     let bytes
@@ -61,7 +62,7 @@ export function verifyReleasePrebuilds(releaseRoot, { requireManifest = true } =
   }
 
   if (manifest) {
-    errors.push(...validateReleaseManifest(manifest, artifacts))
+    errors.push(...validateReleaseManifest(manifest, artifacts, packageJson))
   }
 
   try {
@@ -126,7 +127,7 @@ export function createBuildManifest({ releaseRoot, environment }) {
     }
   }
 
-  validateBuildManifest(manifest, expected, { source, workflow })
+  validateBuildManifest(manifest, expected, { source, workflow, packageJson })
   writeJson(join(releaseRoot, buildManifestPath(expected.path)), manifest)
 
   return manifest
@@ -141,7 +142,7 @@ export function assembleReleaseManifest({ releaseRoot, environment }) {
   for (const expected of expectedPrebuilds) {
     const manifest = readJson(join(releaseRoot, buildManifestPath(expected.path)), buildManifestPath(expected.path))
 
-    validateBuildManifest(manifest, expected, { source, workflow })
+    validateBuildManifest(manifest, expected, { source, workflow, packageJson })
 
     const bytes = readFileSync(join(releaseRoot, expected.path))
 
@@ -188,6 +189,7 @@ export function createCandidateManifest({ releaseRoot, environment }) {
   const packageJson = readPackageJson(releaseRoot)
 
   assertPackageIdentity(packedPackage, packageJson)
+  assertReleasePackageIdentity(prebuildManifest.package, packageJson)
   assertSourceIdentity(prebuildManifest.source, source)
   assertWorkflowIdentity(prebuildManifest.workflow, workflow)
   verifyPackedArtifacts(tarballPath, prebuildManifest)
@@ -222,12 +224,18 @@ export function createCandidateManifest({ releaseRoot, environment }) {
 export function verifyCandidateManifest({ releaseRoot, environment }) {
   const source = sourceIdentity(environment)
   const workflow = workflowIdentity(environment)
+  const rootPackageJson = readPackageJson(releaseRoot)
   const manifest = readJson(join(releaseRoot, 'dist/release-manifest.json'), 'dist/release-manifest.json')
 
-  if (manifest.schemaVersion !== MANIFEST_VERSION || manifest.kind !== 'swm-uws-release-candidate') {
+  if (
+    manifest.schemaVersion !== MANIFEST_VERSION ||
+    manifest.kind !== 'swm-uws-release-candidate' ||
+    manifest.prebuildManifest?.path !== 'package/prebuilds/manifest.json'
+  ) {
     throw new Error('Invalid release candidate manifest schema')
   }
 
+  assertReleasePackageIdentity(manifest.package, rootPackageJson)
   assertSourceIdentity(manifest.source, source)
   assertWorkflowIdentity(manifest.workflow, workflow)
   assertCandidateTarball(manifest, releaseRoot)
@@ -246,11 +254,12 @@ export function verifyCandidateManifest({ releaseRoot, environment }) {
     throw new Error('Invalid dist/SHA256SUMS')
   }
 
-  const packageJson = readPackedJson(tarballPath, 'package/package.json')
+  const packedPackageJson = readPackedJson(tarballPath, 'package/package.json')
   const prebuildManifestText = readPackedText(tarballPath, 'package/prebuilds/manifest.json')
   const prebuildManifest = parseJson(prebuildManifestText, 'package/prebuilds/manifest.json')
 
-  assertPackageIdentity(packageJson, readPackageJson(releaseRoot))
+  assertPackageIdentity(packedPackageJson, rootPackageJson)
+  assertReleasePackageIdentity(prebuildManifest.package, rootPackageJson)
   assertSourceIdentity(prebuildManifest.source, source)
   assertWorkflowIdentity(prebuildManifest.workflow, workflow)
   verifyPackedArtifacts(tarballPath, prebuildManifest)
@@ -297,6 +306,7 @@ function validateBuildManifest(manifest, expected, identity) {
 
   assertSourceIdentity(manifest.source, identity.source)
   assertWorkflowIdentity(manifest.workflow, identity.workflow)
+  assertReleasePackageIdentity(manifest.package, identity.packageJson)
 
   for (const [key, value] of Object.entries({
     path: expected.path,
@@ -323,15 +333,19 @@ function validateBuildManifest(manifest, expected, identity) {
   }
 }
 
-function validateReleaseManifest(manifest, actualArtifacts) {
+function validateReleaseManifest(manifest, actualArtifacts, packageJson) {
   const errors = []
 
   if (manifest.schemaVersion !== MANIFEST_VERSION || manifest.kind !== 'swm-uws-release-prebuilds') {
     return ['Invalid release manifest schema: prebuilds/manifest.json']
   }
 
-  if (manifest.package?.name !== PACKAGE_NAME) {
-    errors.push('Invalid package name in prebuilds/manifest.json')
+  if (
+    manifest.package?.name !== PACKAGE_NAME ||
+    manifest.package?.name !== packageJson.name ||
+    manifest.package?.version !== packageJson.version
+  ) {
+    errors.push('Invalid package identity in prebuilds/manifest.json')
   }
 
   if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== expectedPrebuilds.length) {
@@ -341,10 +355,11 @@ function validateReleaseManifest(manifest, actualArtifacts) {
   }
 
   for (const expected of expectedPrebuilds) {
-    const declared = manifest.artifacts.find((candidate) => candidate.path === expected.path)
+    const declaredEntries = manifest.artifacts.filter((candidate) => candidate.path === expected.path)
+    const declared = declaredEntries[0]
     const actual = actualArtifacts.find((candidate) => candidate.path === expected.path)
 
-    if (!declared || !actual) {
+    if (declaredEntries.length !== 1 || !actual) {
       errors.push(`Missing manifest entry: ${expected.path}`)
       continue
     }
@@ -352,20 +367,42 @@ function validateReleaseManifest(manifest, actualArtifacts) {
     if (declared.sha256 !== actual.sha256 || declared.bytes !== actual.bytes || declared.format !== expected.format) {
       errors.push(`Manifest digest or format mismatch: ${expected.path}`)
     }
+
+    for (const [key, value] of Object.entries({
+      platform: expected.platform,
+      arch: expected.arch,
+      nodeMajor: expected.nodeMajor,
+      nodeAbi: expected.nodeAbi
+    })) {
+      if (declared.toolchain?.[key] !== value) {
+        errors.push(`Invalid manifest toolchain ${key}: ${expected.path}`)
+      }
+    }
+
+    for (const key of ['nodeVersion', 'npmVersion', 'builder', 'compiler', 'profile']) {
+      if (typeof declared.toolchain?.[key] !== 'string' || declared.toolchain[key].trim() === '') {
+        errors.push(`Missing manifest toolchain ${key}: ${expected.path}`)
+      }
+    }
   }
 
   return errors
 }
 
 function verifyPackedArtifacts(tarballPath, manifest) {
+  if (manifest.schemaVersion !== MANIFEST_VERSION || manifest.kind !== 'swm-uws-release-prebuilds') {
+    throw new Error('Invalid packed prebuild manifest schema')
+  }
+
   if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== expectedPrebuilds.length) {
     throw new Error('Packed prebuild manifest has an invalid artifact count')
   }
 
   for (const expected of expectedPrebuilds) {
-    const declared = manifest.artifacts.find((candidate) => candidate.path === expected.path)
+    const declaredEntries = manifest.artifacts.filter((candidate) => candidate.path === expected.path)
+    const declared = declaredEntries[0]
 
-    if (!declared) {
+    if (declaredEntries.length !== 1) {
       throw new Error(`Packed prebuild manifest is missing ${expected.path}`)
     }
 
@@ -377,6 +414,21 @@ function verifyPackedArtifacts(tarballPath, manifest) {
 
     if (declared.sha256 !== digest(bytes) || declared.bytes !== bytes.length) {
       throw new Error(`Packed prebuild digest mismatch: ${expected.path}`)
+    }
+
+    for (const [key, value] of Object.entries({
+      platform: expected.platform,
+      arch: expected.arch,
+      nodeMajor: expected.nodeMajor,
+      nodeAbi: expected.nodeAbi
+    })) {
+      if (declared.toolchain?.[key] !== value) {
+        throw new Error(`Invalid packed prebuild toolchain ${key}: ${expected.path}`)
+      }
+    }
+
+    for (const key of ['nodeVersion', 'npmVersion', 'builder', 'compiler', 'profile']) {
+      requireValue(declared.toolchain?.[key], `packed prebuild toolchain ${key}: ${expected.path}`)
     }
   }
 
@@ -421,6 +473,12 @@ function assertPackageIdentity(actual, expected) {
     actual.publishConfig?.provenance !== true
   ) {
     throw new Error('Packed package publishConfig is missing or invalid')
+  }
+}
+
+function assertReleasePackageIdentity(actual, expected) {
+  if (actual?.name !== PACKAGE_NAME || actual.name !== expected.name || actual.version !== expected.version) {
+    throw new Error('Release prebuild package identity does not match package.json')
   }
 }
 

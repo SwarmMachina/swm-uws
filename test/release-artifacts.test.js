@@ -61,6 +61,38 @@ test('assembly rejects a prebuild manifest from another workflow run', () => {
   })
 })
 
+test('release verification rejects stale package and toolchain metadata', () => {
+  withReleaseFixture((releaseRoot) => {
+    assembleReleaseManifest({ releaseRoot, environment })
+    const manifestPath = join(releaseRoot, 'prebuilds/manifest.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+
+    manifest.package.version = '0.6.2'
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+    assert.throws(() => verifyReleasePrebuilds(releaseRoot), /Invalid package identity/)
+
+    manifest.package.version = '0.6.3'
+    manifest.artifacts[0].toolchain.nodeAbi = '999'
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+    assert.throws(() => verifyReleasePrebuilds(releaseRoot), /Invalid manifest toolchain nodeAbi/)
+  })
+})
+
+test('assembly rejects a prebuild manifest from another package version', () => {
+  withReleaseFixture((releaseRoot) => {
+    const path = join(releaseRoot, `${expectedPrebuilds[0].path}.build.json`)
+    const manifest = JSON.parse(readFileSync(path, 'utf8'))
+
+    manifest.package.version = '0.6.2'
+    writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`)
+
+    assert.throws(
+      () => assembleReleaseManifest({ releaseRoot, environment }),
+      /Release prebuild package identity does not match package\.json/
+    )
+  })
+})
+
 test('candidate verification rejects a tarball changed after package assembly', () => {
   withReleaseFixture((releaseRoot) => {
     assembleReleaseManifest({ releaseRoot, environment })
@@ -82,6 +114,31 @@ test('candidate verification rejects a tarball changed after package assembly', 
 
     writeFileSync(tarball, Buffer.concat([readFileSync(tarball), Buffer.from('tampered')]))
     assert.throws(() => verifyCandidateManifest({ releaseRoot, environment }), /Release candidate digest mismatch/)
+  })
+})
+
+test('candidate creation rejects an invalid packed prebuild manifest schema', () => {
+  withReleaseFixture((releaseRoot) => {
+    assembleReleaseManifest({ releaseRoot, environment })
+    const manifestPath = join(releaseRoot, 'prebuilds/manifest.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+
+    manifest.kind = 'untrusted-prebuilds'
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+    mkdirSync(join(releaseRoot, 'dist'))
+    execFileSync('npm', ['pack', '--ignore-scripts', '--pack-destination', 'dist'], {
+      cwd: releaseRoot,
+      env: {
+        ...process.env,
+        npm_config_cache: join(releaseRoot, '.npm-cache')
+      },
+      stdio: 'pipe'
+    })
+
+    assert.throws(
+      () => createCandidateManifest({ releaseRoot, environment }),
+      /Invalid packed prebuild manifest schema/
+    )
   })
 })
 

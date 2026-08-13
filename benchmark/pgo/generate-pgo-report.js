@@ -5,16 +5,12 @@ import { pathToFileURL } from 'node:url'
 import { pairedComparison } from '@swarmmachina/benchkit/statistics'
 import { format } from 'prettier'
 
+import { FEATURE_PERFORMANCE_PATH_NAMES, featurePerformanceGuard } from '../lib/feature-performance-guard.js'
+
 let directory = new URL('../profiles/pgo-balanced-linux/', import.meta.url)
 let check = false
 
-const expectedFeatureArtifacts = [
-  'collect-body-with-length-256.json',
-  'collect-body-with-length-4096.json',
-  'end-batch.json',
-  'request-prefetch.json',
-  'discard-body.json'
-]
+const expectedFeatureArtifacts = FEATURE_PERFORMANCE_PATH_NAMES.map((name) => `${name}.json`)
 const arguments_ = process.argv.slice(2)
 
 for (let index = 0; index < arguments_.length; index++) {
@@ -192,7 +188,13 @@ function summarizeFeaturePath(name, artifact) {
     pairedThroughputDeltaPct: medians.pairedThroughputDeltaPct,
     pairedThroughputIqrPct: medians.pairedThroughputIqrPct,
     winningPairs: medians.winningPairs,
-    deltaPct: medians.deltaPct
+    deltaPct: medians.deltaPct,
+    guard: featurePerformanceGuard({
+      label: name.replace(/\.json$/, ''),
+      pairedThroughputDeltaPct: medians.pairedThroughputDeltaPct,
+      upstream: medians.upstreamManual,
+      candidate: medians.swmHelper
+    })
   }
 }
 
@@ -343,20 +345,31 @@ ${guard.failures.length ? guard.failures.map((failure) => `- ${failure}`).join('
 
 `
     : ''
+  const featureGuardThresholds = featurePaths[0]?.guard.thresholds
   const featureSection = featurePaths.length
     ? `## Binding extension paths versus upstream
 
 Each path uses ${featurePaths[0].parameters.blocks} balanced ABBA/BAAB blocks. RPS and percentile deltas compare the swm-uws helper with the listed pinned-upstream equivalent.
 
-| Feature path | Upstream path | Protocol | Upstream RPS | swm RPS | Paired RPS delta | p95 delta | p99 delta | ELU delta | RSS delta |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Feature path | Upstream path | Protocol | Upstream RPS | swm RPS | Paired RPS delta | p95 delta | p99 delta | ELU delta | RSS delta | Guard |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 ${featurePaths
   .map((path) => {
     const protocol = `c${path.parameters.connections}/p${path.parameters.pipelining}; ${path.parameters.warmupMs} ms + ${path.parameters.durationMs} ms`
 
-    return `| ${path.label} | ${path.upstreamPath} | ${protocol} | ${formatInteger(path.upstream.requestsPerSecond)} | ${formatInteger(path.swm.requestsPerSecond)} | ${signed(path.pairedThroughputDeltaPct, 2)}% (${path.winningPairs}/${path.parameters.blocks}) | ${signed(path.deltaPct.p95Ms, 2)}% | ${signed(path.deltaPct.p99Ms, 2)}% | ${signed(path.deltaPct.eluPct, 2)}% | ${signed(path.deltaPct.rssPeakMiB, 2)}% |`
+    return `| ${path.label} | ${path.upstreamPath} | ${protocol} | ${formatInteger(path.upstream.requestsPerSecond)} | ${formatInteger(path.swm.requestsPerSecond)} | ${signed(path.pairedThroughputDeltaPct, 2)}% (${path.winningPairs}/${path.parameters.blocks}) | ${signed(path.deltaPct.p95Ms, 2)}% | ${signed(path.deltaPct.p99Ms, 2)}% | ${signed(path.deltaPct.eluPct, 2)}% | ${signed(path.deltaPct.rssPeakMiB, 2)}% | ${path.guard.status.toUpperCase()} |`
   })
   .join('\n')}
+
+The feature guard allows at most ${featureGuardThresholds.maxThroughputRegressionPct}% paired throughput regression, p95/p99 latency +${featureGuardThresholds.maxLatencyRegressionPct}% plus ${featureGuardThresholds.latencySlackMs} ms, and RSS +${featureGuardThresholds.maxRssRegressionPct}% plus ${featureGuardThresholds.rssSlackMiB} MiB.
+${
+  featurePaths.flatMap((path) => path.guard.failures).length
+    ? featurePaths
+        .flatMap((path) => path.guard.failures)
+        .map((failure) => `- ${failure}`)
+        .join('\n')
+    : 'All feature performance guards passed.'
+}
 
 The \`prefetch\` and \`discardBody\` paths use pipelining 1 because their comparison retains the response past the route callback. Higher pipelining would close an upstream response before the delayed callback and measure an invalid lifecycle rather than the feature path.
 
