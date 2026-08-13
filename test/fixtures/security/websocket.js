@@ -235,8 +235,11 @@ export const webSocketCases = {
       // race the HTTP-to-WebSocket parser handoff on some runner architectures.
       await new Promise((resolve, reject) => {
         client.write(Buffer.from([0x89, 0x80, 0, 0, 0, 0]), (error) => {
-          if (error) reject(error)
-          else resolve()
+          if (error) {
+            reject(error)
+          } else {
+            resolve()
+          }
         })
       })
       await endRequested.promise
