@@ -556,6 +556,86 @@ jobs:
           overwrite: true
           retention-days: 14
 
+  swm-core-consumer:
+    name: swm-core consumer / Node.js ${{ matrix.node }}
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    env:
+      # @swarmmachina/swm-core v5.0.3; advance deliberately with its runtime contract.
+      SWM_CORE_COMMIT: 8aa93d3f7bcdc239ec77e822afeefbe9f1f25d43
+
+    steps:
+      - name: Checkout swm-uws release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Checkout pinned swm-core consumer
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: SwarmMachina/swm-core
+          ref: ${{ env.SWM_CORE_COMMIT }}
+          path: .consumer/swm-core
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4.1.0
+        with:
+          version: 11.20.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: .consumer/swm-core/pnpm-lock.yaml
+
+      - name: Download npm package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: swm-uws-release-candidate
+          path: dist
+
+      - name: Verify tested release candidate digest and contents
+        run: node scripts/release/release-artifacts.js verify-candidate
+
+      - name: Install exact packed candidate
+        shell: bash
+        run: |
+          tgz="$(find "$GITHUB_WORKSPACE/dist" -name '*.tgz' -type f -print -quit)"
+          test -n "$tgz"
+          candidate_root="$RUNNER_TEMP/swm-uws-candidate"
+          mkdir -p "$candidate_root"
+          npm init --yes --prefix "$candidate_root" >/dev/null
+          npm install --prefix "$candidate_root" "$tgz" --ignore-scripts --no-audit --no-fund
+          echo "SWM_UWS_CANDIDATE=$candidate_root/node_modules/@swarmmachina/swm-uws" >> "$GITHUB_ENV"
+
+      - name: Install pinned swm-core dependencies
+        working-directory: .consumer/swm-core
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify pinned consumer revision
+        working-directory: .consumer/swm-core
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$SWM_CORE_COMMIT"
+
+      - name: Build pinned swm-core runtime contract
+        working-directory: .consumer/swm-core
+        run: pnpm build:test
+
+      - name: Align candidate version for the consumer runner
+        working-directory: .consumer/swm-core
+        shell: bash
+        run: |
+          candidate_version="$(node -p "require(process.env.SWM_UWS_CANDIDATE + '/package.json').version")"
+          npm pkg set "dependencies.@swarmmachina/swm-uws=$candidate_version"
+
+      - name: Run complete swm-core runtime contract
+        working-directory: .consumer/swm-core
+        run: node .scripts-dist/test-runtime-binding.js
+
   package-smoke:
     name: Package smoke / ${{ matrix.os }} / Node.js ${{ matrix.node }}
     needs: package
@@ -693,6 +773,7 @@ jobs:
     name: Publish npm package
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
+      - swm-core-consumer
       - package-smoke
       - package-smoke-macos
     runs-on: ubuntu-24.04
