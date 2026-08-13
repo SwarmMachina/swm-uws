@@ -181,6 +181,7 @@ export const webSocketCases = {
     const { app } = fixture
     const opened = Promise.withResolvers()
     const closed = Promise.withResolvers()
+    const endRequested = Promise.withResolvers()
     const payload = new Uint8Array(1024 * 1024)
 
     let closeCount = 0
@@ -210,6 +211,7 @@ export const webSocketCases = {
 
         if (droppedCount === 1) {
           socket.end(1000, 'shutdown')
+          endRequested.resolve()
         }
       },
       ping() {
@@ -229,6 +231,11 @@ export const webSocketCases = {
       client.pause()
       client.write(webSocketHandshakeRequest())
       assert.equal(await opened.promise, true)
+      await endRequested.promise
+      // The peer was paused only to make auto-pong and close hit the dropped
+      // path. Drain the deliberate backpressure before waiting for FIN so the
+      // assertion does not depend on the platform's kernel send-buffer size.
+      client.resume()
       await closed.promise
       await new Promise((resolve) => setImmediate(resolve))
       assert.equal(droppedCount, 2)
