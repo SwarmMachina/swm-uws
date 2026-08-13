@@ -598,6 +598,7 @@ jobs:
           path: dist
 
       - name: Verify tested release candidate digest and contents
+        shell: bash
         run: node scripts/release/release-artifacts.js verify-candidate
 
       - name: Install and smoke-test packed package on Bookworm
