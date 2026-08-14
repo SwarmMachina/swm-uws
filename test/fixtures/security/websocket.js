@@ -182,7 +182,7 @@ export const webSocketCases = {
     const opened = Promise.withResolvers()
     const closed = Promise.withResolvers()
     const endRequested = Promise.withResolvers()
-    const payload = new Uint8Array(1024 * 1024)
+    const payload = new Uint8Array(32 * 1024 * 1024)
 
     let closeCount = 0
     let droppedCount = 0
@@ -193,17 +193,7 @@ export const webSocketCases = {
       maxBackpressure: 1,
       open(socket) {
         serverSocket = socket
-
-        let backpressured = false
-
-        for (let attempt = 0; attempt < 256; attempt++) {
-          if (serverSocket.send(payload, true) === 0) {
-            backpressured = true
-            break
-          }
-        }
-
-        opened.resolve(backpressured)
+        opened.resolve()
       },
       dropped(socket) {
         droppedCount++
@@ -227,12 +217,20 @@ export const webSocketCases = {
 
     try {
       await once(client, 'connect')
-      client.pause()
+      const response = readResponseHead(client)
+
       client.write(webSocketHandshakeRequest())
-      assert.equal(await opened.promise, true)
-      // Queue the ping only after the native upgrade callback has returned and
-      // the deliberate backpressure is observable. Sending it from open() can
-      // race the HTTP-to-WebSocket parser handoff on some runner architectures.
+      await response
+      await opened.promise
+      client.pause()
+
+      // Establish backpressure only after the HTTP-to-WebSocket parser handoff.
+      // A 1 MiB frame can move entirely into the paused peer's kernel receive
+      // buffer before its ping is processed on macOS. Keeping 32 MiB in flight
+      // makes the automatic pong deterministically exercise the dropped path.
+      assert.equal(serverSocket.send(payload, true), 0)
+      assert.ok(serverSocket.getBufferedAmount() > 1)
+
       await new Promise((resolve, reject) => {
         client.write(Buffer.from([0x89, 0x80, 0, 0, 0, 0]), (error) => {
           if (error) {
