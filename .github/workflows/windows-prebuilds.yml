@@ -911,4 +911,18 @@ jobs:
           mkdir "$verify_dir"
           npm init --yes --prefix "$verify_dir" >/dev/null
           npm install --prefix "$verify_dir" "$package_spec" --ignore-scripts --no-audit --no-fund
-          npm audit signatures --prefix "$verify_dir"
+
+          signature_verified=false
+          for attempt in $(seq 1 12); do
+            if npm audit signatures --prefix "$verify_dir"; then
+              signature_verified=true
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "npm signature audit did not pass after $attempt attempts" >&2
+              break
+            fi
+            sleep 5
+          done
+
+          test "$signature_verified" = true
