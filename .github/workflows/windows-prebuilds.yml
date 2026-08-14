@@ -239,6 +239,12 @@ jobs:
       - name: Run package smoke test
         run: npm test
 
+      - name: Stress auto-pong backpressure lifecycle
+        run: |
+          foreach ($attempt in 1..20) {
+            node test/fixtures/security-regression-case.js websocket-auto-pong-dropped-reentrant-end
+          }
+
       - name: Run raw V8 HTTP smoke test
         run: npm run test:v8-http
 

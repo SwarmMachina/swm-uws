@@ -226,9 +226,18 @@ export const webSocketCases = {
 
       // Establish backpressure only after the HTTP-to-WebSocket parser handoff.
       // A 1 MiB frame can move entirely into the paused peer's kernel receive
-      // buffer before its ping is processed on macOS. Keeping 32 MiB in flight
-      // makes the automatic pong deterministically exercise the dropped path.
-      assert.equal(serverSocket.send(payload, true), 0)
+      // buffer before its ping is processed. Windows loopback can also accept a
+      // complete 32 MiB write, so bound the total in-flight attempt to 256 MiB.
+      let backpressured = false
+
+      for (let attempt = 0; attempt < 8; attempt++) {
+        if (serverSocket.send(payload, true) === 0) {
+          backpressured = true
+          break
+        }
+      }
+
+      assert.equal(backpressured, true)
       assert.ok(serverSocket.getBufferedAmount() > 1)
 
       await new Promise((resolve, reject) => {
