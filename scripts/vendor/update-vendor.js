@@ -42,7 +42,9 @@ try {
   syncComponent(uSocketsRepo, join(root, 'vendor/uSockets'), ['LICENSE', 'Makefile', 'README.md', 'src'])
 
   for (const patch of readdirSync(join(root, 'vendor/patches')).sort()) {
-    run('git', ['apply', '--directory=vendor/uWebSockets', join('vendor/patches', patch)], root)
+    const component = patch.startsWith('usockets-') ? 'uSockets' : 'uWebSockets'
+
+    run('git', ['apply', `--directory=vendor/${component}`, join('vendor/patches', patch)], root)
   }
 
   const packagePath = join(root, 'package.json')

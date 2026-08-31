@@ -324,7 +324,7 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int events)
                 }
             }
 
-            if (events & LIBUS_SOCKET_READABLE) {
+            if (events & us_poll_events(&s->p) & LIBUS_SOCKET_READABLE) {
                 /* Contexts may prioritize down sockets that are currently readable, e.g. when SSL handshake has to be done.
                  * SSL handshakes are CPU intensive, so we limit the number of handshakes per loop iteration, and move the rest
                  * to the low-priority queue */
@@ -360,7 +360,9 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int events)
                     /* If we filled the entire recv buffer, we need to immediately read again since otherwise a
                      * pending hangup event in the same even loop iteration can close the socket before we get
                      * the chance to read again next iteration */
-                    if (length == LIBUS_RECV_BUFFER_LENGTH && s && !us_socket_is_closed(0, s)) {
+                    /* Respect a pause from on_data before receiving another buffer. */
+                    if (length == LIBUS_RECV_BUFFER_LENGTH && s && !us_socket_is_closed(0, s)
+                        && (us_poll_events(&s->p) & LIBUS_SOCKET_READABLE)) {
                         goto read_more;
                     }
 

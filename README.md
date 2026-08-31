@@ -292,6 +292,11 @@ if (!native.httpTransportConfig || !native.requestPrefetch) {
 | `responseBatch`       | `res.endBatch(status, headers, body)` writes a prepared response. |
 | `requestPause`        | `res.pause()` and `res.resume()` control body delivery.           |
 
+`res.pause()` stops further socket reads; callbacks can still consume data
+already present in the current parser buffer. Call `res.resume()` when the
+consumer is ready. Version 0.7.3 fixes continued full-buffer reads after pause;
+code that pauses without resuming can no longer rely on those unintended reads.
+
 ## Examples
 
 Each example below is a separate server fragment. Start its application with

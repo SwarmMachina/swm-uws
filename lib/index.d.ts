@@ -324,7 +324,10 @@ export interface HttpResponse {
   /** Stops an active body collector without a callback while the transport drains remaining bytes. */
   discardBody(): void
 
-  /** Pauses delivery of request body data. */
+  /**
+   * Pauses further socket reads. Data already in the current parser buffer may
+   * still be delivered. Call resume() when the consumer is ready for more data.
+   */
   pause(): void
 
   /** Resumes delivery of request body data. */

@@ -129,3 +129,19 @@ closed native socket.
 The HTTP path adds only constant-time state updates and no allocation. Normal
 WebSocket message and publish paths are unchanged; close-time snapshot cost is
 linear in that socket's subscription count.
+
+## Stop receiving when an HTTP body callback pauses the socket
+
+`usockets-read-pause.patch` rechecks the socket's current readable interest before
+handling a readable event and before repeating a full-buffer `recv`. Previously,
+`HttpResponse::pause()` changed polling interest but the active receive loop
+continued delivering 512 KiB buffers until the socket was drained. A slow upload
+consumer could consequently retain almost the entire request in its JS queue.
+
+A callback can still receive data already present in the current parser buffer
+(for example, multiple HTTP chunks in one receive). Pausing prevents the next
+receive; resuming restores normal polling and preserves the full-buffer drain
+behavior while reads remain enabled. No payload copy or allocation is added.
+
+The vendor updater applies `usockets-*` patches to `vendor/uSockets`; the existing
+`uwebsockets-*` patches continue to target `vendor/uWebSockets`.
