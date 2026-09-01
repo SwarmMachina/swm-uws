@@ -140,7 +140,7 @@ export const allowedSurfaceDelta = {
           name
         )
     ),
-    extra: ['RequestPrefetchPlan', 'capabilities', 'createApp', 'version']
+    extra: ['PreparedHeaderBlock', 'RequestPrefetchPlan', 'capabilities', 'createApp', 'version']
   },
   app: {
     missing: [
@@ -156,6 +156,6 @@ export const allowedSurfaceDelta = {
     extra: ['getHttpTransportStats']
   },
   request: { missing: [], extra: ['prefetch'] },
-  response: { missing: [], extra: ['collectBodyWithLength', 'discardBody', 'endBatch'] },
+  response: { missing: [], extra: ['collectBodyWithLength', 'discardBody', 'endBatch', 'endPrepared'] },
   websocket: { missing: [], extra: [] }
 }

@@ -751,6 +751,7 @@ void Capabilities(const FunctionCallbackInfo<Value> &args) {
         "collectBody",
         "collectBodyLength",
         "httpTransportConfig",
+        "preparedHeaders",
         "requestPrefetch",
         "responseBatch",
         "requestPause",

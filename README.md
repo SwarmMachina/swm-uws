@@ -288,6 +288,7 @@ if (!native.httpTransportConfig || !native.requestPrefetch) {
 | `collectBody`         | `res.collectBody(maxBytes, callback)` retains one complete body.  |
 | `collectBodyLength`   | `res.collectBodyWithLength()` exposes the declared body length.   |
 | `httpTransportConfig` | `App({ http })` applies parser and lifecycle policy.              |
+| `preparedHeaders`     | `PreparedHeaderBlock` owns a reusable validated response block.   |
 | `requestPrefetch`     | `req.prefetch(plan)` copies selected headers.                     |
 | `responseBatch`       | `res.endBatch(status, headers, body)` writes a prepared response. |
 | `requestPause`        | `res.pause()` and `res.resume()` control body delivery.           |
@@ -407,6 +408,21 @@ app.get('/health', (res) => {
 
 `Content-Length` and `Transfer-Encoding` remain managed by the binding and
 must not be included in `jsonHeaders`.
+
+When the same complete header set is reused across responses, compile it once
+into native-owned bytes and use `endPrepared()`:
+
+```js
+const preparedJsonHeaders = new uWS.PreparedHeaderBlock(jsonHeaders)
+
+app.get('/ready', (res) => {
+  res.endPrepared('200 OK', preparedJsonHeaders, '{"ready":true}')
+})
+```
+
+The constructor copies and validates at most 64 pairs and 64 KiB of UTF-8
+payload. Keep dynamic request IDs and per-response cookies on `writeHeader()`;
+they do not belong in a reusable prepared block.
 
 ### WebSocket topics
 

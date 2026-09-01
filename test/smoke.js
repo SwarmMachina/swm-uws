@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import {
   DISABLED,
   LIBUS_LISTEN_EXCLUSIVE_PORT,
+  PreparedHeaderBlock,
   RequestPrefetchPlan,
   capabilities,
   createApp,
@@ -26,6 +27,7 @@ assert.deepEqual(capabilities(), {
   collectBody: true,
   collectBodyLength: true,
   httpTransportConfig: true,
+  preparedHeaders: true,
   requestPrefetch: true,
   responseBatch: true,
   requestPause: true
@@ -73,6 +75,7 @@ for (const method of requiredAppMethods) {
 }
 
 assert.deepEqual(new RequestPrefetchPlan({ headers: ['X-Smoke'] }).headerNames, ['x-smoke'])
+assert.equal(Object.isFrozen(new PreparedHeaderBlock(['x-smoke', 'yes'])), true)
 
 let completedResponse
 let filterCallCount = 0

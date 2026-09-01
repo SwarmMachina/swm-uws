@@ -15,6 +15,7 @@
         "src/http_route_callback_scope.cpp",
         "src/listen_socket_handle.cpp",
         "src/native_callback_scope.cpp",
+        "src/prepared_header_block.cpp",
         "src/request_binding.cpp",
         "src/request_prefetch_plan.cpp",
         "src/request_prefetch_snapshot.cpp",

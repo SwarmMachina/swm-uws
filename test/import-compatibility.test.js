@@ -10,6 +10,7 @@ const expectedKeys = [
   'App',
   'DISABLED',
   'LIBUS_LISTEN_EXCLUSIVE_PORT',
+  'PreparedHeaderBlock',
   'RequestPrefetchPlan',
   'capabilities',
   'createApp',

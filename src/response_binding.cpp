@@ -1,4 +1,5 @@
 #include "binding_internal.h"
+#include "prepared_header_block.h"
 
 namespace swm::binding {
 
@@ -281,6 +282,56 @@ void ResponseEndBatch(const FunctionCallbackInfo<Value> &args) {
     args.GetReturnValue().Set(args.This());
 }
 
+void ResponseEndPrepared(const FunctionCallbackInfo<Value> &args) {
+    HttpResponse *response = GetResponse(args);
+    if (!response) return;
+
+    auto *environment = static_cast<BindingEnvironment *>(args.Data().As<External>()->Value());
+    PreparedHeaderBlock *block =
+        args.Length() >= 2 ? PreparedHeaderBlock::From(args[1], environment) : nullptr;
+    if ((args.Length() != 2 && args.Length() != 3) || !args[0]->IsString() || !block) {
+        ThrowTypeError(args.GetIsolate(),
+                       "res.endPrepared(status, headers, body?) expects a status string and "
+                       "PreparedHeaderBlock");
+        return;
+    }
+
+    Isolate *isolate = args.GetIsolate();
+    NativeBytes status(isolate, args[0]);
+    if (!IsValidStatus(status.View())) {
+        ThrowTypeError(isolate, "res.endPrepared() expects a valid status");
+        return;
+    }
+
+    Local<Value> bodyValue = v8::Undefined(isolate);
+    if (args.Length() == 3) bodyValue = args[2];
+    NativeBytes body(isolate, bodyValue, true);
+    if (body.IsTooLarge()) {
+        ThrowRangeError(isolate, "res.endPrepared() body exceeds the native transport limit");
+        return;
+    }
+    if (!body.IsValid()) {
+        ThrowTypeError(isolate, "res.endPrepared() body expects a string or buffer");
+        return;
+    }
+    if (!ResponseStillMatches(args, response)) return;
+
+    auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
+    std::shared_ptr<AsyncResponseState> asyncState =
+        async ? async->shared_from_this() : std::shared_ptr<AsyncResponseState>();
+    if (asyncState) InvalidateAsyncResponse(asyncState);
+    else InvalidateResponseObject(args.This());
+    response->cork([response, &status, block, &body]() {
+        response->writeStatus(status.View());
+        for (std::size_t index = 0; index < block->HeaderCount(); index++) {
+            const auto [name, value] = block->Header(index);
+            response->writeHeader(name, value);
+        }
+        response->end(body.View());
+    });
+    args.GetReturnValue().Set(args.This());
+}
+
 void ResponseWriteStatus(const FunctionCallbackInfo<Value> &args) {
     HttpResponse *response = GetResponse(args);
     if (!response) return;
@@ -318,18 +369,10 @@ void ResponseWriteHeader(const FunctionCallbackInfo<Value> &args) {
                        "res.writeHeader(name, value) expects strings or buffers");
         return;
     }
-    auto *context = static_cast<BindingEnvironment *>(args.Data().As<External>()->Value());
-    const bool cachedName =
-        args[0]->IsString() && context->IsKnownResponseHeaderName(args[0].As<String>());
-    if (!cachedName) {
-        if (!IsValidHeaderName(name.View())) {
-            ThrowTypeError(args.GetIsolate(),
-                           "res.writeHeader(name, value) expects a valid HTTP header name");
-            return;
-        }
-        if (args[0]->IsString()) {
-            context->RememberResponseHeaderName(args[0].As<String>());
-        }
+    if (!IsValidHeaderName(name.View())) {
+        ThrowTypeError(args.GetIsolate(),
+                       "res.writeHeader(name, value) expects a valid HTTP header name");
+        return;
     }
     if (IsBindingManagedFramingHeader(name.View())) {
         ThrowTypeError(
@@ -337,18 +380,10 @@ void ResponseWriteHeader(const FunctionCallbackInfo<Value> &args) {
             "res.writeHeader() manages Content-Length and Transfer-Encoding automatically");
         return;
     }
-    const bool cachedValue =
-        args[1]->IsString() && context->IsKnownResponseHeaderValue(args[1].As<String>());
-    if (!cachedValue) {
-        if (ContainsInvalidHeaderValueCharacter(value.View())) {
-            ThrowTypeError(
-                args.GetIsolate(),
-                "res.writeHeader(name, value) does not allow control characters in value");
-            return;
-        }
-        if (args[1]->IsString()) {
-            context->RememberResponseHeaderValue(args[1].As<String>());
-        }
+    if (ContainsInvalidHeaderValueCharacter(value.View())) {
+        ThrowTypeError(args.GetIsolate(),
+                       "res.writeHeader(name, value) does not allow control characters in value");
+        return;
     }
     response->writeHeader(name.View(), value.View());
     args.GetReturnValue().Set(args.This());
@@ -879,6 +914,7 @@ void InitializeResponseBinding(BindingEnvironment *context, Local<External> cont
     SetPrototypeMethod(isolate, response, "endWithoutBody", ResponseEndWithoutBody);
     SetPrototypeMethod(isolate, response, "close", ResponseClose);
     SetPrototypeMethod(isolate, response, "endBatch", ResponseEndBatch);
+    SetPrototypeMethod(isolate, response, "endPrepared", ResponseEndPrepared, contextExternal);
     SetPrototypeMethod(isolate, response, "writeStatus", ResponseWriteStatus);
     SetPrototypeMethod(isolate, response, "writeHeader", ResponseWriteHeader, contextExternal);
     SetPrototypeMethod(isolate, response, "cork", ResponseCork);

@@ -12,6 +12,24 @@
 
 namespace swm::binding {
 
+// Returns the UTF-8 byte length of `value` without writing its bytes,
+// isolating the V8-version-conditional API across every NativeBytes-adjacent
+// call site that needs to measure a string before deciding whether to copy
+// it. Mirrors the length computation NativeBytes itself performs when
+// converting a non-one-byte-ASCII v8::String.
+inline bool
+MeasureUtf8Length(v8::Isolate *isolate, v8::Local<v8::String> value, std::size_t *result) {
+#if V8_MAJOR_VERSION >= 13
+    *result = value->Utf8LengthV2(isolate);
+    return true;
+#else
+    const int measured = value->Utf8Length(isolate);
+    if (measured < 0) return false;
+    *result = static_cast<std::size_t>(measured);
+    return true;
+#endif
+}
+
 // Arena-backed views remain valid while all enclosing NativeBytes instances
 // are alive: only the outermost construction resets the thread-local arena and
 // nested instances reserve later bytes. Fallback storage belongs to this
@@ -54,17 +72,20 @@ public:
                     return;
                 }
             }
-#if V8_MAJOR_VERSION >= 13
-            const size_t length = string->Utf8LengthV2(isolate);
+            std::size_t length = 0;
+            if (!MeasureUtf8Length(isolate, string, &length)) {
+                valid_ = false;
+                return;
+            }
             char *data = Allocate(length);
+#if V8_MAJOR_VERSION >= 13
             string->WriteUtf8V2(isolate, data, length);
 #else
-            const int length = string->Utf8Length(isolate);
-            char *data = Allocate(static_cast<std::size_t>(length));
-            string->WriteUtf8(isolate, data, length, nullptr, v8::String::NO_NULL_TERMINATION);
+            string->WriteUtf8(
+                isolate, data, static_cast<int>(length), nullptr, v8::String::NO_NULL_TERMINATION);
 #endif
             data_ = data;
-            length_ = static_cast<std::size_t>(length);
+            length_ = length;
             return;
         }
 

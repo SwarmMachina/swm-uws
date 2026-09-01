@@ -80,41 +80,11 @@ public:
         requestPrefetchPlanConstructor_.Reset(isolate_, value);
     }
 
-    [[nodiscard]] bool IsKnownResponseHeaderName(v8::Local<v8::String> value) const {
-        return responseHeaderNameValidation_.Matches(isolate_, value);
-    }
-
-    void RememberResponseHeaderName(v8::Local<v8::String> value) {
-        responseHeaderNameValidation_.Store(isolate_, value);
-    }
-
-    [[nodiscard]] bool IsKnownResponseHeaderValue(v8::Local<v8::String> value) const {
-        return responseHeaderValueValidation_.Matches(isolate_, value);
-    }
-
-    void RememberResponseHeaderValue(v8::Local<v8::String> value) {
-        responseHeaderValueValidation_.Store(isolate_, value);
-    }
-
     AppState *OwnApp(std::unique_ptr<AppState> app);
     [[nodiscard]] bool CloseListenSocket(v8::Local<v8::Value> token);
     [[nodiscard]] std::optional<int> ListenSocketLocalPort(v8::Local<v8::Value> token) const;
 
 private:
-    class ValidatedStringCache final {
-    public:
-        [[nodiscard]] bool Matches(v8::Isolate *isolate, v8::Local<v8::String> value) const {
-            return !key_.IsEmpty() && key_.Get(isolate)->StrictEquals(value);
-        }
-
-        void Store(v8::Isolate *isolate, v8::Local<v8::String> value) {
-            key_.Reset(isolate, value);
-        }
-
-    private:
-        v8::Global<v8::String> key_;
-    };
-
     v8::Isolate *isolate_;
     v8::Global<v8::Object> responseTemplate_;
     v8::Global<v8::Object> requestTemplate_;
@@ -123,8 +93,6 @@ private:
     v8::Global<v8::Object> socketTemplate_;
     v8::Global<v8::Function> appConstructor_;
     v8::Global<v8::Function> requestPrefetchPlanConstructor_;
-    ValidatedStringCache responseHeaderNameValidation_;
-    ValidatedStringCache responseHeaderValueValidation_;
     std::vector<std::unique_ptr<AppState>> apps_;
 };
 

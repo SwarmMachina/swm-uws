@@ -1,4 +1,5 @@
 #include "binding_internal.h"
+#include "prepared_header_block.h"
 
 namespace {
 
@@ -15,6 +16,7 @@ void InitializeModule(v8::Local<v8::Object> exports,
     v8::Local<v8::External> environmentExternal = v8::External::New(isolate, environment);
 
     InitializeResponseBinding(environment, environmentExternal);
+    PreparedHeaderBlock::Initialize(environment, exports);
     InitializeRequestBinding(environment, environmentExternal);
     InitializeWebSocketBinding(environment, environmentExternal);
     InitializeAppBinding(environment, environmentExternal, exports);

@@ -1,6 +1,13 @@
-import { RequestPrefetchPlan, createApp, defineHttpHandler, defineWebSocketBehavior } from '@swarmmachina/swm-uws'
+import {
+  PreparedHeaderBlock,
+  RequestPrefetchPlan,
+  createApp,
+  defineHttpHandler,
+  defineWebSocketBehavior
+} from '@swarmmachina/swm-uws'
 
 const prefetchPlan = new RequestPrefetchPlan({ headers: ['x-test'] })
+const preparedHeaders = new PreparedHeaderBlock(['content-type', 'text/plain'])
 
 export const handler = defineHttpHandler((res, req) => {
   req.getUrl()
@@ -24,6 +31,10 @@ export const bodyHandler = defineHttpHandler((res) => {
   if (declaredLength !== undefined && declaredLength > 1024) {
     res.discardBody()
   }
+})
+
+export const preparedHandler = defineHttpHandler((res) => {
+  res.endPrepared('200 OK', preparedHeaders, 'ok')
 })
 
 export const app = createApp().get('/typed', handler).post('/body', bodyHandler).ws('/typed-ws', behavior)

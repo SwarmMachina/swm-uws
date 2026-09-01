@@ -96,6 +96,7 @@ enum class BindingObjectKind : std::uint8_t {
     Request,
     Response,
     Socket,
+    PreparedHeaderBlock,
     RequestPrefetchPlan,
     RequestPrefetchSnapshot,
 };
@@ -106,6 +107,7 @@ inline BindingObjectTag AppObjectTag;
 inline BindingObjectTag RequestObjectTag;
 inline BindingObjectTag ResponseObjectTag;
 inline BindingObjectTag SocketObjectTag;
+inline BindingObjectTag PreparedHeaderBlockObjectTag;
 inline BindingObjectTag RequestPrefetchPlanObjectTag;
 inline BindingObjectTag RequestPrefetchSnapshotObjectTag;
 
@@ -119,6 +121,8 @@ inline void *BindingObjectTagFor(BindingObjectKind kind) {
         return &ResponseObjectTag;
     case BindingObjectKind::Socket:
         return &SocketObjectTag;
+    case BindingObjectKind::PreparedHeaderBlock:
+        return &PreparedHeaderBlockObjectTag;
     case BindingObjectKind::RequestPrefetchPlan:
         return &RequestPrefetchPlanObjectTag;
     case BindingObjectKind::RequestPrefetchSnapshot:

@@ -2,6 +2,7 @@ import uWS, {
   App,
   DISABLED,
   LIBUS_LISTEN_EXCLUSIVE_PORT,
+  PreparedHeaderBlock,
   RequestPrefetchPlan,
   capabilities,
   createApp,
@@ -65,6 +66,7 @@ type PublicTypes = [
 
 const app: AppInstance = createApp()
 const prefetchPlan = new RequestPrefetchPlan({ headers: ['authorization'] })
+const preparedHeaders = new PreparedHeaderBlock(['content-type', 'application/json'])
 const handler = defineHttpHandler((res, req) => res.end(req.getUrl()))
 const bodyLengthHandler = defineHttpHandler((res) => res.collectBodyWithLength(1024, () => {}))
 const bodyDiscardHandler = defineHttpHandler((res) => {
@@ -84,6 +86,7 @@ void bodyLengthHandler
 void bodyDiscardHandler
 void behavior
 void prefetchPlan
+void preparedHeaders
 void uWS
 void App
 void version

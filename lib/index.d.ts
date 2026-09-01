@@ -50,6 +50,17 @@ export type us_socket_context_t = SocketContext
 export type RequestHeaderSelection = 'all' | readonly string[]
 
 /**
+ * A native-owned immutable response-header block.
+ *
+ * Construction copies and validates at most 64 name/value pairs and 64 KiB of
+ * UTF-8 payload. `Content-Length` and `Transfer-Encoding` remain managed by the
+ * binding and are rejected.
+ */
+export class PreparedHeaderBlock {
+  constructor(headerLines: readonly string[])
+}
+
+/**
  * Compiles a reusable, immutable request-header selection.
  *
  * Header names are validated, normalized to lowercase, deduplicated, and tied
@@ -186,6 +197,9 @@ export interface HttpResponse {
    * ```
    */
   endBatch(status: string, headerLines: string[], body?: NativeData): this
+
+  /** Writes status, a reusable native header block, and body in one corked operation. */
+  endPrepared(status: string, headers: PreparedHeaderBlock, body?: NativeData): this
 
   /**
    * Sets the HTTP status line.
@@ -678,6 +692,7 @@ export interface Capabilities {
   readonly collectBody: true
   readonly collectBodyLength: true
   readonly httpTransportConfig: true
+  readonly preparedHeaders: true
   readonly requestPrefetch: true
   readonly responseBatch: true
   readonly requestPause: true
@@ -691,6 +706,7 @@ declare const api: {
   readonly capabilities: typeof capabilities
   readonly createApp: typeof createApp
   readonly App: typeof App
+  readonly PreparedHeaderBlock: typeof PreparedHeaderBlock
   readonly RequestPrefetchPlan: typeof RequestPrefetchPlan
   readonly us_listen_socket_close: typeof us_listen_socket_close
   readonly us_socket_local_port: typeof us_socket_local_port
