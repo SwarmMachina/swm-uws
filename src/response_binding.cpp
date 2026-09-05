@@ -781,18 +781,19 @@ void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool retur
     }
     state->RegisterDataHandler(args[1].As<Function>());
 
-    auto collection = std::make_shared<BodyCollection>(static_cast<std::size_t>(maxSizeNumber));
-    state->SetCollection(collection);
+    state->StartCollection(static_cast<std::size_t>(maxSizeNumber));
 
-    state->Response()->onDataV2([state, collection](std::string_view chunk,
-                                                    uint64_t maxRemainingBodyLength) {
-        if (!state->IsValid() || !state->HasActiveDataHandler() || collection->Completed()) {
+    // Retaining the response state also keeps its collection alive throughout the callback.
+    state->Response()->onDataV2([state](std::string_view chunk, uint64_t maxRemainingBodyLength) {
+        if (!state->IsValid() || !state->HasActiveDataHandler()) {
             return;
         }
+        BodyCollection &collection = state->Collection();
+        if (collection.Completed()) return;
 
         Isolate *callbackIsolate = state->Isolate();
         HandleScope scope(callbackIsolate);
-        if (!collection->Append(chunk)) {
+        if (!collection.Append(chunk)) {
             NativeCallbackScope callbackScope(*state->Metadata().app, state);
             Local<Value> argv[] = {Null(callbackIsolate)};
             const bool callbackSucceeded = CallJs(callbackIsolate, state->DataHandler(), 1, argv);
@@ -803,7 +804,7 @@ void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool retur
 
         if (maxRemainingBodyLength != 0) return;
 
-        auto *owned = new std::vector<char>(collection->Take());
+        auto *owned = new std::vector<char>(collection.Take());
         if (owned->empty()) {
             delete owned;
             NativeCallbackScope callbackScope(*state->Metadata().app, state);

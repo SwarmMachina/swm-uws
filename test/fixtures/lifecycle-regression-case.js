@@ -304,6 +304,43 @@ try {
     snapshots.length = 0
     await collectGarbage()
     assert.ok(retained - process.memoryUsage().external > 10 * 1024 * 1024, 'snapshot backing stores retained after GC')
+  } else if (scenario === 'collector-buffer-lifetime') {
+    const payload = Buffer.alloc(64 * 1024, 0x5a)
+    const bodies = []
+    const responses = []
+    const methods = ['collectBody', 'collectBodyWithLength']
+
+    for (const method of methods) {
+      app.post(`/${method}`, (res) => {
+        responses.push(new WeakRef(res))
+        res[method](payload.length, (body) => {
+          bodies.push(body)
+          res.end('ok')
+        })
+      })
+    }
+
+    server = await NativeAppServer.listen(app)
+
+    for (const method of methods) {
+      const result = await exchange([
+        `POST /${method} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: ${payload.length}\r\n\r\n`,
+        payload.subarray(0, payload.length / 2),
+        payload.subarray(payload.length / 2)
+      ])
+
+      assert.match(result.toString(), /200 OK/)
+    }
+
+    server.close()
+    await collectGarbage()
+    assert.equal(bodies.length, methods.length)
+    assert.ok(responses.every((reference) => reference.deref() === undefined))
+
+    for (const body of bodies) {
+      assert.ok(body instanceof ArrayBuffer)
+      assert.deepEqual(Buffer.from(body), payload, 'collected body must outlive its response and application')
+    }
   } else if (scenario.startsWith('collector-')) {
     const responses = []
     const chunkBytes = 16 * 1024 * 1024

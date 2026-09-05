@@ -95,8 +95,12 @@ public:
         if (collection_) collection_->Discard();
     }
 
-    void SetCollection(std::shared_ptr<BodyCollection> collection) {
-        collection_ = std::move(collection);
+    void StartCollection(std::size_t maximumSize) {
+        collection_ = std::make_unique<BodyCollection>(maximumSize);
+    }
+
+    [[nodiscard]] BodyCollection &Collection() noexcept {
+        return *collection_;
     }
 
     [[nodiscard]] bool HasAbortedHandler() const noexcept {
@@ -147,7 +151,7 @@ private:
     v8::Global<v8::Function> writableHandler_;
     v8::Global<v8::Object> object_;
     ResponseMetadata metadata_;
-    std::shared_ptr<BodyCollection> collection_;
+    std::unique_ptr<BodyCollection> collection_;
 };
 
 } // namespace swm::binding

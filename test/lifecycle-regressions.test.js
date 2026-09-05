@@ -24,6 +24,7 @@ for (const scenario of [
   'handler-collection',
   'ws-handler-lifetime',
   'ws-handler-registration-failure',
+  'collector-buffer-lifetime',
   'collector-discard',
   'collector-overflow',
   'prefetch-accounting',
