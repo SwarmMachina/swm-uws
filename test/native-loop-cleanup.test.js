@@ -1,5 +1,6 @@
-import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -54,12 +55,25 @@ test('environment teardown frees every uSockets allocation after its last loop i
       ]
     }
 
+    if (process.platform === 'win32') {
+      const cachedLibrary = join(configuration.variables.nodedir, configuration.variables.target_arch, 'node.lib')
+
+      // --nodedir assumes a Node source build; downloaded Windows headers keep
+      // node.lib under the architecture instead of the build configuration.
+      if (existsSync(cachedLibrary)) {
+        gyp.variables = { node_lib_file: cachedLibrary.replaceAll('\\', '/') }
+      }
+    }
+
     writeFileSync(join(directory, 'binding.gyp'), JSON.stringify(gyp))
-    execFileSync(
+    const build = spawnSync(
       process.execPath,
       [require.resolve('node-gyp/bin/node-gyp.js'), 'rebuild', `--nodedir=${configuration.variables.nodedir}`],
-      { cwd: directory, stdio: 'pipe', timeout: 90_000 }
+      { cwd: directory, encoding: 'utf8', timeout: 90_000 }
     )
+
+    assert.ifError(build.error)
+    assert.equal(build.status, 0, `Native loop probe build failed:\n${build.stdout}\n${build.stderr}`)
     execFileSync(
       process.execPath,
       [
