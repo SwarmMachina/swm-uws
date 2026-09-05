@@ -427,14 +427,9 @@ void RequestPrefetch(const FunctionCallbackInfo<Value> &args) {
         return;
     }
 
-    auto *snapshot = new swm::RequestPrefetchSnapshot(*request, *holder);
+    auto *snapshot = swm::RequestPrefetchSnapshot::Allocate(*request, *holder);
     std::unique_ptr<v8::BackingStore> backing = ArrayBuffer::NewBackingStore(
-        snapshot,
-        sizeof(*snapshot),
-        [](void *data, size_t, void *) {
-            delete static_cast<swm::RequestPrefetchSnapshot *>(data);
-        },
-        nullptr);
+        snapshot, snapshot->AllocationBytes(), swm::RequestPrefetchSnapshot::Delete, nullptr);
     Local<ArrayBuffer> storage = ArrayBuffer::New(isolate, std::move(backing));
     Local<Object> object = contextData->CloneRequestPrefetchSnapshotTemplate();
     object->SetInternalField(0, storage);

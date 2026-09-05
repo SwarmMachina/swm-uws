@@ -31,7 +31,7 @@ void RegisterHttpRoute(const FunctionCallbackInfo<Value> &args,
         ThrowTypeError(isolate, "app route path expects a string or buffer");
         return;
     }
-    Global<Function> *handlerPointer = state->OwnHandler(isolate, args[1].As<Function>());
+    auto handlerPointer = std::make_shared<Global<Function>>(isolate, args[1].As<Function>());
     BindingEnvironment *context = &state->Environment();
     auto routeHandler = [context, handlerPointer, state](HttpResponse *response,
                                                          uWS::HttpRequest *request) {
@@ -62,6 +62,13 @@ void RegisterHttpRoute(const FunctionCallbackInfo<Value> &args,
         }
 
         if (GetInternalPointer(responseObject)) {
+            if (callbackSucceeded && request->getYield()) {
+                InvalidateResponseState(responseObject);
+                response->onAborted(nullptr);
+                response->onWritable(nullptr);
+                response->onDataV2(nullptr);
+                return;
+            }
             auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(responseObject, 1));
             if (!callbackSucceeded && async) {
                 CloseAsyncResponseAfterCallbackFailure(async->shared_from_this());
@@ -244,21 +251,19 @@ void AppListen(const FunctionCallbackInfo<Value> &args) {
         }
         host.assign(nativeHost.View());
     }
-    Global<Function> *callbackPointer =
-        state->OwnHandler(isolate, args[callbackIndex].As<Function>());
+    Local<Function> callback = args[callbackIndex].As<Function>();
     bool callbackSucceeded = true;
-    auto listener =
-        [state, isolate, callbackPointer, &callbackSucceeded](us_listen_socket_t *socket) {
-            ListenSocketHandle *handle = state->TrackListenSocket(socket);
-            HandleScope scope(isolate);
-            Local<Value> socketValue = v8::False(isolate);
-            if (handle) socketValue = handle->Token();
-            Local<Value> argv[] = {socketValue};
-            callbackSucceeded = CallJs(isolate, callbackPointer->Get(isolate), 1, argv);
-            if (!callbackSucceeded && handle) {
-                (void)state->CloseListenSocket(handle);
-            }
-        };
+    auto listener = [state, isolate, callback, &callbackSucceeded](us_listen_socket_t *socket) {
+        ListenSocketHandle *handle = state->TrackListenSocket(socket);
+        HandleScope scope(isolate);
+        Local<Value> socketValue = v8::False(isolate);
+        if (handle) socketValue = handle->Token();
+        Local<Value> argv[] = {socketValue};
+        callbackSucceeded = CallJs(isolate, callback, 1, argv);
+        if (!callbackSucceeded && handle) {
+            (void)state->CloseListenSocket(handle);
+        }
+    };
     if (withHost) {
         state->NativeApp().listen(host, port, options, std::move(listener));
     } else {
@@ -302,18 +307,17 @@ void AppListenUnix(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(isolate, "app.listen_unix() path expects a string or buffer");
         return;
     }
-    Global<Function> *callbackPointer =
-        state->OwnHandler(isolate, args[callbackIndex].As<Function>());
+    Local<Function> callback = args[callbackIndex].As<Function>();
     bool callbackSucceeded = true;
     state->NativeApp().listen(
         options,
-        [state, isolate, callbackPointer, &callbackSucceeded](us_listen_socket_t *socket) {
+        [state, isolate, callback, &callbackSucceeded](us_listen_socket_t *socket) {
             ListenSocketHandle *handle = state->TrackListenSocket(socket);
             HandleScope scope(isolate);
             Local<Value> socketValue = v8::False(isolate);
             if (handle) socketValue = handle->Token();
             Local<Value> argv[] = {socketValue};
-            callbackSucceeded = CallJs(isolate, callbackPointer->Get(isolate), 1, argv);
+            callbackSucceeded = CallJs(isolate, callback, 1, argv);
             if (!callbackSucceeded && handle) {
                 (void)state->CloseListenSocket(handle);
             }
@@ -339,13 +343,14 @@ void AppFilter(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(isolate, "app.filter(handler) expects a function");
         return;
     }
-    Global<Function> *handlerPointer = state->OwnHandler(isolate, args[0].As<Function>());
+    auto handlerPointer = std::make_shared<Global<Function>>(isolate, args[0].As<Function>());
     BindingEnvironment *context = &state->Environment();
     state->NativeApp().filter([context, handlerPointer, state](HttpResponse *response, int count) {
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> responseObject = context->CloneResponseTemplate();
         ResponseMetadata responseMetadata{state};
+        responseMetadata.readOnly = count < 0;
         SetInternalPointer(responseObject, response, 0);
         SetInternalPointer(responseObject, &responseMetadata, 2);
         Local<Value> argv[] = {responseObject, Number::New(callbackIsolate, count)};
@@ -383,7 +388,7 @@ void AppGetHttpTransportStats(const FunctionCallbackInfo<Value> &args) {
         ThrowTypeError(args.GetIsolate(), "app.getHttpTransportStats() does not accept arguments");
         return;
     }
-    const uWS::HttpTransportStats stats = state->NativeApp().getHttpTransportStats();
+    const uWS::HttpTransportStats stats = state->TransportStats();
     Isolate *isolate = args.GetIsolate();
     Local<Context> context = isolate->GetCurrentContext();
     Local<Object> result = Object::New(isolate);
@@ -723,6 +728,10 @@ void CreateApp(const FunctionCallbackInfo<Value> &args) {
     std::optional<uWS::HttpTransportConfig> transportConfig = ParseHttpTransportConfig(args);
     if (!transportConfig) return;
     auto *context = static_cast<BindingEnvironment *>(args.Data().As<External>()->Value());
+    if (context->IsClosing()) {
+        ThrowError(isolate, "App cannot be created during environment cleanup");
+        return;
+    }
     auto nativeApp = std::make_unique<uWS::App>(uWS::SocketContextOptions{}, *transportConfig);
     if (nativeApp->constructorFailed()) {
         ThrowError(isolate, "App() could not create the native HTTP context");
@@ -732,6 +741,7 @@ void CreateApp(const FunctionCallbackInfo<Value> &args) {
         context->OwnApp(std::make_unique<AppState>(*context, std::move(nativeApp)));
     Local<Object> app =
         context->AppConstructor()->NewInstance(isolate->GetCurrentContext()).ToLocalChecked();
+    statePointer->AttachObject(app);
     SetInternalPointer(app, statePointer);
     SetBindingObjectKind(app, BindingObjectKind::App, 1);
     args.GetReturnValue().Set(app);

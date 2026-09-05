@@ -44,6 +44,7 @@ template <bool SSL>
 struct HttpResponse : public AsyncSocket<SSL> {
     /* Solely used for getHttpResponseData() */
     template <bool> friend struct TemplatedApp;
+    template <bool> friend struct HttpContext;
     typedef AsyncSocket<SSL> Super;
 private:
     HttpResponseData<SSL> *getHttpResponseData() {
@@ -231,7 +232,7 @@ private:
             /* I need to figure out if this line should rather be simply httpResponseData->offset == data.length() */
             /* No that can't be right, tryEnd with fake length should not complete the response even if the smaller chunk wrote in one go */
             /* Possibly need  to separate endWithoutBody and tryEnd with fake length into two separate calls with a boolean that explicitly marks isHeadOnly */
-            if (httpResponseData->offset == totalSize || !data.length()) {
+            if (httpResponseData->offset == totalSize || (!optional && !data.length())) {
                 httpResponseData->markDone();
                 armAfterResponseProgress();
 
@@ -688,6 +689,7 @@ public:
     void onDataV2(MoveOnlyFunction<void(std::string_view, uint64_t)> &&handler) {
         HttpResponseData<SSL> *data = getHttpResponseData();
         data->inStream = std::move(handler);
+        data->inStreamGeneration++;
 
         /* Always reset this counter here */
         data->received_bytes_per_timeout = 0;

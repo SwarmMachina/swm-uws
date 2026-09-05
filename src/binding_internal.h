@@ -297,7 +297,7 @@ inline bool IsValidStatus(std::string_view status) {
            !ContainsInvalidHeaderValueCharacter(status);
 }
 
-inline HttpResponse *GetResponse(const FunctionCallbackInfo<Value> &args) {
+inline HttpResponse *GetResponse(const FunctionCallbackInfo<Value> &args, bool inspection = false) {
     if (!HasBindingObjectKind(args.This(), BindingObjectKind::Response, 3)) {
         ThrowTypeError(args.GetIsolate(), "HTTP response method called with incompatible receiver");
         return nullptr;
@@ -308,7 +308,8 @@ inline HttpResponse *GetResponse(const FunctionCallbackInfo<Value> &args) {
         return nullptr;
     }
     auto *metadata = static_cast<ResponseMetadata *>(GetInternalPointer(args.This(), 2));
-    if (!metadata || !metadata->app || metadata->app->IsClosed()) {
+    if (!metadata || !metadata->app || metadata->app->IsClosed() ||
+        (metadata->readOnly && !inspection)) {
         ThrowError(args.GetIsolate(), "HTTP response is no longer valid");
         return nullptr;
     }

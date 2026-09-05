@@ -145,3 +145,24 @@ behavior while reads remain enabled. No payload copy or allocation is added.
 
 The vendor updater applies `usockets-*` patches to `vendor/uSockets`; the existing
 `uwebsockets-*` patches continue to target `vendor/uWebSockets`.
+
+## HTTP callback ownership and completion
+
+`uwebsockets-z-lifecycle-ownership.patch` keeps an executing body handler alive
+outside the HTTP socket extension. An upgrade can destroy that extension; the
+parser checks for the replacement socket before reading the old response again.
+A generation counter preserves re-entrant handler replacement when a partial
+body callback returns. Final body drainage restores the keep-alive or response
+write deadline even when the response was completed before the request body.
+The writable path also returns immediately after closing a drained socket.
+
+An empty `tryEnd` chunk no longer marks a response complete when declared body
+bytes remain. The separate `endWithoutBody` behavior is preserved.
+
+## Closed sockets at loop teardown
+
+`usockets-z-loop-cleanup.patch` frees the loop's deferred closed-socket list
+before releasing loop data. Node environment cleanup can close sockets after
+the last uSockets post iteration, so relying on another iteration leaked socket
+allocations and their libuv polling handles. libuv still owns the final close
+callbacks and releases the poll handles in its normal teardown phase.

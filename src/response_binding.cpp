@@ -588,7 +588,7 @@ Local<ArrayBuffer> ExternalArrayBuffer(Isolate *isolate, std::string_view value)
 }
 
 void ResponseGetRemoteAddressAsText(const FunctionCallbackInfo<Value> &args) {
-    HttpResponse *response = GetResponse(args);
+    HttpResponse *response = GetResponse(args, true);
     if (!response) return;
     if (args.Length() != 0) {
         ThrowTypeError(args.GetIsolate(), "res.getRemoteAddressAsText() does not accept arguments");
@@ -599,7 +599,7 @@ void ResponseGetRemoteAddressAsText(const FunctionCallbackInfo<Value> &args) {
 }
 
 void ResponseGetRemoteAddress(const FunctionCallbackInfo<Value> &args) {
-    HttpResponse *response = GetResponse(args);
+    HttpResponse *response = GetResponse(args, true);
     if (!response) return;
     if (args.Length() != 0) {
         ThrowTypeError(args.GetIsolate(), "res.getRemoteAddress() does not accept arguments");
@@ -609,7 +609,7 @@ void ResponseGetRemoteAddress(const FunctionCallbackInfo<Value> &args) {
 }
 
 void ResponseGetRemotePort(const FunctionCallbackInfo<Value> &args) {
-    HttpResponse *response = GetResponse(args);
+    HttpResponse *response = GetResponse(args, true);
     if (!response) return;
     if (args.Length() != 0) {
         ThrowTypeError(args.GetIsolate(), "res.getRemotePort() does not accept arguments");
@@ -619,7 +619,7 @@ void ResponseGetRemotePort(const FunctionCallbackInfo<Value> &args) {
 }
 
 void ResponseGetProxiedRemoteAddress(const FunctionCallbackInfo<Value> &args) {
-    HttpResponse *response = GetResponse(args);
+    HttpResponse *response = GetResponse(args, true);
     if (!response) return;
     if (args.Length() != 0) {
         ThrowTypeError(args.GetIsolate(),
@@ -631,7 +631,7 @@ void ResponseGetProxiedRemoteAddress(const FunctionCallbackInfo<Value> &args) {
 }
 
 void ResponseGetProxiedRemoteAddressAsText(const FunctionCallbackInfo<Value> &args) {
-    HttpResponse *response = GetResponse(args);
+    HttpResponse *response = GetResponse(args, true);
     if (!response) return;
     if (args.Length() != 0) {
         ThrowTypeError(args.GetIsolate(),
@@ -643,7 +643,7 @@ void ResponseGetProxiedRemoteAddressAsText(const FunctionCallbackInfo<Value> &ar
 }
 
 void ResponseGetProxiedRemotePort(const FunctionCallbackInfo<Value> &args) {
-    HttpResponse *response = GetResponse(args);
+    HttpResponse *response = GetResponse(args, true);
     if (!response) return;
     if (args.Length() != 0) {
         ThrowTypeError(args.GetIsolate(), "res.getProxiedRemotePort() does not accept arguments");
@@ -781,24 +781,18 @@ void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool retur
     }
     state->RegisterDataHandler(args[1].As<Function>());
 
-    struct Collection {
-        std::vector<char> bytes;
-        bool completed = false;
-    };
-    auto collection = std::make_shared<Collection>();
-    const std::size_t maxSize = static_cast<std::size_t>(maxSizeNumber);
+    auto collection = std::make_shared<BodyCollection>(static_cast<std::size_t>(maxSizeNumber));
+    state->SetCollection(collection);
 
-    state->Response()->onDataV2([state, collection, maxSize](std::string_view chunk,
-                                                             uint64_t maxRemainingBodyLength) {
-        if (!state->IsValid() || !state->HasActiveDataHandler() || collection->completed) {
+    state->Response()->onDataV2([state, collection](std::string_view chunk,
+                                                    uint64_t maxRemainingBodyLength) {
+        if (!state->IsValid() || !state->HasActiveDataHandler() || collection->Completed()) {
             return;
         }
 
         Isolate *callbackIsolate = state->Isolate();
         HandleScope scope(callbackIsolate);
-        if (collection->bytes.size() > maxSize ||
-            chunk.size() > maxSize - collection->bytes.size()) {
-            collection->completed = true;
+        if (!collection->Append(chunk)) {
             NativeCallbackScope callbackScope(*state->Metadata().app, state);
             Local<Value> argv[] = {Null(callbackIsolate)};
             const bool callbackSucceeded = CallJs(callbackIsolate, state->DataHandler(), 1, argv);
@@ -807,11 +801,9 @@ void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool retur
             return;
         }
 
-        collection->bytes.insert(collection->bytes.end(), chunk.begin(), chunk.end());
         if (maxRemainingBodyLength != 0) return;
 
-        collection->completed = true;
-        auto *owned = new std::vector<char>(std::move(collection->bytes));
+        auto *owned = new std::vector<char>(collection->Take());
         if (owned->empty()) {
             delete owned;
             NativeCallbackScope callbackScope(*state->Metadata().app, state);

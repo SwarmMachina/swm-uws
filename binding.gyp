@@ -8,6 +8,7 @@
       "target_name": "swm_uws",
       "sources": [
         "src/binding.cpp",
+        "src/body_collection.cpp",
         "src/app_binding.cpp",
         "src/app_state.cpp",
         "src/binding_environment.cpp",

@@ -42,6 +42,8 @@ void us_internal_loop_data_init(struct us_loop_t *loop, void (*wakeup_cb)(struct
 }
 
 void us_internal_loop_data_free(struct us_loop_t *loop) {
+    /* Cleanup may close sockets after the last post iteration. */
+    us_internal_free_closed_sockets(loop);
 #ifndef LIBUS_NO_SSL
     us_internal_free_loop_ssl_data(loop);
 #endif

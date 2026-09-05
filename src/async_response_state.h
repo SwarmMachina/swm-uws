@@ -4,6 +4,7 @@
 #include <App.h>
 #include <v8.h>
 
+#include "body_collection.h"
 #include "response_metadata.h"
 
 #include <cstddef>
@@ -44,7 +45,7 @@ public:
     void Invalidate() {
         response_ = nullptr;
         valid_ = false;
-        dataHandler_.Reset();
+        ResetDataHandler();
         abortedHandler_.Reset();
         writableHandler_.Reset();
         object_.Reset();
@@ -91,6 +92,11 @@ public:
 
     void ResetDataHandler() {
         dataHandler_.Reset();
+        if (collection_) collection_->Discard();
+    }
+
+    void SetCollection(std::shared_ptr<BodyCollection> collection) {
+        collection_ = std::move(collection);
     }
 
     [[nodiscard]] bool HasAbortedHandler() const noexcept {
@@ -141,6 +147,7 @@ private:
     v8::Global<v8::Function> writableHandler_;
     v8::Global<v8::Object> object_;
     ResponseMetadata metadata_;
+    std::shared_ptr<BodyCollection> collection_;
 };
 
 } // namespace swm::binding

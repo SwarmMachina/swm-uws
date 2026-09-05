@@ -76,8 +76,8 @@ public:
 
     void LeaveNativeCallback() noexcept;
 
-    v8::Global<v8::Function> *OwnHandler(v8::Isolate *isolate, v8::Local<v8::Function> handler);
-    v8::Global<v8::Function> *OwnHandler(std::unique_ptr<v8::Global<v8::Function>> handler);
+    void AttachObject(v8::Local<v8::Object> object);
+    [[nodiscard]] uWS::HttpTransportStats TransportStats() const noexcept;
 
     [[nodiscard]] ListenSocketHandle *TrackListenSocket(us_listen_socket_t *socket);
     [[nodiscard]] bool CloseListenSocket(v8::Local<v8::Value> token);
@@ -86,10 +86,12 @@ public:
     void Close() noexcept;
 
 private:
+    void DisposeNativeApp();
     BindingEnvironment &environment_;
     std::unique_ptr<uWS::App> app_;
     std::vector<std::unique_ptr<ListenSocketHandle>> listenSockets_;
-    std::vector<std::unique_ptr<v8::Global<v8::Function>>> handlers_;
+    v8::Global<v8::Object> object_;
+    uWS::HttpTransportStats finalStats_;
     bool closed_ = false;
     bool hasWebSockets_ = false;
     bool nativeClosePending_ = false;

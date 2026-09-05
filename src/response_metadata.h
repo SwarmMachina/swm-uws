@@ -21,6 +21,7 @@ struct ResponseMetadata {
     std::shared_ptr<UpgradeContext> upgradeContext;
     std::optional<uintmax_t> tryEndTotal;
     bool chunked = false;
+    bool readOnly = false;
 };
 
 } // namespace swm::binding

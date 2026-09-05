@@ -245,7 +245,8 @@ export interface HttpResponse {
    * Writes a response chunk when the total body size is known.
    *
    * Every call for one response must use the same `totalSize`; a chunk may not
-   * exceed the remaining declared bytes.
+   * exceed the remaining declared bytes. An empty chunk does not complete a
+   * response while declared bytes remain.
    *
    * @returns `[writeSucceeded, responseCompleted]`.
    */
@@ -315,7 +316,8 @@ export interface HttpResponse {
    * Collects this request body into an owned `ArrayBuffer`.
    *
    * `maxSize` is an integer byte limit for this request only, not a process
-   * memory budget. Parallel requests allocate independently.
+   * memory budget. Parallel requests allocate independently. A limit breach
+   * releases accumulated bytes before invoking the handler with `null`.
    *
    * @param maxSize Integer byte limit from `0` through `64 MiB`.
    * @param handler Receives the complete body, or `null` after a limit breach.
@@ -335,7 +337,7 @@ export interface HttpResponse {
    */
   collectBodyWithLength(maxSize: number, handler: (body: ArrayBuffer | null) => void): number | undefined
 
-  /** Stops an active body collector without a callback while the transport drains remaining bytes. */
+  /** Releases collected bytes and stops body callbacks while the transport drains remaining bytes. */
   discardBody(): void
 
   /**
@@ -652,13 +654,17 @@ export interface AppInstance {
   /** Listens on a Unix-domain socket with native listen flags. */
   listen_unix(options: ListenOptions, callback: ListenHandler, path: NativeData): this
 
-  /** Registers a callback for HTTP connection-count changes. */
+  /**
+   * Registers a callback for HTTP connection-count changes.
+   * During a negative-count (disconnect) callback, only remote-address and
+   * remote-port accessors are available on `res`; other methods throw.
+   */
   filter(handler: (res: HttpResponse, count: number) => void): this
 
   /** Returns a snapshot of this application's native HTTP transport counters. */
   getHttpTransportStats(): HttpTransportStats
 
-  /** Idempotently closes listeners and active application contexts. */
+  /** Idempotently closes listeners and connections; releases contexts and handlers after active callbacks return. */
   close(): this
 }
 

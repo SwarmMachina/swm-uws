@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace swm::binding {
@@ -81,6 +82,10 @@ public:
     }
 
     AppState *OwnApp(std::unique_ptr<AppState> app);
+    void ReleaseApp(AppState *app);
+    [[nodiscard]] bool IsClosing() const noexcept {
+        return closing_;
+    }
     [[nodiscard]] bool CloseListenSocket(v8::Local<v8::Value> token);
     [[nodiscard]] std::optional<int> ListenSocketLocalPort(v8::Local<v8::Value> token) const;
 
@@ -93,7 +98,8 @@ private:
     v8::Global<v8::Object> socketTemplate_;
     v8::Global<v8::Function> appConstructor_;
     v8::Global<v8::Function> requestPrefetchPlanConstructor_;
-    std::vector<std::unique_ptr<AppState>> apps_;
+    std::unordered_map<AppState *, std::unique_ptr<AppState>> apps_;
+    bool closing_ = false;
 };
 
 } // namespace swm::binding

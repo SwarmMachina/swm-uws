@@ -18,15 +18,26 @@ AppState::~AppState() {
     }
 }
 
-v8::Global<v8::Function> *AppState::OwnHandler(v8::Isolate *isolate,
-                                               v8::Local<v8::Function> handler) {
-    return OwnHandler(std::make_unique<v8::Global<v8::Function>>(isolate, handler));
+void AppState::AttachObject(v8::Local<v8::Object> object) {
+    object_.Reset(environment_.Isolate(), object);
+    object_.SetWeak(
+        this,
+        [](const v8::WeakCallbackInfo<AppState> &info) {
+            AppState *state = info.GetParameter();
+            state->object_.Reset();
+            if (!state->app_) state->environment_.ReleaseApp(state);
+        },
+        v8::WeakCallbackType::kParameter);
 }
 
-v8::Global<v8::Function> *AppState::OwnHandler(std::unique_ptr<v8::Global<v8::Function>> handler) {
-    v8::Global<v8::Function> *ownedHandler = handler.get();
-    handlers_.push_back(std::move(handler));
-    return ownedHandler;
+uWS::HttpTransportStats AppState::TransportStats() const noexcept {
+    return app_ ? app_->getHttpTransportStats() : finalStats_;
+}
+
+void AppState::DisposeNativeApp() {
+    finalStats_ = app_->getHttpTransportStats();
+    app_.reset();
+    if (object_.IsEmpty()) environment_.ReleaseApp(this);
 }
 
 ListenSocketHandle *AppState::TrackListenSocket(us_listen_socket_t *socket) {
@@ -71,6 +82,11 @@ std::optional<int> AppState::ListenSocketLocalPort(v8::Local<v8::Value> token) c
 void AppState::Close() noexcept {
     if (closed_) return;
     closed_ = true;
+    if (!environment_.IsClosing()) {
+        // Router, parser and pub/sub frames can still hold native context pointers.
+        // The environment owns this state until disposal and wrapper collection.
+        uWS::Loop::get()->defer([this]() { DisposeNativeApp(); });
+    }
     for (const auto &socket : listenSockets_) {
         socket->Close();
     }

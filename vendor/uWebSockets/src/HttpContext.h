@@ -253,7 +253,7 @@ private:
                 /* Continue parsing */
                 return s;
 
-            }, [httpResponseData](void *user, std::string_view data, uint64_t maxRemainingBodyLength) -> void * {
+            }, [httpResponseData, httpContextData](void *user, std::string_view data, uint64_t maxRemainingBodyLength) -> void * {
                 /* We always get an empty chunk even if there is no data */
                 if (httpResponseData->inStream) {
 
@@ -279,7 +279,13 @@ private:
                     }
 
                     /* We might respond in the handler, so do not change timeout after this */
-                    httpResponseData->inStream(data, maxRemainingBodyLength);
+                    /* Keep the callback alive if upgrade destroys the HTTP extension. */
+                    auto generation = httpResponseData->inStreamGeneration;
+                    auto handler = std::move(httpResponseData->inStream);
+                    handler(data, maxRemainingBodyLength);
+                    if (httpContextData->upgradedWebSocket) {
+                        return nullptr;
+                    }
 
                     /* Was the socket closed? */
                     if (us_socket_is_closed(SSL, (struct us_socket_t *) user)) {
@@ -293,8 +299,12 @@ private:
 
                     /* If we were given the last data chunk, reset data handler to ensure following
                      * requests on the same socket won't trigger any previously registered behavior */
-                    if (maxRemainingBodyLength == 0) {
-                        httpResponseData->inStream = nullptr;
+                    if (generation == httpResponseData->inStreamGeneration && maxRemainingBodyLength != 0) {
+                        httpResponseData->inStream = std::move(handler);
+                    }
+                    if (maxRemainingBodyLength == 0 && ((HttpResponse<SSL> *) user)->hasResponded()) {
+                        /* A completed early response still needs a keep-alive or write timeout. */
+                        ((HttpResponse<SSL> *) user)->armAfterResponseProgress();
                     }
                 }
                 return user;
@@ -440,6 +450,7 @@ private:
                         /* We need to force close after sending FIN since we want to hinder
                          * clients from keeping to send their huge data */
                         asyncSocket->close();
+                        return s;
                     }
                 }
             }

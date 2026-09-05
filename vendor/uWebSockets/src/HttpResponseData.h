@@ -113,6 +113,7 @@ private:
     MoveOnlyFunction<bool(uintmax_t)> onWritable;
     MoveOnlyFunction<void()> onAborted;
     MoveOnlyFunction<void(std::string_view, uint64_t)> inStream; // onData
+    uint64_t inStreamGeneration = 0;
     /* Outgoing offset */
     uintmax_t offset = 0;
 

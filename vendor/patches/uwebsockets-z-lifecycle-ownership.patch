@@ -1,0 +1,92 @@
+diff --git a/src/HttpContext.h b/src/HttpContext.h
+index 6f7c9cf..a8cbb3c 100644
+--- a/src/HttpContext.h
++++ b/src/HttpContext.h
+@@ -253,7 +253,7 @@ private:
+                 /* Continue parsing */
+                 return s;
+ 
+-            }, [httpResponseData](void *user, std::string_view data, uint64_t maxRemainingBodyLength) -> void * {
++            }, [httpResponseData, httpContextData](void *user, std::string_view data, uint64_t maxRemainingBodyLength) -> void * {
+                 /* We always get an empty chunk even if there is no data */
+                 if (httpResponseData->inStream) {
+ 
+@@ -279,7 +279,13 @@ private:
+                     }
+ 
+                     /* We might respond in the handler, so do not change timeout after this */
+-                    httpResponseData->inStream(data, maxRemainingBodyLength);
++                    /* Keep the callback alive if upgrade destroys the HTTP extension. */
++                    auto generation = httpResponseData->inStreamGeneration;
++                    auto handler = std::move(httpResponseData->inStream);
++                    handler(data, maxRemainingBodyLength);
++                    if (httpContextData->upgradedWebSocket) {
++                        return nullptr;
++                    }
+ 
+                     /* Was the socket closed? */
+                     if (us_socket_is_closed(SSL, (struct us_socket_t *) user)) {
+@@ -293,8 +299,12 @@ private:
+ 
+                     /* If we were given the last data chunk, reset data handler to ensure following
+                      * requests on the same socket won't trigger any previously registered behavior */
+-                    if (maxRemainingBodyLength == 0) {
+-                        httpResponseData->inStream = nullptr;
++                    if (generation == httpResponseData->inStreamGeneration && maxRemainingBodyLength != 0) {
++                        httpResponseData->inStream = std::move(handler);
++                    }
++                    if (maxRemainingBodyLength == 0 && ((HttpResponse<SSL> *) user)->hasResponded()) {
++                        /* A completed early response still needs a keep-alive or write timeout. */
++                        ((HttpResponse<SSL> *) user)->armAfterResponseProgress();
+                     }
+                 }
+                 return user;
+@@ -440,6 +450,7 @@ private:
+                         /* We need to force close after sending FIN since we want to hinder
+                          * clients from keeping to send their huge data */
+                         asyncSocket->close();
++                        return s;
+                     }
+                 }
+             }
+diff --git a/src/HttpResponse.h b/src/HttpResponse.h
+index 02a3ea4..3b18984 100644
+--- a/src/HttpResponse.h
++++ b/src/HttpResponse.h
+@@ -44,6 +44,7 @@ template <bool SSL>
+ struct HttpResponse : public AsyncSocket<SSL> {
+     /* Solely used for getHttpResponseData() */
+     template <bool> friend struct TemplatedApp;
++    template <bool> friend struct HttpContext;
+     typedef AsyncSocket<SSL> Super;
+ private:
+     HttpResponseData<SSL> *getHttpResponseData() {
+@@ -231,7 +232,7 @@ private:
+             /* I need to figure out if this line should rather be simply httpResponseData->offset == data.length() */
+             /* No that can't be right, tryEnd with fake length should not complete the response even if the smaller chunk wrote in one go */
+             /* Possibly need  to separate endWithoutBody and tryEnd with fake length into two separate calls with a boolean that explicitly marks isHeadOnly */
+-            if (httpResponseData->offset == totalSize || !data.length()) {
++            if (httpResponseData->offset == totalSize || (!optional && !data.length())) {
+                 httpResponseData->markDone();
+                 armAfterResponseProgress();
+ 
+@@ -688,6 +689,7 @@ public:
+     void onDataV2(MoveOnlyFunction<void(std::string_view, uint64_t)> &&handler) {
+         HttpResponseData<SSL> *data = getHttpResponseData();
+         data->inStream = std::move(handler);
++        data->inStreamGeneration++;
+ 
+         /* Always reset this counter here */
+         data->received_bytes_per_timeout = 0;
+diff --git a/src/HttpResponseData.h b/src/HttpResponseData.h
+index d66fec1..cd48684 100644
+--- a/src/HttpResponseData.h
++++ b/src/HttpResponseData.h
+@@ -113,6 +113,7 @@ private:
+     MoveOnlyFunction<bool(uintmax_t)> onWritable;
+     MoveOnlyFunction<void()> onAborted;
+     MoveOnlyFunction<void(std::string_view, uint64_t)> inStream; // onData
++    uint64_t inStreamGeneration = 0;
+     /* Outgoing offset */
+     uintmax_t offset = 0;
+ 

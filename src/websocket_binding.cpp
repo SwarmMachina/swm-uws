@@ -429,27 +429,20 @@ bool ReadBooleanOption(Isolate *isolate, Local<Object> options, const char *name
     return true;
 }
 
-Global<Function> *
-StoreOptionalHandler(Isolate *isolate,
-                     Local<Object> options,
-                     const char *name,
-                     bool *valid,
-                     std::vector<std::unique_ptr<Global<Function>>> *pendingHandlers) {
+Global<Function>
+StoreOptionalHandler(Isolate *isolate, Local<Object> options, const char *name, bool *valid) {
     Local<Value> value;
     if (!GetProperty(isolate, options, name, &value)) {
         *valid = false;
-        return nullptr;
+        return Global<Function>();
     }
-    if (value->IsUndefined()) return nullptr;
+    if (value->IsUndefined()) return Global<Function>();
     if (!value->IsFunction()) {
         ThrowTypeError(isolate, "WebSocket handlers must be functions");
         *valid = false;
-        return nullptr;
+        return Global<Function>();
     }
-    auto handler = std::make_unique<Global<Function>>(isolate, value.As<Function>());
-    Global<Function> *pointer = handler.get();
-    pendingHandlers->push_back(std::move(handler));
-    return pointer;
+    return Global<Function>(isolate, value.As<Function>());
 }
 
 [[nodiscard]] bool ReadOwnDescriptorField(Local<Context> currentContext,
@@ -648,33 +641,23 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
     behavior.maxLifetime = static_cast<unsigned short>(maxLifetime);
 
     bool handlersValid = true;
-    std::vector<std::unique_ptr<Global<Function>>> pendingHandlers;
-    Global<Function> *upgrade =
-        StoreOptionalHandler(isolate, options, "upgrade", &handlersValid, &pendingHandlers);
+    auto upgrade = StoreOptionalHandler(isolate, options, "upgrade", &handlersValid);
     if (!handlersValid) return;
-    Global<Function> *open =
-        StoreOptionalHandler(isolate, options, "open", &handlersValid, &pendingHandlers);
+    auto open = StoreOptionalHandler(isolate, options, "open", &handlersValid);
     if (!handlersValid) return;
-    Global<Function> *message =
-        StoreOptionalHandler(isolate, options, "message", &handlersValid, &pendingHandlers);
+    auto message = StoreOptionalHandler(isolate, options, "message", &handlersValid);
     if (!handlersValid) return;
-    Global<Function> *dropped =
-        StoreOptionalHandler(isolate, options, "dropped", &handlersValid, &pendingHandlers);
+    auto dropped = StoreOptionalHandler(isolate, options, "dropped", &handlersValid);
     if (!handlersValid) return;
-    Global<Function> *drain =
-        StoreOptionalHandler(isolate, options, "drain", &handlersValid, &pendingHandlers);
+    auto drain = StoreOptionalHandler(isolate, options, "drain", &handlersValid);
     if (!handlersValid) return;
-    Global<Function> *ping =
-        StoreOptionalHandler(isolate, options, "ping", &handlersValid, &pendingHandlers);
+    auto ping = StoreOptionalHandler(isolate, options, "ping", &handlersValid);
     if (!handlersValid) return;
-    Global<Function> *pong =
-        StoreOptionalHandler(isolate, options, "pong", &handlersValid, &pendingHandlers);
+    auto pong = StoreOptionalHandler(isolate, options, "pong", &handlersValid);
     if (!handlersValid) return;
-    Global<Function> *subscription =
-        StoreOptionalHandler(isolate, options, "subscription", &handlersValid, &pendingHandlers);
+    auto subscription = StoreOptionalHandler(isolate, options, "subscription", &handlersValid);
     if (!handlersValid) return;
-    Global<Function> *close =
-        StoreOptionalHandler(isolate, options, "close", &handlersValid, &pendingHandlers);
+    auto close = StoreOptionalHandler(isolate, options, "close", &handlersValid);
     if (!handlersValid) return;
     if (state->IsClosed()) {
         ThrowError(isolate, "app.ws() cannot be called after app.close()");
@@ -684,15 +667,13 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
         ThrowError(isolate, "app.ws() cannot be called from an active HTTP route callback");
         return;
     }
-    for (auto &handler : pendingHandlers) {
-        state->OwnHandler(std::move(handler));
-    }
 
     BindingEnvironment *context = &state->Environment();
-    if (upgrade) {
-        behavior.upgrade = [context, upgrade, state](HttpResponse *response,
-                                                     uWS::HttpRequest *request,
-                                                     us_socket_context_t *socketContext) {
+    if (!upgrade.IsEmpty()) {
+        behavior.upgrade = [context, upgrade = std::move(upgrade), state](
+                               HttpResponse *response,
+                               uWS::HttpRequest *request,
+                               us_socket_context_t *socketContext) {
             HttpRouteCallbackScope routeCallbackScope{*state};
             Isolate *callbackIsolate = context->Isolate();
             HandleScope scope(callbackIsolate);
@@ -711,7 +692,7 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
             Local<Value> argv[] = {
                 responseObject, requestObject, responseMetadata.upgradeContext->Token()};
             const bool callbackSucceeded =
-                CallJs(callbackIsolate, upgrade->Get(callbackIsolate), 3, argv);
+                CallJs(callbackIsolate, upgrade.Get(callbackIsolate), 3, argv);
             callbackLifetime.Invalidate();
             SetInternalPointer(requestObject, nullptr);
             SetInternalPointer(requestObject, nullptr, 2);
@@ -720,6 +701,13 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
             }
             if (state->IsClosed()) {
                 InvalidateResponseState(responseObject);
+                return;
+            }
+            if (callbackSucceeded && GetInternalPointer(responseObject) && request->getYield()) {
+                InvalidateResponseState(responseObject);
+                response->onAborted(nullptr);
+                response->onWritable(nullptr);
+                response->onDataV2(nullptr);
                 return;
             }
             if (GetInternalPointer(responseObject) && !GetInternalPointer(responseObject, 1)) {
@@ -732,7 +720,7 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
             }
         };
     }
-    behavior.open = [context, open, state](NativeWebSocket *socket) {
+    behavior.open = [context, open = std::move(open), state](NativeWebSocket *socket) {
         HttpRouteCallbackScope routeCallbackScope{*state};
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
@@ -741,16 +729,16 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
             return;
         }
         std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
-        if (open) {
+        if (!open.IsEmpty()) {
             Local<Value> argv[] = {socketObject};
-            if (!CallJs(callbackIsolate, open->Get(callbackIsolate), 1, argv)) {
+            if (!CallJs(callbackIsolate, open.Get(callbackIsolate), 1, argv)) {
                 FailSocketCallback(socketState.get());
             }
         }
     };
-    behavior.message = [context, message, state](
+    behavior.message = [context, message = std::move(message), state](
                            NativeWebSocket *socket, std::string_view payload, uWS::OpCode opcode) {
-        if (!message) return;
+        if (message.IsEmpty()) return;
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> socketObject;
@@ -764,14 +752,14 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
                                buffer.Value(),
                                Boolean::New(callbackIsolate, opcode == uWS::OpCode::BINARY)};
         const bool callbackSucceeded =
-            CallJs(callbackIsolate, message->Get(callbackIsolate), 3, argv);
+            CallJs(callbackIsolate, message.Get(callbackIsolate), 3, argv);
         if (!callbackSucceeded) {
             FailSocketCallback(socketState.get());
         }
     };
-    behavior.dropped = [context, dropped, state](
+    behavior.dropped = [context, dropped = std::move(dropped), state](
                            NativeWebSocket *socket, std::string_view payload, uWS::OpCode opcode) {
-        if (!dropped) return;
+        if (dropped.IsEmpty()) return;
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> socketObject;
@@ -785,13 +773,13 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
                                buffer.Value(),
                                Boolean::New(callbackIsolate, opcode == uWS::OpCode::BINARY)};
         const bool callbackSucceeded =
-            CallJs(callbackIsolate, dropped->Get(callbackIsolate), 3, argv);
+            CallJs(callbackIsolate, dropped.Get(callbackIsolate), 3, argv);
         if (!callbackSucceeded) {
             FailSocketCallback(socketState.get());
         }
     };
-    behavior.drain = [context, drain, state](NativeWebSocket *socket) {
-        if (!drain) return;
+    behavior.drain = [context, drain = std::move(drain), state](NativeWebSocket *socket) {
+        if (drain.IsEmpty()) return;
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> socketObject;
@@ -800,12 +788,13 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
         }
         std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
         Local<Value> argv[] = {socketObject};
-        if (!CallJs(callbackIsolate, drain->Get(callbackIsolate), 1, argv)) {
+        if (!CallJs(callbackIsolate, drain.Get(callbackIsolate), 1, argv)) {
             FailSocketCallback(socketState.get());
         }
     };
-    behavior.ping = [context, ping, state](NativeWebSocket *socket, std::string_view payload) {
-        if (!ping) return;
+    behavior.ping = [context, ping = std::move(ping), state](NativeWebSocket *socket,
+                                                             std::string_view payload) {
+        if (ping.IsEmpty()) return;
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> socketObject;
@@ -816,13 +805,14 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
         NativeCallbackScope callbackScope(*state, socketState);
         EphemeralArrayBuffer buffer(ExternalArrayBuffer(callbackIsolate, payload));
         Local<Value> argv[] = {socketObject, buffer.Value()};
-        const bool callbackSucceeded = CallJs(callbackIsolate, ping->Get(callbackIsolate), 2, argv);
+        const bool callbackSucceeded = CallJs(callbackIsolate, ping.Get(callbackIsolate), 2, argv);
         if (!callbackSucceeded) {
             FailSocketCallback(socketState.get());
         }
     };
-    behavior.pong = [context, pong, state](NativeWebSocket *socket, std::string_view payload) {
-        if (!pong) return;
+    behavior.pong = [context, pong = std::move(pong), state](NativeWebSocket *socket,
+                                                             std::string_view payload) {
+        if (pong.IsEmpty()) return;
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
         Local<Object> socketObject;
@@ -833,62 +823,61 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
         NativeCallbackScope callbackScope(*state, socketState);
         EphemeralArrayBuffer buffer(ExternalArrayBuffer(callbackIsolate, payload));
         Local<Value> argv[] = {socketObject, buffer.Value()};
-        const bool callbackSucceeded = CallJs(callbackIsolate, pong->Get(callbackIsolate), 2, argv);
+        const bool callbackSucceeded = CallJs(callbackIsolate, pong.Get(callbackIsolate), 2, argv);
         if (!callbackSucceeded) {
             FailSocketCallback(socketState.get());
         }
     };
-    behavior.subscription = [context, subscription, state](NativeWebSocket *socket,
-                                                           std::string_view topic,
-                                                           int newCount,
-                                                           int oldCount) {
-        if (!subscription) return;
-        std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
-        if (socketState && socketState->CallbackFailed()) return;
-        Isolate *callbackIsolate = context->Isolate();
-        HandleScope scope(callbackIsolate);
-        Local<Object> socketObject;
-        if (!EnsureSocketObject(context, *state, socket).ToLocal(&socketObject)) {
-            return;
-        }
-        socketState = socket->getUserData()->state;
-        NativeCallbackScope callbackScope(*state, socketState);
-        EphemeralArrayBuffer topicBuffer(ExternalArrayBuffer(callbackIsolate, topic));
-        Local<Value> argv[] = {socketObject,
-                               topicBuffer.Value(),
-                               Number::New(callbackIsolate, newCount),
-                               Number::New(callbackIsolate, oldCount)};
-        const bool callbackSucceeded =
-            CallJs(callbackIsolate, subscription->Get(callbackIsolate), 4, argv);
-        if (!callbackSucceeded) {
-            FailSocketCallback(socketState.get());
-        }
-    };
-    behavior.close =
-        [context, close, state](NativeWebSocket *socket, int code, std::string_view reason) {
-            std::shared_ptr<SocketState> socketState = std::move(socket->getUserData()->state);
-            if (!socketState) return;
+    behavior.subscription =
+        [context, subscription = std::move(subscription), state](
+            NativeWebSocket *socket, std::string_view topic, int newCount, int oldCount) {
+            if (subscription.IsEmpty()) return;
+            std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
+            if (socketState && socketState->CallbackFailed()) return;
             Isolate *callbackIsolate = context->Isolate();
             HandleScope scope(callbackIsolate);
             Local<Object> socketObject;
-            const bool hasObject = socketState->HasObject();
-            if (hasObject) {
-                socketObject = socketState->Object();
-                SetInternalPointer(socketObject, nullptr);
+            if (!EnsureSocketObject(context, *state, socket).ToLocal(&socketObject)) {
+                return;
             }
-            (void)socketState->DetachSocket();
-            if (close && !socketState->CallbackFailed() && hasObject) {
-                NativeCallbackScope callbackScope(*state, socketState);
-                EphemeralArrayBuffer reasonBuffer(ExternalArrayBuffer(callbackIsolate, reason));
-                Local<Value> argv[] = {
-                    socketObject, Number::New(callbackIsolate, code), reasonBuffer.Value()};
-                const bool callbackSucceeded =
-                    CallJs(callbackIsolate, close->Get(callbackIsolate), 3, argv);
-                if (!callbackSucceeded) socketState->MarkCallbackFailed();
+            socketState = socket->getUserData()->state;
+            NativeCallbackScope callbackScope(*state, socketState);
+            EphemeralArrayBuffer topicBuffer(ExternalArrayBuffer(callbackIsolate, topic));
+            Local<Value> argv[] = {socketObject,
+                                   topicBuffer.Value(),
+                                   Number::New(callbackIsolate, newCount),
+                                   Number::New(callbackIsolate, oldCount)};
+            const bool callbackSucceeded =
+                CallJs(callbackIsolate, subscription.Get(callbackIsolate), 4, argv);
+            if (!callbackSucceeded) {
+                FailSocketCallback(socketState.get());
             }
-            socketState->ResetObject();
-            socketState->ResetUserData();
         };
+    behavior.close = [context, close = std::move(close), state](
+                         NativeWebSocket *socket, int code, std::string_view reason) {
+        std::shared_ptr<SocketState> socketState = std::move(socket->getUserData()->state);
+        if (!socketState) return;
+        Isolate *callbackIsolate = context->Isolate();
+        HandleScope scope(callbackIsolate);
+        Local<Object> socketObject;
+        const bool hasObject = socketState->HasObject();
+        if (hasObject) {
+            socketObject = socketState->Object();
+            SetInternalPointer(socketObject, nullptr);
+        }
+        (void)socketState->DetachSocket();
+        if (!close.IsEmpty() && !socketState->CallbackFailed() && hasObject) {
+            NativeCallbackScope callbackScope(*state, socketState);
+            EphemeralArrayBuffer reasonBuffer(ExternalArrayBuffer(callbackIsolate, reason));
+            Local<Value> argv[] = {
+                socketObject, Number::New(callbackIsolate, code), reasonBuffer.Value()};
+            const bool callbackSucceeded =
+                CallJs(callbackIsolate, close.Get(callbackIsolate), 3, argv);
+            if (!callbackSucceeded) socketState->MarkCallbackFailed();
+        }
+        socketState->ResetObject();
+        socketState->ResetUserData();
+    };
 
     state->NativeApp().ws<PerSocketData>(pathString, std::move(behavior));
     state->EnableWebSockets();

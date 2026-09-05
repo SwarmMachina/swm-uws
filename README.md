@@ -128,7 +128,12 @@ The sections below cover the binding-specific contracts.
 `App()` creates a non-TLS application. Route methods (`get`, `post`, `put`,
 `patch`, `del`, `options`, `head`, `connect`, `trace`, and `any`) return the
 same application instance. `app.close()` idempotently closes its listeners and
-active contexts.
+connections. Native contexts and registered handlers are released after active
+callbacks return. Transport counters remain readable on the closed instance.
+
+In `app.filter()` callbacks with a negative `count`, the connection is
+already closing. Only remote-address and remote-port accessors are available on
+`res`; response mutation and callback registration throw.
 
 Configure HTTP parser and lifecycle limits per application:
 
@@ -230,6 +235,9 @@ app.post('/echo', (res) => {
 Use application-level admission control for a process-wide memory budget.
 `collectBodyWithLength` additionally returns the explicit `Content-Length`
 before body delivery; it returns `undefined` for chunked or absent lengths.
+Exceeding the limit releases accumulated bytes before delivering `null`.
+`res.discardBody()` releases collected bytes immediately and suppresses further
+body callbacks while the transport drains the rest of the request.
 
 ### Selected request headers
 

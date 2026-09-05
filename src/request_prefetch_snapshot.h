@@ -7,9 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <string>
 #include <string_view>
-#include <vector>
 
 namespace uWS {
 struct HttpRequest;
@@ -19,8 +17,10 @@ namespace swm {
 
 class RequestPrefetchSnapshot final {
 public:
-    RequestPrefetchSnapshot(uWS::HttpRequest &request,
-                            std::shared_ptr<const RequestPrefetchPlan> plan);
+    static RequestPrefetchSnapshot *Allocate(uWS::HttpRequest &request,
+                                             std::shared_ptr<const RequestPrefetchPlan> plan);
+    static void Delete(void *data, std::size_t length, void *context) noexcept;
+    [[nodiscard]] std::size_t AllocationBytes() const noexcept;
 
     [[nodiscard]] std::size_t EntryCount() const;
     [[nodiscard]] std::string_view EntryName(std::size_t index) const;
@@ -38,10 +38,21 @@ private:
         std::uint32_t valueLength;
     };
 
+    struct Layout {
+        std::size_t allocationBytes;
+        std::size_t entryCount;
+    };
+
+    RequestPrefetchSnapshot(std::shared_ptr<const RequestPrefetchPlan> plan,
+                            Layout layout) noexcept;
+    [[nodiscard]] Entry *Entries() noexcept;
+    [[nodiscard]] const Entry *Entries() const noexcept;
+    [[nodiscard]] char *Bytes() noexcept;
+    [[nodiscard]] const char *Bytes() const noexcept;
+
     std::shared_ptr<const RequestPrefetchPlan> plan_;
-    std::string names_;
-    std::string values_;
-    std::vector<Entry> entries_;
+    std::size_t allocationBytes_;
+    std::size_t entryCount_;
 };
 
 } // namespace swm
