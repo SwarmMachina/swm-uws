@@ -6,8 +6,16 @@ import { withTimeout } from './helpers/async.js'
 import { expectedBindingVersion } from './helpers/expected-version.js'
 
 const require = createRequire(import.meta.url)
-const { App, createApp, us_listen_socket_close, version } = require('../build/Release/swm_uws.node')
-const port = 40_000 + (process.pid % 10_000)
+const {
+  App,
+  createApp,
+  us_listen_socket_close,
+  us_socket_local_port,
+  version
+} = require('../build/Release/swm_uws.node')
+
+let port = 0
+
 const app = App()
 
 assert.equal(version(), expectedBindingVersion)
@@ -164,9 +172,10 @@ app.post('/abort', (res) => {
 let listenSocket
 
 await new Promise((resolve, reject) => {
-  app.listen(port, (socket) => {
+  app.listen(0, (socket) => {
     if (socket) {
       listenSocket = socket
+      port = us_socket_local_port(socket)
       resolve()
     } else {
       reject(new Error(`listen failed on 127.0.0.1:${port}`))

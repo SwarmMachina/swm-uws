@@ -5,8 +5,10 @@ import { withTimeout } from './helpers/async.js'
 import { nextWebSocketEvent, nextWebSocketMessage } from './helpers/websocket-events.js'
 
 const require = createRequire(import.meta.url)
-const { App, us_listen_socket_close } = require('../build/Release/swm_uws.node')
-const port = 40_000 + (process.pid % 10_000)
+const { App, us_listen_socket_close, us_socket_local_port } = require('../build/Release/swm_uws.node')
+
+let port = 0
+
 const app = App()
 
 let nativeSocket
@@ -89,11 +91,12 @@ app.ws('/async', {
 let listenSocket
 
 await new Promise((resolve, reject) => {
-  app.listen(port, (socket) => {
+  app.listen(0, (socket) => {
     if (!socket) {
       reject(new Error(`listen failed on :${port}`))
     } else {
       listenSocket = socket
+      port = us_socket_local_port(socket)
       resolve()
     }
   })
