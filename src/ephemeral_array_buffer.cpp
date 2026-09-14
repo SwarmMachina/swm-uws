@@ -7,9 +7,7 @@ EphemeralArrayBuffer::EphemeralArrayBuffer(v8::Local<v8::ArrayBuffer> buffer) : 
 }
 
 EphemeralArrayBuffer::~EphemeralArrayBuffer() {
-    if (!buffer_->WasDetached()) {
-        (void)buffer_->Detach(buffer_);
-    }
+    (void)buffer_->Detach(buffer_);
 }
 
 v8::Local<v8::ArrayBuffer> EphemeralArrayBuffer::Value() const {

@@ -50,6 +50,8 @@ for (const scenario of [
   'websocket-buffered-publish-dropped-reentrant-app-close',
   'websocket-open-close-then-throw',
   'websocket-message',
+  'websocket-message-close-then-throw',
+  'websocket-message-end-then-throw',
   'websocket-close',
   'socket-cork',
   'socket-cork-reentrant-app-close',

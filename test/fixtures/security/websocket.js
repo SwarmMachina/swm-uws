@@ -677,6 +677,75 @@ export const webSocketCases = {
     assert.equal(closeCallbackRan, false)
   },
 
+  async 'websocket-message-close-then-throw'(fixture) {
+    const { app } = fixture
+
+    let callbackActive = false
+    let closeCallbackRan = false
+
+    app.ws('/bad-close', {
+      message(socket, payload) {
+        callbackActive = true
+        socket.close()
+        assert.equal(Buffer.from(payload).toString(), 'fail')
+        assert.throws(() => socket.send('late'), /WebSocket is no longer valid/)
+        callbackActive = false
+        throw new Error('websocket message close failed')
+      },
+      close() {
+        assert.equal(callbackActive, false)
+        closeCallbackRan = true
+      }
+    })
+
+    const port = await fixture.listen()
+    const error = fixture.captureUncaught('websocket message close failed')
+    const client = new WebSocket(`ws://127.0.0.1:${port}/bad-close`)
+
+    await fixture.event(client, 'open')
+    const closed = fixture.event(client, 'close')
+
+    client.send('fail')
+    await Promise.all([error, closed])
+    assert.equal(closeCallbackRan, false)
+  },
+
+  async 'websocket-message-end-then-throw'(fixture) {
+    const { app } = fixture
+
+    let callbackActive = false
+    let closeCallbackRan = false
+
+    app.ws('/bad-end', {
+      message(socket, payload) {
+        callbackActive = true
+        socket.end(1000, Buffer.from('shutdown'))
+        assert.equal(Buffer.from(payload).toString(), 'fail')
+        assert.throws(() => socket.send('late'), /WebSocket is no longer valid/)
+        callbackActive = false
+        throw new Error('websocket message end failed')
+      },
+      close() {
+        assert.equal(callbackActive, false)
+        closeCallbackRan = true
+      }
+    })
+
+    const port = await fixture.listen()
+    const error = fixture.captureUncaught('websocket message end failed')
+    const client = new WebSocket(`ws://127.0.0.1:${port}/bad-end`)
+
+    await fixture.event(client, 'open')
+    const closed = fixture.event(client, 'close')
+
+    client.send('fail')
+    const [, closeEvent] = await Promise.all([error, closed])
+
+    assert.equal(closeEvent.code, 1000)
+    assert.equal(closeEvent.reason, 'shutdown')
+    assert.equal(closeCallbackRan, false)
+  },
+
   async 'websocket-close'(fixture) {
     const { app } = fixture
 

@@ -5,7 +5,9 @@
 #include <v8.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <string>
 
 namespace swm::binding {
 
@@ -51,23 +53,9 @@ public:
         nativeCallbackDepth_++;
     }
 
-    void LeaveNativeCallback() noexcept {
-        if (!nativeCallbackDepth_) return;
-        nativeCallbackDepth_--;
-        if (nativeCallbackDepth_ || !pendingClose_) return;
-        NativeWebSocket *socket = pendingClose_;
-        pendingClose_ = nullptr;
-        socket->close();
-    }
-
-    void RequestClose(NativeWebSocket *socket) noexcept {
-        if (!socket) return;
-        if (nativeCallbackDepth_) {
-            pendingClose_ = socket;
-            return;
-        }
-        socket->close();
-    }
+    void LeaveNativeCallback() noexcept;
+    void RequestClose(NativeWebSocket *socket) noexcept;
+    void RequestEnd(NativeWebSocket *socket, int code, std::string reason) noexcept;
 
     [[nodiscard]] bool CallbackFailed() const noexcept {
         return callbackFailed_;
@@ -110,10 +98,15 @@ public:
     }
 
 private:
+    enum class PendingAction : std::uint8_t { None, Close, End };
+
     v8::Isolate *isolate_;
     AppState &app_;
     NativeWebSocket *socket_ = nullptr;
-    NativeWebSocket *pendingClose_ = nullptr;
+    NativeWebSocket *pendingSocket_ = nullptr;
+    PendingAction pendingAction_ = PendingAction::None;
+    int pendingEndCode_ = 0;
+    std::string pendingEndReason_;
     std::size_t nativeCallbackDepth_ = 0;
     bool callbackFailed_ = false;
     v8::Global<v8::Object> object_;

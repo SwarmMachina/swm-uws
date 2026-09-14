@@ -1,4 +1,5 @@
 #include "binding_internal.h"
+#include "socket_callback_scope.h"
 
 namespace swm::binding {
 
@@ -322,7 +323,7 @@ void SocketEnd(const FunctionCallbackInfo<Value> &args) {
     }
     NativeWebSocket *socket = state->DetachSocket();
     SetInternalPointer(args.This(), nullptr);
-    socket->end(code, reason.View());
+    state->RequestEnd(socket, code, std::string(reason.View()));
 }
 
 void SocketClose(const FunctionCallbackInfo<Value> &args) {
@@ -736,17 +737,21 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
             }
         }
     };
-    behavior.message = [context, message = std::move(message), state](
+    behavior.message = [context, message = std::move(message)](
                            NativeWebSocket *socket, std::string_view payload, uWS::OpCode opcode) {
         if (message.IsEmpty()) return;
         Isolate *callbackIsolate = context->Isolate();
         HandleScope scope(callbackIsolate);
+        SocketState *socketState = socket->getUserData()->state.get();
+        if (!socketState) return;
         Local<Object> socketObject;
-        if (!EnsureSocketObject(context, *state, socket).ToLocal(&socketObject)) {
+        if (socketState->HasObject()) {
+            socketObject = socketState->Object();
+        } else if (!EnsureSocketObject(context, socketState->App(), socket)
+                        .ToLocal(&socketObject)) {
             return;
         }
-        std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
-        NativeCallbackScope callbackScope(*state, socketState);
+        SocketCallbackScope callbackScope(*socketState);
         EphemeralArrayBuffer buffer(ExternalArrayBuffer(callbackIsolate, payload));
         Local<Value> argv[] = {socketObject,
                                buffer.Value(),
@@ -754,7 +759,7 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
         const bool callbackSucceeded =
             CallJs(callbackIsolate, message.Get(callbackIsolate), 3, argv);
         if (!callbackSucceeded) {
-            FailSocketCallback(socketState.get());
+            FailSocketCallback(socketState);
         }
     };
     behavior.dropped = [context, dropped = std::move(dropped), state](

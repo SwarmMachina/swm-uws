@@ -22,6 +22,8 @@
         "src/request_prefetch_snapshot.cpp",
         "src/response_callback_lifetime.cpp",
         "src/response_binding.cpp",
+        "src/socket_callback_scope.cpp",
+        "src/socket_state.cpp",
         "src/upgrade_context.cpp",
         "src/websocket_binding.cpp",
         "vendor/uSockets/src/bsd.c",
