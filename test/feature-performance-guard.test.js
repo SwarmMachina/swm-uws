@@ -11,6 +11,7 @@ import {
   FEATURE_PERFORMANCE_THRESHOLDS,
   featurePerformanceGuard
 } from '../benchmark/lib/feature-performance-guard.js'
+import { WS_PERFORMANCE_PARAMETERS } from '../benchmark/lib/ws-performance-evidence.js'
 
 function guard(overrides = {}) {
   return featurePerformanceGuard({
@@ -64,7 +65,7 @@ test('feature performance guard rejects incomplete or non-finite measurements', 
   )
 })
 
-test('PGO checker requires every expected feature guard to pass', async (context) => {
+test('PGO checker requires every expected feature and WS guard to pass', async (context) => {
   const directory = await mkdtemp(join(tmpdir(), 'swm-uws-feature-guard-'))
 
   context.after(() => rm(directory, { recursive: true, force: true }))
@@ -85,10 +86,86 @@ test('PGO checker requires every expected feature guard to pass', async (context
   await writeFile(join(directory, 'summary.json'), JSON.stringify({ featurePaths: passingPaths }))
 
   const checker = fileURLToPath(new URL('../benchmark/pgo/check-pgo-benchmark.js', import.meta.url))
+  const missingWs = spawnSync(process.execPath, [checker, directory], { encoding: 'utf8' })
+
+  assert.equal(missingWs.status, 1)
+  assert.match(missingWs.stderr, /ws\.json/)
+
+  const passingRun = (depth, block, position, role) => ({
+    depth,
+    block,
+    position,
+    role,
+    requestsPerSecond: 100_000,
+    load: {
+      errors: { total: 0 },
+      latencyMs: { dropped: 0, outOfRange: 0, nonFinite: 0 },
+      transport: { rateDropped: 0, backpressureEvents: 0 },
+      loadGenerator: { parentEluPct: 10, maxWorkerEluPct: 80, saturated: false }
+    }
+  })
+  const passingWs = {
+    status: 'pass',
+    node: 'v24.19.0',
+    parameters: WS_PERFORMANCE_PARAMETERS,
+    guards: [1, 16].map((depth) => ({
+      depth,
+      status: 'pass',
+      comparison: { medianPairedDeltaPct: -4 }
+    })),
+    runs: [1, 16].flatMap((depth) =>
+      Array.from({ length: 6 }, (_, index) => {
+        const block = index + 1
+
+        return [
+          passingRun(depth, block, 1, 'baseline'),
+          passingRun(depth, block, 2, 'candidate'),
+          passingRun(depth, block, 3, 'candidate'),
+          passingRun(depth, block, 4, 'baseline')
+        ]
+      }).flat()
+    )
+  }
+
+  for (const ws of [
+    { ...passingWs, status: 'incomplete' },
+    { ...passingWs, node: 'v22.23.2' },
+    { ...passingWs, parameters: { ...passingWs.parameters, protocol: 'ws-8workers-v1' } },
+    { ...passingWs, parameters: { ...passingWs.parameters, workers: 8 } },
+    { ...passingWs, parameters: { ...passingWs.parameters, durationMs: 3000 } },
+    { ...passingWs, guards: passingWs.guards.slice(0, 1) },
+    {
+      ...passingWs,
+      guards: [
+        { depth: 1, status: 'pass' },
+        { depth: 16, status: 'fail' }
+      ]
+    },
+    { ...passingWs, guards: [passingWs.guards[0], passingWs.guards[0]] },
+    { ...passingWs, runs: passingWs.runs.slice(0, -1) },
+    {
+      ...passingWs,
+      runs: passingWs.runs.map((run, index) =>
+        index === 0
+          ? { ...run, load: { ...run.load, loadGenerator: { ...run.load.loadGenerator, saturated: true } } }
+          : run
+      )
+    }
+  ]) {
+    await writeFile(join(directory, 'ws.json'), JSON.stringify(ws))
+
+    const failingWs = spawnSync(process.execPath, [checker, directory], { encoding: 'utf8' })
+
+    assert.equal(failingWs.status, 1)
+    assert.match(failingWs.stderr, /WS comparison:/)
+  }
+
+  await writeFile(join(directory, 'ws.json'), JSON.stringify(passingWs))
+
   const passing = spawnSync(process.execPath, [checker, directory], { encoding: 'utf8' })
 
   assert.equal(passing.status, 0, passing.stderr)
-  assert.match(passing.stdout, /raw HTTP and feature performance regression guards passed/)
+  assert.match(passing.stdout, /HTTP, feature and WS performance regression guards passed/)
 
   passingPaths[0].guard = { status: 'fail', failures: ['collect path regressed'] }
   await writeFile(join(directory, 'summary.json'), JSON.stringify({ featurePaths: passingPaths }))

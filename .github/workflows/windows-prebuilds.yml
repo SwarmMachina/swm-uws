@@ -74,7 +74,7 @@ jobs:
     runs-on:
       group: swm-ci
       labels: swm-linux
-    timeout-minutes: 30
+    timeout-minutes: 90
     needs: quality
     strategy:
       fail-fast: false
@@ -127,13 +127,33 @@ jobs:
 
           docker tag "$node_image" "$node_tag"
 
-          docker build \
-            --platform linux/amd64 \
-            --pull=false \
-            --build-arg NODE_VERSION=${{ matrix.node }} \
-            --target prebuild \
-            --output type=local,dest=prebuilds \
-            .
+          for build in 1 2 3; do
+            docker build \
+              --platform linux/amd64 \
+              --pull=false \
+              --build-arg NODE_VERSION=${{ matrix.node }} \
+              --build-arg PGO_BUILD_ID="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$build" \
+              --target prebuild \
+              --output "type=local,dest=$RUNNER_TEMP/independent-builds/$build" \
+              .
+          done
+          cmp "$RUNNER_TEMP/independent-builds/1/pgo-evidence/source-files.sha256" "$RUNNER_TEMP/independent-builds/2/pgo-evidence/source-files.sha256"
+          cmp "$RUNNER_TEMP/independent-builds/1/pgo-evidence/source-files.sha256" "$RUNNER_TEMP/independent-builds/3/pgo-evidence/source-files.sha256"
+          for build in 2 3; do
+            for counts in training-get.json training-post.json training-ws-closed.json training-ws-depth16.json; do
+              cmp "$RUNNER_TEMP/independent-builds/1/pgo-evidence/$counts" "$RUNNER_TEMP/independent-builds/$build/pgo-evidence/$counts"
+            done
+          done
+          cp -R "$RUNNER_TEMP/independent-builds/1/linux-x64-glibc" prebuilds/
+
+      - name: Preserve independent builds and PGO evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: independent-builds-${{ matrix.node }}
+          path: ${{ runner.temp }}/independent-builds/
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Verify prebuild
         shell: bash
@@ -396,7 +416,16 @@ jobs:
     runs-on:
       group: swm-ci
       labels: swm-linux
-    timeout-minutes: 30
+    timeout-minutes: 90
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        include:
+          - node: 22
+            abi: 127
+          - node: 24
+            abi: 137
     needs:
       - linux
 
@@ -404,10 +433,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      - name: Set up Node.js 24 WS load driver
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.19.0
+
+      - name: Preserve WS driver executable
+        run: echo "SWM_BENCH_WS_DRIVER_NODE=$(command -v node)" >> "$GITHUB_ENV"
+
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
 
       - name: Install dependencies
         run: npm ci
@@ -415,7 +452,7 @@ jobs:
       - name: Download PGO+LTO candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: linux-x64-node-v127
+          name: linux-x64-node-v${{ matrix.abi }}
           path: prebuilds/linux-x64-glibc
 
       - name: Install commit-pinned upstream reference
@@ -432,8 +469,33 @@ jobs:
       - name: Verify upstream runtime surface
         run: npm run test:compat:upstream
 
-      - name: Run paired PGO benchmark suite against upstream
-        run: npm run bench:compare:pgo:linux -- "$RUNNER_TEMP/pgo-benchmark"
+      - name: Download independent builds
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: independent-builds-${{ matrix.node }}
+          path: ${{ runner.temp }}/independent-builds
+
+      - name: Gate every independent build against upstream
+        shell: bash
+        run: |
+          for build in 1 2 3; do
+            evidence="$RUNNER_TEMP/independent-builds/$build/pgo-evidence"
+            cp "$evidence/candidate.node" "prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node"
+            result="$RUNNER_TEMP/pgo-benchmark/build-$build"
+            mkdir -p "$result"
+            if npm run bench:compare:pgo:linux -- "$result"; then
+              echo 0 > "$result/command-exit-code"
+            else
+              echo "$?" > "$result/command-exit-code"
+            fi
+          done
+          cp "$RUNNER_TEMP/independent-builds/1/pgo-evidence/candidate.node" "prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node"
+          node benchmark/pgo/qualify-independent-builds.js \
+            "$RUNNER_TEMP/pgo-benchmark" \
+            "$RUNNER_TEMP/independent-builds" \
+            "${{ matrix.node }}" \
+            "${{ matrix.abi }}" \
+            "$RUNNER_TEMP/pgo-benchmark/qualification.json"
 
       - name: Run request prefetch PGO benchmark
         run: |
@@ -445,14 +507,14 @@ jobs:
             --warmupMs=1000 \
             --durationMs=3000 \
             --workers=4 \
-            --output="$RUNNER_TEMP/pgo-benchmark/request-prefetch-node22.json"
+            --output="$RUNNER_TEMP/pgo-benchmark/request-prefetch-node${{ matrix.node }}.json"
 
       - name: Publish benchmark reports
         if: always()
         run: |
           for report in \
-            "$RUNNER_TEMP/pgo-benchmark/report.md" \
-            "$RUNNER_TEMP/pgo-benchmark/request-prefetch-node22.md"; do
+            "$RUNNER_TEMP"/pgo-benchmark/build-*/report.md \
+            "$RUNNER_TEMP/pgo-benchmark/request-prefetch-node${{ matrix.node }}.md"; do
             if [ -f "$report" ]; then
               cat "$report" >> "$GITHUB_STEP_SUMMARY"
             fi
@@ -462,7 +524,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: pgo-performance-report
+          name: pgo-performance-report-${{ matrix.node }}
           path: ${{ runner.temp }}/pgo-benchmark/
           if-no-files-found: warn
           overwrite: true

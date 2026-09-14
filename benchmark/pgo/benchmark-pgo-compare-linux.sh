@@ -15,7 +15,8 @@ fi
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT_DIR=$(realpath -m "$1")
-RAW_DIR=$(mktemp -d "${TMPDIR:-/tmp}/swm-uws-benchmark.XXXXXX")
+RAW_DIR="$OUT_DIR/raw"
+mkdir -p "$RAW_DIR"
 NODE_MODULE_VERSION=${NODE_MODULE_VERSION:-$(node -p 'process.versions.modules')}
 RUNS=${SWM_BENCH_RUNS:-6}
 CONNECTIONS=${SWM_BENCH_CONNECTIONS:-100}
@@ -25,15 +26,16 @@ DURATION=${SWM_BENCH_DURATION:-5}
 SERVER_CPU=${SWM_BENCH_SERVER_CPU:-2}
 CLIENT_CPUS=${SWM_BENCH_CLIENT_CPUS:-3-6}
 CLIENT_WORKERS=${SWM_BENCH_CLIENT_WORKERS:-4}
+WS_DRIVER_NODE=${SWM_BENCH_WS_DRIVER_NODE:-$(command -v node)}
+if [[ "$("$WS_DRIVER_NODE" -p 'process.versions.node.split(".")[0]')" != "24" ]]; then
+  echo "SWM_BENCH_WS_DRIVER_NODE must select Node 24" >&2
+  exit 1
+fi
 PORT_BASE=${SWM_BENCH_PORT_BASE:-32000}
 SKIP_PERF=${SWM_BENCH_SKIP_PERF:-0}
 CANDIDATE_BINARY=${SWM_BENCH_BINARY:-$ROOT/prebuilds/linux-x64-glibc/node-v${NODE_MODULE_VERSION}.node}
 LOCAL_BINDING="$ROOT/lib/index.js"
 
-cleanup() {
-  rm -rf "$RAW_DIR"
-}
-trap cleanup EXIT INT TERM
 
 test -f "$CANDIDATE_BINARY" || {
   echo "candidate binary not found: $CANDIDATE_BINARY" >&2
@@ -111,8 +113,12 @@ SWM_BENCH_HARDWARE_SOURCE="$HARDWARE_SOURCE" \
   node "$ROOT/benchmark/pgo/collect-pgo-benchmark.js" "$RAW_DIR" "$OUT_DIR" "$CANDIDATE_BINARY"
 
 cp "$RAW_DIR/hardware/perf-stat.csv" "$OUT_DIR/perf-stat.csv"
-bash "$ROOT/benchmark/pgo/benchmark-upstream-feature-paths.sh" "$OUT_DIR/features"
+failed=0
+bash "$ROOT/benchmark/pgo/benchmark-upstream-feature-paths.sh" "$OUT_DIR/features" || failed=1
 node "$ROOT/benchmark/pgo/generate-pgo-report.js" --directory "$OUT_DIR"
-node "$ROOT/benchmark/pgo/check-pgo-benchmark.js" "$OUT_DIR"
+SWM_BENCH_WS_TARGET_NODE="$(command -v node)" \
+  taskset -c "${SWM_BENCH_WS_CLIENT_CPUS:-1,3-13}" "$WS_DRIVER_NODE" "$ROOT/benchmark/pgo/compare-ws.js" "$OUT_DIR" || failed=1
+node "$ROOT/benchmark/pgo/check-pgo-benchmark.js" "$OUT_DIR" || failed=1
+if (( failed )); then exit 1; fi
 
 echo "paired PGO benchmark complete: $OUT_DIR"

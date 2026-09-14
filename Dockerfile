@@ -28,7 +28,8 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build:native:pgo
+ARG PGO_BUILD_ID=1
+RUN echo "$PGO_BUILD_ID" > /tmp/pgo-build-id && npm run build:native:pgo
 RUN npm test
 RUN npm run test:v8-http
 RUN npm run test:v8-ws
@@ -36,3 +37,5 @@ RUN npm run test:v8-ws
 FROM scratch AS prebuild
 
 COPY --from=build /src/prebuilds/ /
+
+COPY --from=build /src/pgo-evidence/ /pgo-evidence/

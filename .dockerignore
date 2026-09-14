@@ -3,3 +3,5 @@ build
 node_modules
 prebuilds/**/*.node
 npm-debug.log*
+
+pgo-evidence

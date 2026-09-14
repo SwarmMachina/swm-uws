@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 import { FEATURE_PERFORMANCE_PATH_NAMES } from '../lib/feature-performance-guard.js'
+import { wsPerformanceEvidenceFailures } from '../lib/ws-performance-evidence.js'
 
 if (process.argv.length !== 3) {
   throw new Error('usage: check-pgo-benchmark.js <benchmark-dir>')
@@ -65,4 +66,15 @@ if (featureFailures.length) {
   process.exit(1)
 }
 
-console.log('raw HTTP and feature performance regression guards passed')
+const ws = JSON.parse(await readFile(resolve(directory, 'ws.json'), 'utf8'))
+const wsFailures = wsPerformanceEvidenceFailures(ws)
+
+if (wsFailures.length) {
+  for (const failure of wsFailures) {
+    console.error(`WS comparison: ${failure}`)
+  }
+
+  process.exit(1)
+}
+
+console.log('HTTP, feature and WS performance regression guards passed')

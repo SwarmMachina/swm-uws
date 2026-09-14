@@ -1,7 +1,22 @@
 import { spawnSync } from 'node:child_process'
+import { copyFileSync, mkdirSync, mkdtempSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-for (const nodeVersion of ['22', '24']) {
-  console.log(`Building linux/amd64 prebuild for Node.js ${nodeVersion}`)
+const root = fileURLToPath(new URL('../..', import.meta.url))
+const evidenceRoot = join(root, 'pgo-evidence')
+const prebuildDirectory = join(root, 'prebuilds/linux-x64-glibc')
+
+mkdirSync(evidenceRoot, { recursive: true })
+mkdirSync(prebuildDirectory, { recursive: true })
+
+for (const [nodeVersion, abi] of [
+  ['22', '127'],
+  ['24', '137']
+]) {
+  const outputDirectory = mkdtempSync(join(evidenceRoot, `node-${nodeVersion}-`))
+
+  console.log(`Building linux/amd64 prebuild for Node.js ${nodeVersion}; evidence: ${outputDirectory}`)
 
   const result = spawnSync(
     'docker',
@@ -14,8 +29,8 @@ for (const nodeVersion of ['22', '24']) {
       '--target',
       'prebuild',
       '--output',
-      'type=local,dest=prebuilds',
-      '.'
+      `type=local,dest=${outputDirectory}`,
+      root
     ],
     { stdio: 'inherit' }
   )
@@ -27,4 +42,9 @@ for (const nodeVersion of ['22', '24']) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1)
   }
+
+  copyFileSync(
+    join(outputDirectory, 'linux-x64-glibc', `node-v${abi}.node`),
+    join(prebuildDirectory, `node-v${abi}.node`)
+  )
 }

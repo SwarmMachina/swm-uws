@@ -7,3 +7,5 @@ temp/
 tmp/
 vendor/
 *.log
+
+pgo-evidence/
