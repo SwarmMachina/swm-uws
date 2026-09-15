@@ -84,7 +84,7 @@ test('independent-build qualification records pass and cross-build inconsistency
 
   context.after(() => rm(root, { recursive: true, force: true }))
 
-  for (let build = 1; build <= 3; build += 1) {
+  for (let build = 1; build <= 2; build += 1) {
     const result = join(resultsDirectory, `build-${build}`)
     const evidence = join(evidenceDirectory, String(build), 'pgo-evidence')
     const candidate = `candidate-${build}`
@@ -113,7 +113,7 @@ test('independent-build qualification records pass and cross-build inconsistency
   const passing = await qualifyIndependentBuilds({ resultsDirectory, evidenceDirectory, nodeMajor: 24, abi: 137 })
 
   assert.equal(passing.status, 'pass')
-  assert.equal(passing.builds.length, 3)
+  assert.equal(passing.builds.length, 2)
   assert.deepEqual(passing.consistencyFailures, [])
 
   const checker = fileURLToPath(new URL('../benchmark/pgo/qualify-independent-builds.js', import.meta.url))

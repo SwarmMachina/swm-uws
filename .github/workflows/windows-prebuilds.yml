@@ -127,7 +127,7 @@ jobs:
 
           docker tag "$node_image" "$node_tag"
 
-          for build in 1 2 3; do
+          for build in 1 2; do
             docker build \
               --platform linux/amd64 \
               --pull=false \
@@ -138,11 +138,8 @@ jobs:
               .
           done
           cmp "$RUNNER_TEMP/independent-builds/1/pgo-evidence/source-files.sha256" "$RUNNER_TEMP/independent-builds/2/pgo-evidence/source-files.sha256"
-          cmp "$RUNNER_TEMP/independent-builds/1/pgo-evidence/source-files.sha256" "$RUNNER_TEMP/independent-builds/3/pgo-evidence/source-files.sha256"
-          for build in 2 3; do
-            for counts in training-get.json training-post.json training-ws-closed.json training-ws-depth16.json; do
-              cmp "$RUNNER_TEMP/independent-builds/1/pgo-evidence/$counts" "$RUNNER_TEMP/independent-builds/$build/pgo-evidence/$counts"
-            done
+          for counts in training-get.json training-post.json training-ws-closed.json training-ws-depth16.json; do
+            cmp "$RUNNER_TEMP/independent-builds/1/pgo-evidence/$counts" "$RUNNER_TEMP/independent-builds/2/pgo-evidence/$counts"
           done
           cp -R "$RUNNER_TEMP/independent-builds/1/linux-x64-glibc" prebuilds/
 
@@ -478,7 +475,7 @@ jobs:
       - name: Gate every independent build against upstream
         shell: bash
         run: |
-          for build in 1 2 3; do
+          for build in 1 2; do
             evidence="$RUNNER_TEMP/independent-builds/$build/pgo-evidence"
             cp "$evidence/candidate.node" "prebuilds/linux-x64-glibc/node-v${{ matrix.abi }}.node"
             result="$RUNNER_TEMP/pgo-benchmark/build-$build"

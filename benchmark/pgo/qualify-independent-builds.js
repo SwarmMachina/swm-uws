@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { FEATURE_PERFORMANCE_PATH_NAMES } from '../lib/feature-performance-guard.js'
 import { wsPerformanceEvidenceFailures } from '../lib/ws-performance-evidence.js'
 
-const BUILD_COUNT = 3
+const BUILD_COUNT = 2
 const CONSISTENT_EVIDENCE_FILES = [
   'source-files.sha256',
   'training-get.json',

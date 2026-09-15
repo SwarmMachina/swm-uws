@@ -1,12 +1,12 @@
 # PGO release evidence
 
-Linux CI builds three independent instrument/train/optimize candidates per ABI
+Linux CI builds two independent instrument/train/optimize candidates per ABI
 (Node 22 and 24). PGO_BUILD_ID invalidates the training layer for each build;
 the dependency/toolchain layer is shared. Every candidate runs the full HTTP,
 feature and WS comparison suite against the pinned upstream. All must pass.
 Build 1 is selected in advance for packaging, never the fastest observed build.
 Source file manifests and completed training counts must agree across builds.
-The regression job writes `qualification.json` after all three scheduled builds,
+The regression job writes `qualification.json` after both scheduled builds,
 including integrity, candidate identity, HTTP/feature/WS status and cross-build
 source/training consistency. A failed build remains in that aggregate evidence.
 
