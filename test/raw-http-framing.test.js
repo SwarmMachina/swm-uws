@@ -6,6 +6,48 @@ import { createApp } from '../lib/index.js'
 import { NativeAppServer } from './helpers/native-app-server.js'
 import { rawHttpExchange } from './helpers/raw-http.js'
 
+test('upstream Host and header syntax validation rejects malformed requests before dispatch', async () => {
+  const app = createApp()
+
+  let requests = 0
+
+  app.any('/*', (res) => {
+    requests++
+    res.end('ok')
+  })
+  const server = await NativeAppServer.listen(app)
+
+  try {
+    for (const header of ['Host:', 'Host: bad host', 'Host: a,b', 'Host: a@b', 'Host: valid\r\n: hidden']) {
+      const response = await rawHttpExchange({ host: '127.0.0.1', port: server.port }, [
+        `GET / HTTP/1.1\r\n${header}\r\nConnection: close\r\n\r\n`
+      ])
+
+      assert.match(response.toString(), /^HTTP\/1\.1 400/, header)
+    }
+
+    assert.equal(requests, 0)
+    const response = await rawHttpExchange({ host: '127.0.0.1', port: server.port }, [
+      'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'
+    ])
+
+    assert.match(response.toString(), /^HTTP\/1\.1 200/)
+    assert.equal(requests, 1)
+  } finally {
+    server.close()
+  }
+})
+
+test('route registration rejects the unsupported upstream microcache overload', () => {
+  const app = createApp()
+
+  try {
+    assert.throws(() => app.get('/', (res) => res.end('ok'), { lowerExpiry: 100, upperExpiry: 200 }), /expects/)
+  } finally {
+    app.close()
+  }
+})
+
 test('raw HTTP framing remains unambiguous across fast paths and pipelining', { timeout: 15_000 }, async () => {
   const app = createApp()
   const largeBatchHeader = 'a'.repeat(128 * 1024 + 1)

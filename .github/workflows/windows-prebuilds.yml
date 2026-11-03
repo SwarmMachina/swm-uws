@@ -86,6 +86,9 @@ jobs:
           - node: 24
             abi: 137
             image_digest: sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
+          - node: 26
+            abi: 147
+            image_digest: sha256:fa52d1669505e29b58c042875b1d65c229e0787a3610fd52869b22b68e480853
 
     steps:
       - name: Checkout
@@ -237,6 +240,8 @@ jobs:
             abi: 127
           - node: 24
             abi: 137
+          - node: 26
+            abi: 147
 
     steps:
       - name: Checkout
@@ -330,6 +335,11 @@ jobs:
             arch: arm64
             binary_arch: arm64
             runner: macos-15
+          - node: 26
+            abi: 147
+            arch: arm64
+            binary_arch: arm64
+            runner: macos-15
           - node: 22
             abi: 127
             arch: x64
@@ -337,6 +347,11 @@ jobs:
             runner: macos-15-intel
           - node: 24
             abi: 137
+            arch: x64
+            binary_arch: x86_64
+            runner: macos-15-intel
+          - node: 26
+            abi: 147
             arch: x64
             binary_arch: x86_64
             runner: macos-15-intel
@@ -423,6 +438,8 @@ jobs:
             abi: 127
           - node: 24
             abi: 137
+          - node: 26
+            abi: 147
     needs:
       - linux
 
@@ -457,9 +474,10 @@ jobs:
           npm install \
             --prefix "$RUNNER_TEMP/uws-reference" \
             --ignore-scripts \
+            --allow-git=all \
             --no-save \
-            "uwebsockets.js@github:uNetworking/uWebSockets.js#dddd8ffd1b2c28a66022160923ca92f064cdacb4"
-          reference="$RUNNER_TEMP/uws-reference/node_modules/uwebsockets.js/ESM_wrapper.mjs"
+            "uwebsockets.js@github:uNetworking/uWebSockets.js#9ec36de7709996c58dce03d63796216c90a17136"
+          reference="$RUNNER_TEMP/uws-reference/node_modules/uwebsockets.js/uws.js"
           echo "SWM_UWS_REFERENCE=$reference" >> "$GITHUB_ENV"
           echo "SWM_BENCH_REFERENCE=$reference" >> "$GITHUB_ENV"
 
@@ -559,6 +577,12 @@ jobs:
           name: linux-x64-node-v137
           path: prebuilds/linux-x64-glibc
 
+      - name: Download Linux Node.js 26 prebuild
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-x64-node-v147
+          path: prebuilds/linux-x64-glibc
+
       - name: Download Windows Node.js 22 prebuild
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -569,6 +593,12 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: windows-x64-node-v137
+          path: prebuilds/win32-x64
+
+      - name: Download Windows Node.js 26 prebuild
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-x64-node-v147
           path: prebuilds/win32-x64
 
       - name: Download macOS arm64 Node.js 22 prebuild
@@ -583,6 +613,12 @@ jobs:
           name: macos-arm64-node-v137
           path: prebuilds/darwin-arm64
 
+      - name: Download macOS arm64 Node.js 26 prebuild
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-arm64-node-v147
+          path: prebuilds/darwin-arm64
+
       - name: Download macOS x64 Node.js 22 prebuild
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -593,6 +629,12 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: macos-x64-node-v137
+          path: prebuilds/darwin-x64
+
+      - name: Download macOS x64 Node.js 26 prebuild
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-x64-node-v147
           path: prebuilds/darwin-x64
 
       - name: Install dependencies
@@ -636,7 +678,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24]
+        node: [22, 24, 26]
     env:
       # @swarmmachina/swm-core v5.0.3; advance deliberately with its runtime contract.
       SWM_CORE_COMMIT: 8aa93d3f7bcdc239ec77e822afeefbe9f1f25d43
@@ -727,12 +769,19 @@ jobs:
             runner: swm-linux
             node: 24
             runtime_digest: sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+          - os: ubuntu-24.04
+            runner: swm-linux
+            node: 26
+            runtime_digest: sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9
           - os: windows-self-hosted
             runner: swm-win
             node: 22
           - os: windows-self-hosted
             runner: swm-win
             node: 24
+          - os: windows-self-hosted
+            runner: swm-win
+            node: 26
 
     steps:
       - name: Checkout
@@ -803,10 +852,16 @@ jobs:
           - node: 24
             arch: arm64
             runner: macos-15
+          - node: 26
+            arch: arm64
+            runner: macos-15
           - node: 22
             arch: x64
             runner: macos-15-intel
           - node: 24
+            arch: x64
+            runner: macos-15-intel
+          - node: 26
             arch: x64
             runner: macos-15-intel
 

@@ -5,11 +5,11 @@ namespace {
 
 void InitializeModule(v8::Local<v8::Object> exports,
                       v8::Local<v8::Value>,
-                      v8::Local<v8::Context> context,
+                      v8::Local<v8::Context>,
                       void *) {
     using namespace swm::binding;
 
-    v8::Isolate *isolate = context->GetIsolate();
+    v8::Isolate *isolate = v8::Isolate::GetCurrent();
     uWS::Loop::get(node::GetCurrentEventLoop(isolate));
 
     auto *environment = new BindingEnvironment(isolate);

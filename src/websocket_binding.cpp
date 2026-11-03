@@ -446,12 +446,12 @@ StoreOptionalHandler(Isolate *isolate, Local<Object> options, const char *name, 
     return Global<Function>(isolate, value.As<Function>());
 }
 
-[[nodiscard]] bool ReadOwnDescriptorField(Local<Context> currentContext,
+[[nodiscard]] bool ReadOwnDescriptorField(Isolate *isolate,
+                                          Local<Context> currentContext,
                                           Local<Object> descriptor,
                                           const char *name,
                                           bool *present,
                                           Local<Value> *value) {
-    Isolate *isolate = currentContext->GetIsolate();
     Local<String> key = NewString(isolate, name);
     v8::Maybe<bool> has = descriptor->HasOwnProperty(currentContext, key);
     if (has.IsNothing()) return false;
@@ -460,7 +460,8 @@ StoreOptionalHandler(Isolate *isolate, Local<Object> options, const char *name, 
     return descriptor->Get(currentContext, key).ToLocal(value);
 }
 
-[[nodiscard]] bool CopyOwnPropertyDescriptor(Local<Context> currentContext,
+[[nodiscard]] bool CopyOwnPropertyDescriptor(Isolate *isolate,
+                                             Local<Context> currentContext,
                                              Local<Object> source,
                                              Local<v8::Name> key,
                                              Local<Object> target) {
@@ -483,34 +484,41 @@ StoreOptionalHandler(Isolate *isolate, Local<Object> options, const char *name, 
     Local<Value> setter;
     Local<Value> enumerable;
     Local<Value> configurable;
-    if (!ReadOwnDescriptorField(currentContext, descriptorObject, "value", &hasValue, &value) ||
+    if (!ReadOwnDescriptorField(
+            isolate, currentContext, descriptorObject, "value", &hasValue, &value) ||
         !ReadOwnDescriptorField(
-            currentContext, descriptorObject, "writable", &hasWritable, &writable) ||
-        !ReadOwnDescriptorField(currentContext, descriptorObject, "get", &hasGetter, &getter) ||
-        !ReadOwnDescriptorField(currentContext, descriptorObject, "set", &hasSetter, &setter) ||
+            isolate, currentContext, descriptorObject, "writable", &hasWritable, &writable) ||
         !ReadOwnDescriptorField(
-            currentContext, descriptorObject, "enumerable", &hasEnumerable, &enumerable) ||
+            isolate, currentContext, descriptorObject, "get", &hasGetter, &getter) ||
         !ReadOwnDescriptorField(
-            currentContext, descriptorObject, "configurable", &hasConfigurable, &configurable)) {
+            isolate, currentContext, descriptorObject, "set", &hasSetter, &setter) ||
+        !ReadOwnDescriptorField(
+            isolate, currentContext, descriptorObject, "enumerable", &hasEnumerable, &enumerable) ||
+        !ReadOwnDescriptorField(isolate,
+                                currentContext,
+                                descriptorObject,
+                                "configurable",
+                                &hasConfigurable,
+                                &configurable)) {
         return false;
     }
 
     std::unique_ptr<PropertyDescriptor> descriptor;
     if (hasValue) {
         descriptor = std::make_unique<PropertyDescriptor>(
-            value, hasWritable && writable->BooleanValue(currentContext->GetIsolate()));
+            value, hasWritable && writable->BooleanValue(isolate));
     } else {
-        Local<Value> getterValue = v8::Undefined(currentContext->GetIsolate());
-        Local<Value> setterValue = v8::Undefined(currentContext->GetIsolate());
+        Local<Value> getterValue = v8::Undefined(isolate);
+        Local<Value> setterValue = v8::Undefined(isolate);
         if (hasGetter) getterValue = getter;
         if (hasSetter) setterValue = setter;
         descriptor = std::make_unique<PropertyDescriptor>(getterValue, setterValue);
     }
     if (hasEnumerable) {
-        descriptor->set_enumerable(enumerable->BooleanValue(currentContext->GetIsolate()));
+        descriptor->set_enumerable(enumerable->BooleanValue(isolate));
     }
     if (hasConfigurable) {
-        descriptor->set_configurable(configurable->BooleanValue(currentContext->GetIsolate()));
+        descriptor->set_configurable(configurable->BooleanValue(isolate));
     }
     return target->DefineProperty(currentContext, key, *descriptor).FromMaybe(false);
 }
@@ -563,7 +571,7 @@ EnsureSocketObject(BindingEnvironment *context, AppState &app, NativeWebSocket *
                 if (bindingOwnsKey.IsNothing()) return fail();
                 if (!state->Socket()) return fail();
                 if (bindingOwnsKey.FromJust()) continue;
-                if (!CopyOwnPropertyDescriptor(currentContext, source, key, object)) {
+                if (!CopyOwnPropertyDescriptor(isolate, currentContext, source, key, object)) {
                     return fail();
                 }
                 if (!state->Socket()) return fail();

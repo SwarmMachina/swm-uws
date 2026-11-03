@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import ts from 'typescript'
 
-import { execNpmSync } from './npm-cli.js'
+import { execNpmSync, parseNpmPackOutput } from './npm-cli.js'
 
 const root = resolve(import.meta.dirname, '../..')
 const temp = mkdtempSync(join(tmpdir(), 'swm-uws-packed-types-'))
@@ -90,7 +90,7 @@ try {
   mkdirSync(artifacts)
   mkdirSync(consumer)
 
-  const [packed] = JSON.parse(
+  const packed = parseNpmPackOutput(
     execNpmSync(['pack', '--json', '--ignore-scripts', '--pack-destination', artifacts], {
       cwd: root,
       encoding: 'utf8',

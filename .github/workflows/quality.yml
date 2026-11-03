@@ -63,6 +63,7 @@ jobs:
         node:
           - 22
           - 24
+          - 26
 
     steps:
       - name: Checkout
@@ -84,17 +85,18 @@ jobs:
         run: npm test
 
       - name: Install commit-pinned upstream reference
-        if: matrix.node == 24
+        if: matrix.node == 24 || matrix.node == 26
         run: |
           npm install \
             --prefix "$RUNNER_TEMP/uws-reference" \
             --ignore-scripts \
+            --allow-git=all \
             --no-save \
-            "uwebsockets.js@github:uNetworking/uWebSockets.js#dddd8ffd1b2c28a66022160923ca92f064cdacb4"
-          echo "SWM_UWS_REFERENCE=$RUNNER_TEMP/uws-reference/node_modules/uwebsockets.js/ESM_wrapper.mjs" >> "$GITHUB_ENV"
+            "uwebsockets.js@github:uNetworking/uWebSockets.js#9ec36de7709996c58dce03d63796216c90a17136"
+          echo "SWM_UWS_REFERENCE=$RUNNER_TEMP/uws-reference/node_modules/uwebsockets.js/uws.js" >> "$GITHUB_ENV"
 
       - name: Compare runtime surface with pinned upstream
-        if: matrix.node == 24
+        if: matrix.node == 24 || matrix.node == 26
         run: npm run test:compat:upstream
 
       - name: Run raw V8 HTTP smoke

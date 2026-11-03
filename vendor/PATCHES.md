@@ -1,22 +1,25 @@
 # Vendored patches
 
+All uWebSockets deviations below are replayed together by
+`uwebsockets-local-policy.patch` against the pinned upstream snapshot. The former
+interdependent patch stack was rebased and consolidated for uWebSockets.js
+20.71.0. The two `usockets-*` patches still apply separately to uSockets.
+
 ## `beginWrite()` first-chunk framing
 
-The uWebSockets revision `fe7c01a477b688a7743f754fee33bdd78d52ad91`
-flushes the HTTP header terminator in `beginWrite()` but the next `write()` or
-`end()` still emits the normal leading chunk separator. That produces an empty
-line before the first chunk size and violates HTTP/1.1 chunk framing.
+Upstream now emits complete chunks through `ensureChunkedBodyStarted()` and
+`writeChunk()`. This supersedes the local `HTTP_CHUNKED_READY` workaround, which
+has been removed. The binding keeps its per-App response-write deadline policy.
 
-The local `HTTP_CHUNKED_READY` state bit records that `beginWrite()` already
-emitted the separator. The first subsequent chunk or terminal zero chunk
-consumes the bit and omits the duplicate CRLF.
+## Header-only cache helper
 
-The patch is kept as a standalone diff under `vendor/patches/` and is reapplied
-after every upstream refresh.
+The new upstream `HttpCache.h` defines `time_ms()` in a header. It is marked
+`inline` locally so including `App.h` from multiple translation units does not
+produce duplicate linker symbols. The JavaScript cache overload is unsupported.
 
 ## Per-App HTTP transport policy
 
-`uwebsockets-http-transport-policy.patch` moves HTTP header limits and timeout
+`uwebsockets-local-policy.patch` moves HTTP header limits and timeout
 policy from process-wide/static behavior into immutable data owned by each
 `App`. It adds bounded header-count parsing, phase-specific timeout handling,
 minimum request-body throughput enforcement, and per-App transport counters.
@@ -30,13 +33,12 @@ when an `App` is constructed. Transport policy and counters live after router
 state in `HttpContextData`, keeping cold observability data out of the dispatch
 layout.
 
-The patch assumes `uwebsockets-begin-write-framing.patch` has already been
-applied; patch files are sorted by name by `scripts/update-vendor.js`, which
-preserves that order.
+The cumulative patch includes transport policy, strict request framing, and
+security/lifecycle changes in one replayable diff.
 
 ## Request framing validation and metadata
 
-`uwebsockets-request-framing.patch` rejects duplicate `Content-Length` and
+`uwebsockets-local-policy.patch` rejects duplicate `Content-Length` and
 `Transfer-Encoding` fields, rejects requests containing both fields, accepts
 only a single case-insensitive `chunked` transfer-coding token, and validates
 `Content-Length` as a non-empty decimal value no larger than JavaScript's
@@ -44,14 +46,17 @@ largest exactly representable integer before the route handler runs. Parser
 errors return one `400` and close the connection before any pipelined bytes can
 be dispatched.
 
+Unsupported HTTP versions retain the binding's `505` response, while header
+limits retain `431`; other malformed request heads return `400`. The updated
+upstream Host validation and rejection of empty header names are preserved.
+
 The same pre-handler framing step records whether the request had an explicit
 `Content-Length`, including zero. The native binding uses that metadata for
 `collectBodyWithLength()` without performing another header lookup.
 
 ## HTTP/WebSocket security hardening
 
-`uwebsockets-security-hardening.patch` is applied after the transport-policy
-and request-framing patches. It contains the security changes that intentionally
+`uwebsockets-local-policy.patch` contains the security changes that intentionally
 diverge from the pinned upstream revision:
 
 - replace the permissive chunk decoder with a byte-split-safe state machine
@@ -74,20 +79,20 @@ diverge from the pinned upstream revision:
   without invalidating views held by an active callback; and
 - replace the default branded 404 body with a minimal generic response.
 
-The patch is generated as the exact diff for this hardening layer. Replaying
-all patches on a clean `HEAD` copy must reproduce every vendored file
-byte-for-byte, including the added `src/ForwardedAddress.h`.
+Replaying the cumulative patch on the clean pinned upstream snapshot must
+reproduce every vendored file byte-for-byte, including the added
+`src/ForwardedAddress.h` and `src/HttpTransportConfig.h`.
 
 ## Canonical WebSocket payload-length framing
 
-`uwebsockets-websocket-length-framing.patch` rejects extended payload-length
+`uwebsockets-local-policy.patch` rejects extended payload-length
 encodings when the value fits in the shorter RFC 6455 form, and rejects 64-bit
 lengths with the reserved high bit set. This removes differential frame
 boundaries between strict intermediaries and the server parser.
 
 ## Re-entrant WebSocket topic-tree callbacks
 
-`uwebsockets-topic-tree-reentrancy.patch` makes pub/sub traversal fail closed
+`uwebsockets-local-policy.patch` makes pub/sub traversal fail closed
 when a synchronous `dropped` callback closes a socket, closes the `App`, or
 otherwise changes topic membership. A monotonic topology version prevents an
 invalidated `unordered_set` or drainage-list iterator from being advanced. A
@@ -103,7 +108,7 @@ keeps JavaScript-visible bytes valid across re-entrant publishes and closure.
 
 ## Wire-callback lifecycle hardening
 
-`uwebsockets-wire-callback-lifecycle.patch` commits HTTP parser state before
+`uwebsockets-local-policy.patch` commits HTTP parser state before
 calling body handlers and stops parsing immediately when a callback replaces or
 closes the socket. This prevents chunked and fixed-length parser state from
 being touched after a re-entrant close. Connection filters and writable handlers
@@ -148,7 +153,7 @@ The vendor updater applies `usockets-*` patches to `vendor/uSockets`; the existi
 
 ## HTTP callback ownership and completion
 
-`uwebsockets-z-lifecycle-ownership.patch` keeps an executing body handler alive
+`uwebsockets-local-policy.patch` keeps an executing body handler alive
 outside the HTTP socket extension. An upgrade can destroy that extension; the
 parser checks for the replacement socket before reading the old response again.
 A generation counter preserves re-entrant handler replacement when a partial

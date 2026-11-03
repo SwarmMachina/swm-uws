@@ -35,7 +35,7 @@ const referenceSurface = captureSurface(referenceName)
 assert.deepEqual(
   referenceSurface,
   upstreamSurface,
-  'Installed uwebsockets.js surface does not match the pinned v20.69.0 contract'
+  'Installed uwebsockets.js surface does not match the pinned v20.71.0 contract'
 )
 
 const localSurface = captureSurface(fileURLToPath(new URL('../../lib/index.js', import.meta.url)))

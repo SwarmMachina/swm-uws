@@ -30,3 +30,14 @@ export function execNpmSync(args, options) {
 
   return execFileSync(invocation.executable, invocation.args, options)
 }
+
+export function parseNpmPackOutput(output) {
+  const result = JSON.parse(output)
+  const packages = Array.isArray(result) ? result : Object.values(result)
+
+  if (packages.length !== 1 || typeof packages[0]?.filename !== 'string' || !Array.isArray(packages[0]?.files)) {
+    throw new Error('Expected npm pack metadata for exactly one package')
+  }
+
+  return packages[0]
+}

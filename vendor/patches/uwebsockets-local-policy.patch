@@ -1,0 +1,3167 @@
+diff --git a/src/App.h b/src/App.h
+index de9a432..68c6e0a 100644
+--- a/src/App.h
++++ b/src/App.h
+@@ -25,6 +25,89 @@
+ #include <string_view>
+ 
+ namespace uWS {
++    inline bool asciiCaseInsensitiveEqual(std::string_view left, std::string_view right) {
++        if (left.length() != right.length()) {
++            return false;
++        }
++
++        for (size_t i = 0; i < left.length(); i++) {
++            unsigned char leftCharacter = (unsigned char) left[i];
++            unsigned char rightCharacter = (unsigned char) right[i];
++
++            if (leftCharacter >= 'A' && leftCharacter <= 'Z') {
++                leftCharacter = (unsigned char) (leftCharacter + ('a' - 'A'));
++            }
++            if (rightCharacter >= 'A' && rightCharacter <= 'Z') {
++                rightCharacter = (unsigned char) (rightCharacter + ('a' - 'A'));
++            }
++            if (leftCharacter != rightCharacter) {
++                return false;
++            }
++        }
++
++        return true;
++    }
++
++    inline bool hasAsciiCaseInsensitiveToken(std::string_view value, std::string_view expectedToken) {
++        for (size_t offset = 0; offset <= value.length(); ) {
++            size_t delimiter = value.find(',', offset);
++            size_t end = delimiter == std::string_view::npos ? value.length() : delimiter;
++
++            while (offset < end && (value[offset] == ' ' || value[offset] == '\t')) {
++                offset++;
++            }
++            while (end > offset && (value[end - 1] == ' ' || value[end - 1] == '\t')) {
++                end--;
++            }
++
++            if (asciiCaseInsensitiveEqual(value.substr(offset, end - offset), expectedToken)) {
++                return true;
++            }
++            if (delimiter == std::string_view::npos) {
++                break;
++            }
++            offset = delimiter + 1;
++        }
++
++        return false;
++    }
++
++    inline int base64Value(unsigned char character) {
++        if (character >= 'A' && character <= 'Z') {
++            return character - 'A';
++        }
++        if (character >= 'a' && character <= 'z') {
++            return character - 'a' + 26;
++        }
++        if (character >= '0' && character <= '9') {
++            return character - '0' + 52;
++        }
++        if (character == '+') {
++            return 62;
++        }
++        if (character == '/') {
++            return 63;
++        }
++
++        return -1;
++    }
++
++    inline bool isValidWebSocketKey(std::string_view key) {
++        /* A 16-byte nonce has 22 base64 characters and exactly two padding characters. */
++        if (key.length() != 24 || key[22] != '=' || key[23] != '=') {
++            return false;
++        }
++
++        for (size_t i = 0; i < 22; i++) {
++            if (base64Value((unsigned char) key[i]) == -1) {
++                return false;
++            }
++        }
++
++        /* The four unused pad bits must be zero for canonical RFC 4648 base64. */
++        return !(base64Value((unsigned char) key[21]) & 15);
++    }
++
+     /* Safari 15.0 - 15.3 has a completely broken compression implementation (client_no_context_takeover not
+      * properly implemented) - so we fully disable compression for this browser :-(
+      * see https://github.com/uNetworking/uWebSockets/issues/1347 */
+@@ -60,6 +143,37 @@ namespace uWS {
+ 
+ namespace uWS {
+ 
++    inline bool isValidDefaultWebSocketUpgrade(HttpRequest *req, std::string_view &secWebSocketKey) {
++        bool hasConnectionUpgradeToken = false;
++        bool hasWebSocketUpgradeToken = false;
++        unsigned int secWebSocketKeyCount = 0;
++        unsigned int secWebSocketVersionCount = 0;
++        std::string_view secWebSocketVersion;
++
++        for (auto [name, value] : *req) {
++            if (name == "sec-websocket-key") {
++                secWebSocketKey = value;
++                secWebSocketKeyCount++;
++            } else if (name == "sec-websocket-version") {
++                secWebSocketVersion = value;
++                secWebSocketVersionCount++;
++            } else if (name == "connection") {
++                hasConnectionUpgradeToken = hasConnectionUpgradeToken ||
++                    hasAsciiCaseInsensitiveToken(value, "upgrade");
++            } else if (name == "upgrade") {
++                hasWebSocketUpgradeToken = hasWebSocketUpgradeToken ||
++                    hasAsciiCaseInsensitiveToken(value, "websocket");
++            }
++        }
++
++        return secWebSocketKeyCount == 1 &&
++            secWebSocketVersionCount == 1 &&
++            isValidWebSocketKey(secWebSocketKey) &&
++            secWebSocketVersion == "13" &&
++            hasConnectionUpgradeToken &&
++            hasWebSocketUpgradeToken;
++    }
++
+     /* This one matches us_socket_context_options_t but has default values */
+     struct SocketContextOptions {
+         const char *key_file_name = nullptr;
+@@ -244,13 +358,15 @@ public:
+         other.topicTree = nullptr;
+     }
+ 
+-    TemplatedApp(SocketContextOptions options = {}) {
+-        httpContext = HttpContext<SSL>::create(Loop::get(), options);
++    TemplatedApp(
++        SocketContextOptions options = {},
++        const HttpTransportConfig &transportConfig = {}) {
++        httpContext = HttpContext<SSL>::create(Loop::get(), options, transportConfig);
+ 
+         /* Register default handler for 404 (can be overridden by user) */
+         this->any("/*", [](auto *res, auto */*req*/) {
+-            res->writeStatus("404 File Not Found");
+-            res->end("<html><body><h1>File Not Found</h1><hr><i>uWebSockets/20 Server</i></body></html>");
++            res->writeStatus("404 Not Found");
++            res->end("Not Found");
+         });
+     }
+ 
+@@ -267,6 +383,12 @@ public:
+         return !httpContext;
+     }
+ 
++    HttpTransportStats getHttpTransportStats() const {
++        return httpContext
++            ? httpContext->getSocketContextData()->transportStats
++            : HttpTransportStats{};
++    }
++
+     template <typename UserData>
+     struct WebSocketBehavior {
+         /* Disabled compression by default - probably a bad default */
+@@ -439,12 +561,11 @@ public:
+ 
+         httpContext->onHttp("GET", pattern, [webSocketContext, behavior = std::move(behavior)](auto *res, auto *req) mutable {
+ 
+-            /* If we have this header set, it's a websocket */
+             std::string_view secWebSocketKey = req->getHeader("sec-websocket-key");
+-            if (secWebSocketKey.length() == 24) {
+ 
+-                /* Emit upgrade handler */
+-                if (behavior.upgrade) {
++            /* A custom upgrade handler intentionally owns validation for compatibility. */
++            if (behavior.upgrade) {
++                if (secWebSocketKey.length() == 24) {
+ 
+                     /* Nasty, ugly Safari 15 hack */
+                     if (hasBrokenCompression(req->getHeader("user-agent"))) {
+@@ -454,22 +575,23 @@ public:
+ 
+                     behavior.upgrade(res, req, (struct us_socket_context_t *) webSocketContext);
+                 } else {
+-                    /* Default handler upgrades to WebSocket */
+-                    std::string_view secWebSocketProtocol = req->getHeader("sec-websocket-protocol");
+-                    std::string_view secWebSocketExtensions = req->getHeader("sec-websocket-extensions");
+-
+-                    /* Safari 15 hack */
+-                    if (hasBrokenCompression(req->getHeader("user-agent"))) {
+-                        secWebSocketExtensions = "";
+-                    }
+-
+-                    res->template upgrade<UserData>({}, secWebSocketKey, secWebSocketProtocol, secWebSocketExtensions, (struct us_socket_context_t *) webSocketContext);
++                    req->setYield(true);
+                 }
++            } else if (isValidDefaultWebSocketUpgrade(req, secWebSocketKey)) {
++                /* Default handler upgrades only a complete RFC 6455 handshake. */
++                std::string_view secWebSocketProtocol = req->getHeader("sec-websocket-protocol");
++                std::string_view secWebSocketExtensions = req->getHeader("sec-websocket-extensions");
++
++                /* Safari 15 hack */
++                if (hasBrokenCompression(req->getHeader("user-agent"))) {
++                    secWebSocketExtensions = "";
++                }
++
++                res->template upgrade<UserData>({}, secWebSocketKey, secWebSocketProtocol, secWebSocketExtensions, (struct us_socket_context_t *) webSocketContext);
+ 
+                 /* We are going to get uncorked by the Http get return */
+ 
+                 /* We do not need to check for any close or shutdown here as we immediately return from get handler */
+-
+             } else {
+                 /* Tell the router that we did not handle this request */
+                 req->setYield(true);
+diff --git a/src/ChunkedEncoding.h b/src/ChunkedEncoding.h
+index 0efeb27..2b8fdb5 100644
+--- a/src/ChunkedEncoding.h
++++ b/src/ChunkedEncoding.h
+@@ -20,328 +20,499 @@
+ 
+ /* Independent chunked encoding parser, used by HttpParser. */
+ 
+-#include <string>
+-#include <cstring>
+-#include <cstdlib>
+ #include <algorithm>
+-#include <string_view>
+-#include "MoveOnlyFunction.h"
++#include <cstdint>
++#include <cstdlib>
+ #include <optional>
++#include <string_view>
+ 
+ namespace uWS {
+ 
+-    constexpr uint64_t STATE_HAS_SIZE = 1ull << (sizeof(uint64_t) * 8 - 1);
+-    constexpr uint64_t STATE_IS_CHUNKED = 1ull << (sizeof(uint64_t) * 8 - 2);
+-    
+-    // Internal sub-states encoded in top bits reserved for control state
+-    constexpr uint64_t STATE_EXTENSION_MODE         = 1ull << (sizeof(uint64_t) * 8 - 3);
+-    constexpr uint64_t STATE_TRAILER_MODE           = 1ull << (sizeof(uint64_t) * 8 - 4);
+-    constexpr uint64_t STATE_EXTENSION_EXPECTS_NAME = 1ull << (sizeof(uint64_t) * 8 - 5);
+-    constexpr uint64_t STATE_EXTENSION_QUOTED       = 1ull << (sizeof(uint64_t) * 8 - 6);
+-    constexpr uint64_t STATE_EXTENSION_EXPECTS_LF   = 1ull << (sizeof(uint64_t) * 8 - 7);
+-    constexpr uint64_t STATE_EXTENSION_IN_NAME      = 1ull << (sizeof(uint64_t) * 8 - 8);
+-    
+-    constexpr uint64_t STATE_SIZE_MASK = ~(0xFFull << (sizeof(uint64_t) * 8 - 8));
+-    constexpr uint64_t STATE_IS_ERROR = ~0ull;
+-    constexpr uint64_t STATE_SIZE_OVERFLOW = 0x0Full << (sizeof(uint64_t) * 8 - 12);
+-
+-    /* Helper: RFC 9110 Section 5.6.2 Token character check */
+-    inline bool isValidTokenChar(unsigned char c) {
+-        if (c < 0x20 || c >= 0x7F) return false;
+-        switch (c) {
+-            case '(': case ')': case '<': case '>': case '@':
+-            case ',': case ';': case ':': case '\\': case '"':
+-            case '/': case '[': case ']': case '?': case '=':
+-            case '{': case '}': case ' ': case '\t':
+-                return false;
+-            default:
+-                return true;
+-        }
+-    }
++/* The high nibble stores the parser phase while the low 60 bits store
++ * either the parsed chunk size, the remaining chunk data, or a small
++ * trailer sub-state. This preserves the previous maximum chunk size. */
++constexpr uint64_t STATE_VALUE_MASK = 0x0FFFFFFFFFFFFFFFull;
++constexpr uint64_t STATE_PHASE_MASK = ~STATE_VALUE_MASK;
++
++constexpr uint64_t STATE_SIZE_START = 0x1000000000000000ull;
++constexpr uint64_t STATE_SIZE = 0x2000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_SEPARATOR = 0x3000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_NAME_START = 0x4000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_NAME = 0x5000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_AFTER_NAME = 0x6000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_VALUE_START = 0x7000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_TOKEN_VALUE = 0x8000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_AFTER_VALUE = 0x9000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_QUOTED_VALUE = 0xA000000000000000ull;
++constexpr uint64_t STATE_EXTENSION_QUOTED_PAIR = 0xB000000000000000ull;
++constexpr uint64_t STATE_SIZE_LF = 0xC000000000000000ull;
++constexpr uint64_t STATE_DATA = 0xD000000000000000ull;
++constexpr uint64_t STATE_DATA_CRLF = 0xE000000000000000ull;
++constexpr uint64_t STATE_TRAILER = 0xF000000000000000ull;
++
++/* HttpParser initializes chunked parsing with this public sentinel. */
++constexpr uint64_t STATE_IS_CHUNKED = STATE_SIZE_START;
++constexpr uint64_t STATE_IS_ERROR = ~0ull;
++
++constexpr uint64_t TRAILER_LINE_START = 0;
++constexpr uint64_t TRAILER_NAME = 1;
++constexpr uint64_t TRAILER_VALUE = 2;
++constexpr uint64_t TRAILER_LINE_LF = 3;
++constexpr uint64_t TRAILER_END_LF = 4;
++
++inline uint64_t chunkSize(uint64_t state) {
++    return state & STATE_VALUE_MASK;
++}
+ 
+-    inline uint64_t chunkSize(uint64_t state) {
+-        return state & STATE_SIZE_MASK;
+-    }
++inline uint64_t parserPhase(uint64_t state) {
++    return state & STATE_PHASE_MASK;
++}
++
++inline bool isHexDigit(unsigned char c) {
++    return ((c >= '0') & (c <= '9')) | ((c >= 'A') & (c <= 'F')) | ((c >= 'a') & (c <= 'f'));
++}
+ 
+-    inline void decChunkSize(uint64_t &state, unsigned int by) {
+-        state = (state & ~STATE_SIZE_MASK) | (chunkSize(state) - by);
++inline unsigned int hexDigitValue(unsigned char c) {
++    if (c <= '9') {
++        return (unsigned int)c - (unsigned int)'0';
+     }
++    return ((unsigned int)c | 32u) - (unsigned int)'a' + 10u;
++}
+ 
+-    inline bool hasChunkSize(uint64_t state) {
+-        return state & STATE_HAS_SIZE;
++/* RFC 9110 Section 5.6.2, token = 1*tchar. */
++inline bool isTokenCharacter(unsigned char c) {
++    if (((c >= 'a') & (c <= 'z')) | ((c >= 'A') & (c <= 'Z')) | ((c >= '0') & (c <= '9'))) {
++        return true;
+     }
+ 
+-    inline bool isParsingChunkedEncoding(uint64_t state) {
+-        return state & ~STATE_SIZE_MASK;
++    switch (c) {
++    case '!':
++    case '#':
++    case '$':
++    case '%':
++    case '&':
++    case '\'':
++    case '*':
++    case '+':
++    case '-':
++    case '.':
++    case '^':
++    case '_':
++    case '`':
++    case '|':
++    case '~':
++        return true;
++    default:
++        return false;
+     }
++}
++
++inline bool isBadWhitespace(unsigned char c) {
++    return (c == ' ') | (c == '\t');
++}
++
++/* RFC 9110 Section 5.6.4, qdtext. DQUOTE and backslash are handled by
++ * the quoted-string state machine itself. */
++inline bool isQuotedText(unsigned char c) {
++    return (c == '\t') | (c == ' ') | (c == '!') | ((c >= '#') & (c <= '[')) |
++           ((c >= ']') & (c <= '~')) | (c >= 0x80);
++}
++
++/* RFC 9110 Section 5.6.4, quoted-pair payload. */
++inline bool isQuotedPairCharacter(unsigned char c) {
++    return (c == '\t') | ((c >= ' ') & (c <= '~')) | (c >= 0x80);
++}
++
++/* field-line values can contain HTAB, SP, VCHAR, and obs-text. CRLF is
++ * parsed separately and all other controls, including NUL and DEL, fail. */
++inline bool isFieldValueCharacter(unsigned char c) {
++    return (c == '\t') | ((c >= ' ') & (c <= '~')) | (c >= 0x80);
++}
++
++inline void failChunkedEncoding(uint64_t &state) {
++    state = STATE_IS_ERROR;
++}
++
++/* Are we in the middle of parsing chunked encoding? */
++inline bool isParsingChunkedEncoding(uint64_t state) {
++    return (state & STATE_PHASE_MASK) != 0;
++}
++
++inline bool isParsingInvalidChunkedEncoding(uint64_t state) {
++    return state == STATE_IS_ERROR;
++}
++
++/* Returns the next decoded data span. An empty span is returned only once
++ * the last-chunk, optional trailers, and final CRLF have all been validated.
++ * nullopt means that more input is required or parsing has completed. */
++static std::optional<std::string_view>
++getNextChunk(std::string_view &data, uint64_t &state, bool trailer = false) {
++    (void)trailer;
+ 
+-    inline bool isParsingInvalidChunkedEncoding(uint64_t state) {
+-        return state == STATE_IS_ERROR;
++    if (!state || isParsingInvalidChunkedEncoding(state)) {
++        return std::nullopt;
+     }
+ 
+-    inline void consumeHexNumber(std::string_view &data, uint64_t &state) {
+-        while (data.length()) {
+-            unsigned char c = (unsigned char)data.data()[0];
+-
+-            if (!(state & STATE_EXTENSION_MODE)) {
+-                if (c == ';') { 
+-                    if (!hasChunkSize(state) && (state & STATE_SIZE_MASK) == 0 && !(state & STATE_IS_CHUNKED)) {
+-                        state = STATE_IS_ERROR;
+-                        return;
+-                    }
+-                    state |= STATE_EXTENSION_MODE | STATE_EXTENSION_EXPECTS_NAME;
+-                    data.remove_prefix(1);
+-                    continue;
+-                }
++    while (data.length()) {
++        unsigned char c = (unsigned char)data[0];
++        uint64_t phase = parserPhase(state);
++        uint64_t value = chunkSize(state);
+ 
+-                if (c == '\r') {
+-                    state |= STATE_EXTENSION_MODE | STATE_EXTENSION_EXPECTS_LF;
+-                    data.remove_prefix(1);
+-                    continue;
+-                }
++        if (phase == STATE_SIZE_START) {
++            if (!isHexDigit(c)) [[unlikely]] {
++                failChunkedEncoding(state);
++                return std::nullopt;
++            }
+ 
+-                if (c == '\n') {
+-                    data.remove_prefix(1);
+-                    state += 2; 
+-                    state |= STATE_HAS_SIZE | STATE_IS_CHUNKED;
+-                    state &= ~(STATE_EXTENSION_MODE | STATE_EXTENSION_EXPECTS_NAME | STATE_EXTENSION_IN_NAME | STATE_EXTENSION_QUOTED | STATE_EXTENSION_EXPECTS_LF);
+-                    return;
+-                }
++            state = STATE_SIZE | hexDigitValue(c);
++            data.remove_prefix(1);
++            continue;
++        }
+ 
+-                unsigned int number = 0;
+-                if (c >= '0' && c <= '9') number = c - '0';
+-                else if (c >= 'a' && c <= 'f') number = c - 'a' + 10;
+-                else if (c >= 'A' && c <= 'F') number = c - 'A' + 10;
+-                else {
+-                    state = STATE_IS_ERROR;
+-                    return;
+-                }
++        if (phase == STATE_SIZE) {
++            if (isHexDigit(c)) [[likely]] {
++                unsigned int digit = hexDigitValue(c);
+ 
+-                if (chunkSize(state) & STATE_SIZE_OVERFLOW) {
+-                    state = STATE_IS_ERROR;
+-                    return;
++                if (value > (STATE_VALUE_MASK - digit) / 16ull) [[unlikely]] {
++                    failChunkedEncoding(state);
++                    return std::nullopt;
+                 }
+ 
+-                uint64_t bits = state & STATE_IS_CHUNKED;
+-                state = (state & STATE_SIZE_MASK) * 16ull + number;
+-                state |= bits;
++                state = STATE_SIZE | (value * 16ull + digit);
+                 data.remove_prefix(1);
+-            } else {
+-                if (state & STATE_EXTENSION_EXPECTS_LF) {
+-                    if (c != '\n') {
+-                        state = STATE_IS_ERROR;
+-                        return;
+-                    }
+-                    data.remove_prefix(1);
+-                    state += 2; 
+-                    state |= STATE_HAS_SIZE | STATE_IS_CHUNKED;
+-                    state &= ~(STATE_EXTENSION_MODE | STATE_EXTENSION_EXPECTS_NAME | STATE_EXTENSION_IN_NAME | STATE_EXTENSION_QUOTED | STATE_EXTENSION_EXPECTS_LF);
+-                    return;
+-                }
++                continue;
++            }
++            if (c == '\r') [[likely]] {
++                state = STATE_SIZE_LF | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isBadWhitespace(c)) {
++                state = STATE_EXTENSION_SEPARATOR | value;
++                data.remove_prefix(1);
++                continue;
++            }
+ 
+-                if (c == 0x00 || (c < 0x20 && c != '\r' && c != '\n' && c != '\t')) {
+-                    state = STATE_IS_ERROR;
+-                    return;
+-                }
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-                if (c == '\r') {
+-                    if (state & STATE_EXTENSION_EXPECTS_NAME) {
+-                        state = STATE_IS_ERROR;
+-                        return;
+-                    }
+-                    state |= STATE_EXTENSION_EXPECTS_LF;
+-                    data.remove_prefix(1);
+-                    continue;
+-                }
++        if (phase == STATE_EXTENSION_SEPARATOR) {
++            if (isBadWhitespace(c)) {
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
+ 
+-                if (state & STATE_EXTENSION_EXPECTS_NAME) {
+-                    if (!isValidTokenChar(c)) {
+-                        state = STATE_IS_ERROR;
+-                        return;
+-                    }
+-                    state &= ~STATE_EXTENSION_EXPECTS_NAME;
+-                    state |= STATE_EXTENSION_IN_NAME;
+-                } else if (state & STATE_EXTENSION_IN_NAME) {
+-                    if (c == '=') state &= ~STATE_EXTENSION_IN_NAME;
+-                    else if (c == ';') {
+-                        state &= ~STATE_EXTENSION_IN_NAME;
+-                        state |= STATE_EXTENSION_EXPECTS_NAME;
+-                    } else if (!isValidTokenChar(c)) {
+-                        state = STATE_IS_ERROR;
+-                        return;
+-                    }
+-                } else {
+-                    if (c == '"') state ^= STATE_EXTENSION_QUOTED;
+-                    if (c == ';' && !(state & STATE_EXTENSION_QUOTED)) state |= STATE_EXTENSION_EXPECTS_NAME;
+-                }
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
++        if (phase == STATE_EXTENSION_NAME_START) {
++            if (isBadWhitespace(c)) {
+                 data.remove_prefix(1);
+-                if (c == '\n' && !(state & STATE_EXTENSION_QUOTED)) {
+-                    if (state & STATE_EXTENSION_EXPECTS_NAME) {
+-                        state = STATE_IS_ERROR;
+-                        return;
+-                    }
+-                    state += 2; 
+-                    state |= STATE_HAS_SIZE | STATE_IS_CHUNKED;
+-                    state &= ~(STATE_EXTENSION_MODE | STATE_EXTENSION_EXPECTS_NAME | STATE_EXTENSION_IN_NAME | STATE_EXTENSION_QUOTED | STATE_EXTENSION_EXPECTS_LF);
+-                    return;
+-                }
++                continue;
++            }
++            if (isTokenCharacter(c)) {
++                state = STATE_EXTENSION_NAME | value;
++                data.remove_prefix(1);
++                continue;
+             }
+-        }
+-    }
+ 
+-    static std::optional<std::string_view> getNextChunk(std::string_view &data, uint64_t &state, bool trailer = false) {
+-        while (data.length()) {
+-            
+-            // Standard-compliant Trailer parsing state machine
+-            if (state & STATE_TRAILER_MODE) {
+-                while (data.length()) {
+-                    char c = data.data()[0];
+-                    data.remove_prefix(1);
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-                    if (chunkSize(state) == 0) {
+-                        // Start of line: \r means final empty line, else it's a trailer header
+-                        if (c == '\r') state = (state & ~STATE_SIZE_MASK) | 1;
+-                        else state = (state & ~STATE_SIZE_MASK) | 2;
+-                    } else if (chunkSize(state) == 1) {
+-                        // Expecting \n of final empty line
+-                        if (c == '\n') {
+-                            state = 0; 
+-                            return std::nullopt;
+-                        }
+-                        state = STATE_IS_ERROR;
+-                        return std::nullopt;
+-                    } else if (chunkSize(state) == 2) {
+-                        // Inside trailer header, wait for \r
+-                        if (c == '\r') state = (state & ~STATE_SIZE_MASK) | 3;
+-                    } else if (chunkSize(state) == 3) {
+-                        // Expecting \n to terminate the header line
+-                        if (c == '\n') state = (state & ~STATE_SIZE_MASK) | 0;
+-                        else if (c != '\r') state = (state & ~STATE_SIZE_MASK) | 2;
+-                    }
+-                }
+-                return std::nullopt;
++        if (phase == STATE_EXTENSION_NAME) {
++            if (isTokenCharacter(c)) [[likely]] {
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '=') {
++                state = STATE_EXTENSION_VALUE_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '\r') {
++                state = STATE_SIZE_LF | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isBadWhitespace(c)) {
++                state = STATE_EXTENSION_AFTER_NAME | value;
++                data.remove_prefix(1);
++                continue;
+             }
+ 
+-            // Drop Trailer Mode (Legacy fallback)
+-            if (((state & STATE_IS_CHUNKED) == 0) && hasChunkSize(state) && chunkSize(state)) {
+-                while (data.length() && chunkSize(state)) {
+-                    data.remove_prefix(1);
+-                    decChunkSize(state, 1);
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-                    if (chunkSize(state) == 0) {
+-                        state = 0;
+-                        return std::nullopt;
+-                    }
+-                }
++        if (phase == STATE_EXTENSION_AFTER_NAME) {
++            if (isBadWhitespace(c)) {
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '=') {
++                state = STATE_EXTENSION_VALUE_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
+                 continue;
+             }
+ 
+-            if (!hasChunkSize(state)) {
+-                consumeHexNumber(data, state);
+-                if (isParsingInvalidChunkedEncoding(state)) {
+-                    return std::nullopt;
+-                }
+-                if (hasChunkSize(state) && chunkSize(state) == 2) {
+-                    if (trailer) {
+-                        state = STATE_TRAILER_MODE | 0; 
+-                    } else {
+-                        state = 2 | STATE_HAS_SIZE;
+-                    }
+-                    return std::string_view(nullptr, 0);
+-                }
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
++
++        if (phase == STATE_EXTENSION_VALUE_START) {
++            if (isBadWhitespace(c)) {
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isTokenCharacter(c)) {
++                state = STATE_EXTENSION_TOKEN_VALUE | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '"') {
++                state = STATE_EXTENSION_QUOTED_VALUE | value;
++                data.remove_prefix(1);
+                 continue;
+             }
+ 
+-            // Emit Body Payload Data with strict CRLF enforcement
+-            if (data.length() >= chunkSize(state)) {
+-                std::string_view emitSoon;
+-                bool shouldEmit = false;
+-                
+-                if (chunkSize(state) > 2) {
+-                    if (data[chunkSize(state) - 2] != '\r' || data[chunkSize(state) - 1] != '\n') {
+-                        state = STATE_IS_ERROR;
+-                        return std::nullopt;
+-                    }
+-                    emitSoon = std::string_view(data.data(), chunkSize(state) - 2);
+-                    shouldEmit = true;
+-                } else if (chunkSize(state) == 2) {
+-                    if (data[0] != '\r' || data[1] != '\n') {
+-                        state = STATE_IS_ERROR;
+-                        return std::nullopt;
+-                    }
+-                } else if (chunkSize(state) == 1) {
+-                    if (data[0] != '\n') {
+-                        state = STATE_IS_ERROR;
+-                        return std::nullopt;
+-                    }
+-                }
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-                data.remove_prefix(chunkSize(state));
+-                state = STATE_IS_CHUNKED;
+-                if (shouldEmit) return emitSoon;
++        if (phase == STATE_EXTENSION_TOKEN_VALUE) {
++            if (isTokenCharacter(c)) [[likely]] {
++                data.remove_prefix(1);
+                 continue;
+-            } else {
+-                std::string_view emitSoon;
+-                if (chunkSize(state) > 2) {
+-                    uint64_t maximalAppEmit = chunkSize(state) - 2;
+-                    if (data.length() > maximalAppEmit) {
+-                        // Enforce partial CRLF boundary safety limit
+-                        if (data[maximalAppEmit] != '\r') {
+-                            state = STATE_IS_ERROR;
+-                            return std::nullopt;
+-                        }
+-                        emitSoon = data.substr(0, maximalAppEmit);
+-                    } else {
+-                        emitSoon = data;
+-                    }
+-                } else if (chunkSize(state) == 2) {
+-                    if (data[0] != '\r') {
+-                        state = STATE_IS_ERROR;
+-                        return std::nullopt;
+-                    }
+-                }
++            }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '\r') {
++                state = STATE_SIZE_LF | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isBadWhitespace(c)) {
++                state = STATE_EXTENSION_AFTER_VALUE | value;
++                data.remove_prefix(1);
++                continue;
++            }
++
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
+ 
+-                decChunkSize(state, (unsigned int) data.length());
+-                state |= STATE_IS_CHUNKED;
+-                data.remove_prefix(data.length());
+-                if (emitSoon.length()) return emitSoon;
+-                else return std::nullopt;
++        if (phase == STATE_EXTENSION_AFTER_VALUE) {
++            if (isBadWhitespace(c)) {
++                data.remove_prefix(1);
++                continue;
+             }
++            if (c == ';') {
++                state = STATE_EXTENSION_NAME_START | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '\r') {
++                state = STATE_SIZE_LF | value;
++                data.remove_prefix(1);
++                continue;
++            }
++
++            failChunkedEncoding(state);
++            return std::nullopt;
+         }
+ 
+-        return std::nullopt;
+-    }
++        if (phase == STATE_EXTENSION_QUOTED_VALUE) {
++            if (c == '"') {
++                state = STATE_EXTENSION_AFTER_VALUE | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c == '\\') {
++                state = STATE_EXTENSION_QUOTED_PAIR | value;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (isQuotedText(c)) {
++                data.remove_prefix(1);
++                continue;
++            }
+ 
+-    struct ChunkIterator {
+-        std::string_view *data;
+-        std::optional<std::string_view> chunk;
+-        uint64_t *state;
+-        bool trailer;
++            failChunkedEncoding(state);
++            return std::nullopt;
++        }
++
++        if (phase == STATE_EXTENSION_QUOTED_PAIR) {
++            if (!isQuotedPairCharacter(c)) [[unlikely]] {
++                failChunkedEncoding(state);
++                return std::nullopt;
++            }
+ 
+-        ChunkIterator(std::string_view *data, uint64_t *state, bool trailer = false) : data(data), state(state), trailer(trailer) {
+-            chunk = uWS::getNextChunk(*data, *state, trailer);
++            state = STATE_EXTENSION_QUOTED_VALUE | value;
++            data.remove_prefix(1);
++            continue;
+         }
+ 
+-        ChunkIterator() {}
++        if (phase == STATE_SIZE_LF) {
++            if (c != '\n') [[unlikely]] {
++                failChunkedEncoding(state);
++                return std::nullopt;
++            }
++
++            state = value ? STATE_DATA | value : STATE_TRAILER | TRAILER_LINE_START;
++            data.remove_prefix(1);
++            continue;
++        }
+ 
+-        ChunkIterator begin() { return *this; }
+-        ChunkIterator end() { return ChunkIterator(); }
++        if (phase == STATE_DATA) {
++            size_t emittable = (size_t)std::min<uint64_t>(value, data.length());
++            std::string_view emitSoon = data.substr(0, emittable);
+ 
+-        std::string_view operator*() {
+-            if (!chunk.has_value()) std::abort();
+-            return chunk.value();
++            data.remove_prefix(emittable);
++            state = emittable == value ? STATE_DATA_CRLF : STATE_DATA | (value - emittable);
++            return emitSoon;
+         }
+ 
+-        bool operator!=(const ChunkIterator &other) const {
+-            return other.chunk.has_value() != chunk.has_value();
++        if (phase == STATE_DATA_CRLF) {
++            if (value == 0) {
++                if (c != '\r') [[unlikely]] {
++                    failChunkedEncoding(state);
++                    return std::nullopt;
++                }
++
++                state = STATE_DATA_CRLF | 1;
++                data.remove_prefix(1);
++                continue;
++            }
++            if (c != '\n') [[unlikely]] {
++                failChunkedEncoding(state);
++                return std::nullopt;
++            }
++
++            state = STATE_SIZE_START;
++            data.remove_prefix(1);
++            continue;
+         }
+ 
+-        ChunkIterator &operator++() {
+-            chunk = uWS::getNextChunk(*data, *state, trailer);
+-            return *this;
++        if (phase == STATE_TRAILER) {
++            if (value == TRAILER_LINE_START) {
++                if (c == '\r') {
++                    state = STATE_TRAILER | TRAILER_END_LF;
++                    data.remove_prefix(1);
++                    continue;
++                }
++                if (isTokenCharacter(c)) {
++                    state = STATE_TRAILER | TRAILER_NAME;
++                    data.remove_prefix(1);
++                    continue;
++                }
++            } else if (value == TRAILER_NAME) {
++                if (isTokenCharacter(c)) [[likely]] {
++                    data.remove_prefix(1);
++                    continue;
++                }
++                if (c == ':') {
++                    state = STATE_TRAILER | TRAILER_VALUE;
++                    data.remove_prefix(1);
++                    continue;
++                }
++            } else if (value == TRAILER_VALUE) {
++                if (c == '\r') {
++                    state = STATE_TRAILER | TRAILER_LINE_LF;
++                    data.remove_prefix(1);
++                    continue;
++                }
++                if (isFieldValueCharacter(c)) {
++                    data.remove_prefix(1);
++                    continue;
++                }
++            } else if (value == TRAILER_LINE_LF) {
++                if (c == '\n') {
++                    state = STATE_TRAILER | TRAILER_LINE_START;
++                    data.remove_prefix(1);
++                    continue;
++                }
++            } else if (value == TRAILER_END_LF && c == '\n') {
++                state = 0;
++                data.remove_prefix(1);
++                return std::string_view(nullptr, 0);
++            }
++
++            failChunkedEncoding(state);
++            return std::nullopt;
+         }
+-    };
++
++        failChunkedEncoding(state);
++        return std::nullopt;
++    }
++
++    return std::nullopt;
+ }
+ 
++/* This is really just a wrapper for convenience */
++struct ChunkIterator {
++
++    std::string_view *data;
++    std::optional<std::string_view> chunk;
++    uint64_t *state;
++    bool trailer;
++
++    ChunkIterator(std::string_view *data, uint64_t *state, bool trailer = false)
++        : data(data), state(state), trailer(trailer) {
++        chunk = uWS::getNextChunk(*data, *state, trailer);
++    }
++
++    ChunkIterator() {}
++
++    ChunkIterator begin() {
++        return *this;
++    }
++
++    ChunkIterator end() {
++        return ChunkIterator();
++    }
++
++    std::string_view operator*() {
++        if (!chunk.has_value()) {
++            std::abort();
++        }
++        return chunk.value();
++    }
++
++    bool operator!=(const ChunkIterator &other) const {
++        return other.chunk.has_value() != chunk.has_value();
++    }
++
++    ChunkIterator &operator++() {
++        chunk = uWS::getNextChunk(*data, *state, trailer);
++        return *this;
++    }
++};
++} // namespace uWS
++
+ #endif // UWS_CHUNKEDENCODING_H
+diff --git a/src/ForwardedAddress.h b/src/ForwardedAddress.h
+new file mode 100644
+index 0000000..fad6099
+--- /dev/null
++++ b/src/ForwardedAddress.h
+@@ -0,0 +1,117 @@
++/*
++ * SwarmMachina trusted-ingress forwarded-address parser.
++ *
++ * Licensed under the Apache License, Version 2.0.
++ */
++
++#ifndef UWS_FORWARDEDADDRESS_H
++#define UWS_FORWARDEDADDRESS_H
++
++#ifdef _WIN32
++#include <ws2tcpip.h>
++#else
++#include <arpa/inet.h>
++#endif
++
++#include <array>
++#include <cstddef>
++#include <cstring>
++#include <string_view>
++
++#include "HttpTransportConfig.h"
++
++namespace uWS {
++
++class ForwardedAddress final {
++public:
++    void reset() noexcept {
++        length_ = 0;
++    }
++
++    [[nodiscard]] bool assign(
++        TrustedProxyHeader header,
++        unsigned int hops,
++        std::string_view value) noexcept {
++        reset();
++
++        if (header == TrustedProxyHeader::None) {
++            return true;
++        }
++
++        if (header == TrustedProxyHeader::XRealIp) {
++            return parseAddress(trimOws(value));
++        }
++
++        std::string_view remaining = value;
++        for (unsigned int hop = 1; hop <= hops; hop++) {
++            remaining = trimOws(remaining);
++            if (remaining.empty()) {
++                return false;
++            }
++
++            const std::size_t comma = remaining.rfind(',');
++            const std::string_view candidate = trimOws(
++                comma == std::string_view::npos
++                    ? remaining
++                    : remaining.substr(comma + 1));
++
++            /* Every skipped entry is a nearer trusted hop and must itself be valid. */
++            if (!parseAddress(candidate)) {
++                return false;
++            }
++            if (hop == hops) {
++                return true;
++            }
++            if (comma == std::string_view::npos) {
++                return false;
++            }
++            remaining = remaining.substr(0, comma);
++        }
++
++        return false;
++    }
++
++    [[nodiscard]] std::string_view bytes() const noexcept {
++        return {reinterpret_cast<const char *>(bytes_.data()), length_};
++    }
++
++private:
++    [[nodiscard]] static std::string_view trimOws(std::string_view value) noexcept {
++        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
++            value.remove_prefix(1);
++        }
++        while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) {
++            value.remove_suffix(1);
++        }
++        return value;
++    }
++
++    [[nodiscard]] bool parseAddress(std::string_view value) noexcept {
++        /* Longest RFC 4291 text form is 45 bytes, excluding the terminator. */
++        std::array<char, 46> text{};
++        if (value.empty() || value.size() >= text.size()) {
++            return false;
++        }
++        std::memcpy(text.data(), value.data(), value.size());
++
++        std::array<unsigned char, 16> parsed{};
++        if (inet_pton(AF_INET, text.data(), parsed.data()) == 1) {
++            bytes_ = parsed;
++            length_ = 4;
++            return true;
++        }
++        if (inet_pton(AF_INET6, text.data(), parsed.data()) == 1) {
++            bytes_ = parsed;
++            length_ = 16;
++            return true;
++        }
++        return false;
++    }
++
++    std::array<unsigned char, 16> bytes_{};
++    std::size_t length_ = 0;
++};
++
++}  // namespace uWS
++
++#endif  // UWS_FORWARDEDADDRESS_H
+diff --git a/src/HttpCache.h b/src/HttpCache.h
+index 6b2fcde..448f6a1 100644
+--- a/src/HttpCache.h
++++ b/src/HttpCache.h
+@@ -53,7 +53,7 @@ struct HttpCacheOptions {
+     unsigned int lowerExpiry, upperExpiry;
+ };
+ 
+-unsigned long time_ms() {
++inline unsigned long time_ms() {
+     auto now = std::chrono::steady_clock::now();
+ 
+     // 2. Extract duration since epoch and cast to milliseconds
+diff --git a/src/HttpContext.h b/src/HttpContext.h
+index 79de776..a8cbb3c 100644
+--- a/src/HttpContext.h
++++ b/src/HttpContext.h
+@@ -40,12 +40,6 @@ struct HttpContext {
+ private:
+     HttpContext() = delete;
+ 
+-    /* Maximum delay allowed until an HTTP connection is terminated due to outstanding request or rejected data (slow loris protection) */
+-    static const int HTTP_IDLE_TIMEOUT_S = 10;
+-
+-    /* Minimum allowed receive throughput per second (clients uploading less than 16kB/sec get dropped) */
+-    static const int HTTP_RECEIVE_THROUGHPUT_BYTES = 16 * 1024;
+-
+     us_loop_t *getLoop() {
+         return us_socket_context_loop(SSL, getSocketContext());
+     }
+@@ -70,11 +64,19 @@ private:
+     HttpContext<SSL> *init() {
+         /* Handle socket connections */
+         us_socket_context_on_open(SSL, getSocketContext(), [](us_socket_t *s, int /*is_client*/, char *ip, int ip_length) {
++            HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
++            httpContextData->transportStats.activeConnections++;
++
+             /* Any connected socket should timeout until it has a request */
+-            us_socket_timeout(SSL, s, HTTP_IDLE_TIMEOUT_S);
++            us_socket_timeout(
++                SSL,
++                s,
++                httpContextData->transportConfig.headersTimeoutSeconds);
+ 
+             /* Init socket ext */
+-            new (us_socket_ext(SSL, s)) HttpResponseData<SSL>;
++            new (us_socket_ext(SSL, s)) HttpResponseData<SSL>(
++                &httpContextData->transportConfig,
++                &httpContextData->transportStats);
+ 
+ #ifdef UWS_REMOTE_ADDRESS_USERSPACE
+             /* Copy remote address into per-socket cache for later retrieval */
+@@ -91,9 +93,11 @@ private:
+ #endif
+ 
+             /* Call filter */
+-            HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
+             for (auto &f : httpContextData->filterHandlers) {
+                 f((HttpResponse<SSL> *) s, 1);
++                if (us_socket_is_closed(SSL, s)) {
++                    return s;
++                }
+             }
+ 
+             return s;
+@@ -106,6 +110,9 @@ private:
+ 
+             /* Call filter */
+             HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
++            if (httpContextData->transportStats.activeConnections) {
++                httpContextData->transportStats.activeConnections--;
++            }
+             for (auto &f : httpContextData->filterHandlers) {
+                 f((HttpResponse<SSL> *) s, -1);
+             }
+@@ -139,6 +146,14 @@ private:
+ 
+             HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, s);
+ 
++            if (httpResponseData->transportPhase == HttpTransportPhase::KeepAliveIdle) {
++                httpResponseData->transportPhase = HttpTransportPhase::HeadersReading;
++                us_socket_timeout(
++                    SSL,
++                    s,
++                    httpResponseData->transportConfig->headersTimeoutSeconds);
++            }
++
+             /* Cork this socket */
+             ((AsyncSocket<SSL> *) s)->cork();
+ 
+@@ -148,10 +163,11 @@ private:
+             // clients need to know the cursor after http parse, not servers!
+             // how far did we read then? we need to know to continue with websocket parsing data? or?
+ 
++            /* An explicit trusted HTTP header replaces the legacy binary PROXY v2 mode. */
+             void *proxyParser = nullptr;
+-#ifdef UWS_WITH_PROXY
+-            proxyParser = &httpResponseData->proxyParser;
+-#endif
++            if (httpResponseData->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
++                proxyParser = &httpResponseData->proxyParser;
++            }
+ 
+             /* The return value is entirely up to us to interpret. The HttpParser only care for whether the returned value is DIFFERENT or not from passed user */
+             auto [err, returnedSocket] = httpResponseData->consumePostPadded(data, (unsigned int) length, s, proxyParser, [httpContextData](void *s, HttpRequest *httpRequest) -> void * {
+@@ -162,6 +178,9 @@ private:
+                 /* Reset httpResponse */
+                 HttpResponseData<SSL> *httpResponseData = (HttpResponseData<SSL> *) us_socket_ext(SSL, (us_socket_t *) s);
+                 httpResponseData->offset = 0;
++                httpResponseData->received_bytes_per_timeout = 0;
++                httpResponseData->receivedBodySinceTimeout = false;
++                httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
+ 
+                 /* Are we not ready for another request yet? Terminate the connection.
+                  * Important for denying async pipelining until, if ever, we want to suppot it.
+@@ -224,32 +243,49 @@ private:
+ 
+                 /* If we have not responded and we have a data handler, we need to timeout to enfore client sending the data */
+                 if (!((HttpResponse<SSL> *) s)->hasResponded() && httpResponseData->inStream) {
+-                    us_socket_timeout(SSL, (us_socket_t *) s, HTTP_IDLE_TIMEOUT_S);
++                    httpResponseData->transportPhase = HttpTransportPhase::BodyReading;
++                    us_socket_timeout(
++                        SSL,
++                        (us_socket_t *) s,
++                        httpResponseData->transportConfig->bodyIdleTimeoutSeconds);
+                 }
+ 
+                 /* Continue parsing */
+                 return s;
+ 
+-            }, [httpResponseData](void *user, std::string_view data, uint64_t maxRemainingBodyLength) -> void * {
++            }, [httpResponseData, httpContextData](void *user, std::string_view data, uint64_t maxRemainingBodyLength) -> void * {
+                 /* We always get an empty chunk even if there is no data */
+                 if (httpResponseData->inStream) {
+ 
+                     /* Todo: can this handle timeout for non-post as well? */
+                     if (maxRemainingBodyLength == 0) {
+                         /* If we just got the last chunk (or empty chunk), disable timeout */
++                        httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
+                         us_socket_timeout(SSL, (struct us_socket_t *) user, 0);
+                     } else {
+-                        /* We still have some more data coming in later, so reset timeout */
+-                        /* Only reset timeout if we got enough bytes (16kb/sec) since last time we reset here */
+-                        httpResponseData->received_bytes_per_timeout += (unsigned int) data.length();
+-                        if (httpResponseData->received_bytes_per_timeout >= HTTP_RECEIVE_THROUGHPUT_BYTES * HTTP_IDLE_TIMEOUT_S) {
+-                            us_socket_timeout(SSL, (struct us_socket_t *) user, HTTP_IDLE_TIMEOUT_S);
++                        httpResponseData->transportPhase = HttpTransportPhase::BodyReading;
++                        httpResponseData->receivedBodySinceTimeout =
++                            httpResponseData->receivedBodySinceTimeout || !data.empty();
++                        httpResponseData->received_bytes_per_timeout += data.length();
++                        if (httpResponseData->received_bytes_per_timeout >=
++                            httpResponseData->transportConfig->bodyRateResetThresholdBytes) {
++                            us_socket_timeout(
++                                SSL,
++                                (struct us_socket_t *) user,
++                                httpResponseData->transportConfig->bodyIdleTimeoutSeconds);
+                             httpResponseData->received_bytes_per_timeout = 0;
++                            httpResponseData->receivedBodySinceTimeout = false;
+                         }
+                     }
+ 
+                     /* We might respond in the handler, so do not change timeout after this */
+-                    httpResponseData->inStream(data, maxRemainingBodyLength);
++                    /* Keep the callback alive if upgrade destroys the HTTP extension. */
++                    auto generation = httpResponseData->inStreamGeneration;
++                    auto handler = std::move(httpResponseData->inStream);
++                    handler(data, maxRemainingBodyLength);
++                    if (httpContextData->upgradedWebSocket) {
++                        return nullptr;
++                    }
+ 
+                     /* Was the socket closed? */
+                     if (us_socket_is_closed(SSL, (struct us_socket_t *) user)) {
+@@ -263,8 +299,12 @@ private:
+ 
+                     /* If we were given the last data chunk, reset data handler to ensure following
+                      * requests on the same socket won't trigger any previously registered behavior */
+-                    if (maxRemainingBodyLength == 0) {
+-                        httpResponseData->inStream = nullptr;
++                    if (generation == httpResponseData->inStreamGeneration && maxRemainingBodyLength != 0) {
++                        httpResponseData->inStream = std::move(handler);
++                    }
++                    if (maxRemainingBodyLength == 0 && ((HttpResponse<SSL> *) user)->hasResponded()) {
++                        /* A completed early response still needs a keep-alive or write timeout. */
++                        ((HttpResponse<SSL> *) user)->armAfterResponseProgress();
+                     }
+                 }
+                 return user;
+@@ -275,6 +315,13 @@ private:
+ 
+             /* If we got fullptr that means the parser wants us to close the socket from error (same as calling the errorHandler) */
+             if (returnedSocket == FULLPTR) {
++                if (httpResponseData->GetLimitViolation() ==
++                    HttpParser::LimitViolation::HeaderCount) {
++                    httpContextData->transportStats.headerCountExceeded++;
++                } else if (httpResponseData->GetLimitViolation() ==
++                           HttpParser::LimitViolation::HeaderSize) {
++                    httpContextData->transportStats.headerTooLarge++;
++                }
+                 /* For errors, we only deliver them "at most once". We don't care if they get halfways delivered or not. */
+                 us_socket_write(SSL, s, httpErrorResponses[err].data(), (int) httpErrorResponses[err].length(), false);
+                 us_socket_shutdown(SSL, s);
+@@ -286,12 +333,19 @@ private:
+ 
+             /* We need to uncork in all cases, except for nullptr (closed socket, or upgraded socket) */
+             if (returnedSocket != nullptr) {
++                if (httpResponseData->HasIncompleteHeaders()) {
++                    httpResponseData->transportPhase = HttpTransportPhase::HeadersReading;
++                    us_socket_timeout(
++                        SSL,
++                        s,
++                        httpResponseData->transportConfig->headersTimeoutSeconds);
++                }
+                 /* Timeout on uncork failure */
+                 auto [written, failed] = ((AsyncSocket<SSL> *) returnedSocket)->uncork();
+                 if (failed) {
+-                    /* All Http sockets timeout by this, and this behavior match the one in HttpResponse::cork */
+-                    /* Warning: both HTTP_IDLE_TIMEOUT_S and HTTP_TIMEOUT_S are 10 seconds and both are used the same */
+-                    ((AsyncSocket<SSL> *) s)->timeout(HTTP_IDLE_TIMEOUT_S);
++                    httpResponseData->transportPhase = HttpTransportPhase::ResponseBlocked;
++                    ((AsyncSocket<SSL> *) s)->timeout(
++                        httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+                 }
+ 
+                 /* We need to check if we should close this socket here now */
+@@ -317,6 +371,14 @@ private:
+                 /* Uncork here as well (note: what if we failed to uncork and we then pub/sub before we even upgraded?) */
+                 auto [written, failed] = asyncSocket->uncork();
+ 
++                /* The open handler can synchronously close the upgraded socket.
++                 * Uncork first to release loop state, then stop before reading
++                 * the already-destroyed WebSocketData extension. */
++                if (us_socket_is_closed(SSL, (us_socket_t *) asyncSocket)) {
++                    httpContextData->upgradedWebSocket = nullptr;
++                    return (us_socket_t *) asyncSocket;
++                }
++
+                 /* If we succeeded in uncorking, check if we have sent WebSocket FIN */
+                 if (!failed) {
+                     WebSocketData *webSocketData = (WebSocketData *) asyncSocket->getAsyncSocketData();
+@@ -355,8 +417,19 @@ private:
+                  * If write was never called, the developer should still return true so that we may drain. */
+                 bool success = httpResponseData->callOnWritable(httpResponseData->offset);
+ 
++                /* User code may close this socket or its entire context. Do not
++                 * touch HttpResponseData after that callback. */
++                if (us_socket_is_closed(SSL, s)) {
++                    return s;
++                }
++
+                 /* The developer indicated that their onWritable failed. */
+                 if (!success) {
++                    httpResponseData->transportPhase = HttpTransportPhase::ResponseBlocked;
++                    us_socket_timeout(
++                        SSL,
++                        s,
++                        httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+                     /* Skip testing if we can drain anything since that might perform an extra syscall */
+                     return s;
+                 }
+@@ -377,12 +450,24 @@ private:
+                         /* We need to force close after sending FIN since we want to hinder
+                          * clients from keeping to send their huge data */
+                         asyncSocket->close();
++                        return s;
+                     }
+                 }
+             }
+ 
+-            /* Expect another writable event, or another request within the timeout */
+-            asyncSocket->timeout(HTTP_IDLE_TIMEOUT_S);
++            if (asyncSocket->getBufferedAmount()) {
++                httpResponseData->transportPhase = HttpTransportPhase::ResponseBlocked;
++                asyncSocket->timeout(
++                    httpResponseData->transportConfig->responseWriteTimeoutSeconds);
++            } else if ((httpResponseData->state &
++                        HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
++                httpResponseData->transportPhase = HttpTransportPhase::KeepAliveIdle;
++                asyncSocket->timeout(
++                    httpResponseData->transportConfig->keepAliveTimeoutSeconds);
++            } else {
++                httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
++                asyncSocket->timeout(0);
++            }
+ 
+             return s;
+         });
+@@ -399,6 +484,28 @@ private:
+         /* Handle socket timeouts, simply close them so to not confuse client with FIN */
+         us_socket_context_on_timeout(SSL, getSocketContext(), [](us_socket_t *s) {
+ 
++            HttpResponseData<SSL> *httpResponseData =
++                (HttpResponseData<SSL> *) us_socket_ext(SSL, s);
++            switch (httpResponseData->transportPhase) {
++                case HttpTransportPhase::HeadersReading:
++                    httpResponseData->transportStats->headerTimeouts++;
++                    break;
++                case HttpTransportPhase::BodyReading:
++                    if (httpResponseData->transportConfig->minBodyRateBytesPerSec &&
++                        httpResponseData->receivedBodySinceTimeout) {
++                        httpResponseData->transportStats->bodyRateViolations++;
++                    } else {
++                        httpResponseData->transportStats->bodyTimeouts++;
++                    }
++                    break;
++                case HttpTransportPhase::ResponseBlocked:
++                    httpResponseData->transportStats->responseWriteTimeouts++;
++                    break;
++                case HttpTransportPhase::HandlerResponse:
++                case HttpTransportPhase::KeepAliveIdle:
++                    break;
++            }
++
+             /* Force close rather than gracefully shutdown and risk confusing the client with a complete download */
+             AsyncSocket<SSL> *asyncSocket = (AsyncSocket<SSL> *) s;
+             return asyncSocket->close();
+@@ -410,7 +517,10 @@ private:
+ 
+ public:
+     /* Construct a new HttpContext using specified loop */
+-    static HttpContext *create(Loop *loop, us_socket_context_options_t options = {}) {
++    static HttpContext *create(
++        Loop *loop,
++        us_socket_context_options_t options = {},
++        const HttpTransportConfig &transportConfig = {}) {
+         HttpContext *httpContext;
+ 
+         httpContext = (HttpContext *) us_create_socket_context(SSL, (us_loop_t *) loop, sizeof(HttpContextData<SSL>), options);
+@@ -420,7 +530,7 @@ public:
+         }
+ 
+         /* Init socket context data */
+-        new ((HttpContextData<SSL> *) us_socket_context_ext(SSL, (us_socket_context_t *) httpContext)) HttpContextData<SSL>();
++        new ((HttpContextData<SSL> *) us_socket_context_ext(SSL, (us_socket_context_t *) httpContext)) HttpContextData<SSL>(transportConfig);
+         return httpContext->init();
+     }
+ 
+diff --git a/src/HttpContextData.h b/src/HttpContextData.h
+index 8337a3a..4806f2d 100644
+--- a/src/HttpContextData.h
++++ b/src/HttpContextData.h
+@@ -19,6 +19,7 @@
+ #define UWS_HTTPCONTEXTDATA_H
+ 
+ #include "HttpRouter.h"
++#include "HttpTransportConfig.h"
+ 
+ #include <vector>
+ #include "MoveOnlyFunction.h"
+@@ -32,6 +33,10 @@ struct alignas(16) HttpContextData {
+     template <bool> friend struct HttpContext;
+     template <bool> friend struct HttpResponse;
+     template <bool> friend struct TemplatedApp;
++public:
++    explicit HttpContextData(const HttpTransportConfig &transportConfig)
++        : transportConfig(transportConfig) {}
++
+ private:
+     std::vector<MoveOnlyFunction<void(HttpResponse<SSL> *, int)>> filterHandlers;
+ 
+@@ -53,6 +58,10 @@ private:
+     /* If we are main acceptor, distribute to these apps */
+     std::vector<void *> childApps;
+     unsigned int roundRobin = 0;
++
++    /* Transport policy and observability are cold relative to router dispatch. */
++    const HttpTransportConfig transportConfig;
++    HttpTransportStats transportStats;
+ };
+ 
+ }
+diff --git a/src/HttpParser.h b/src/HttpParser.h
+index 4da7704..3fd78ac 100644
+--- a/src/HttpParser.h
++++ b/src/HttpParser.h
+@@ -30,11 +30,13 @@
+ #include <map>
+ #include "MoveOnlyFunction.h"
+ #include "ChunkedEncoding.h"
++#include "ForwardedAddress.h"
+ 
+ #include "BloomFilter.h"
+ #include "ProxyParser.h"
+ #include "QueryParser.h"
+ #include "HttpErrors.h"
++#include "HttpTransportConfig.h"
+ 
+ namespace uWS {
+ 
+@@ -42,17 +44,6 @@ namespace uWS {
+ static const unsigned int MINIMUM_HTTP_POST_PADDING = 32;
+ static void *FULLPTR = (void *)~(uintptr_t)0;
+ 
+-/* STL needs one of these */
+-template <typename T>
+-std::optional<T *> optional_ptr(T *ptr) {
+-    return ptr ? std::optional<T *>(ptr) : std::nullopt;
+-}
+-
+-static const size_t MAX_FALLBACK_SIZE = (size_t) atoi(optional_ptr(getenv("UWS_HTTP_MAX_HEADERS_SIZE")).value_or((char *) "4096"));
+-#ifndef UWS_HTTP_MAX_HEADERS_COUNT
+-#define UWS_HTTP_MAX_HEADERS_COUNT 100
+-#endif
+-
+ struct HttpRequest {
+ 
+     friend struct HttpParser;
+@@ -60,7 +51,7 @@ struct HttpRequest {
+ private:
+     struct Header {
+         std::string_view key, value;
+-    } headers[UWS_HTTP_MAX_HEADERS_COUNT];
++    } headers[MAX_HEADER_COUNT_CAPACITY + 2];
+     bool ancientHttp;
+     unsigned int querySeparator;
+     bool didYield;
+@@ -205,28 +196,77 @@ public:
+ 
+ struct HttpParser {
+ 
++public:
++    enum class LimitViolation : std::uint8_t {
++        None,
++        HeaderSize,
++        HeaderCount,
++    };
++
+ private:
++    const HttpTransportConfig *transportConfig_;
++    ForwardedAddress forwardedAddress_;
+     std::string fallback;
+     /* This guy really has only 30 bits since we reserve two highest bits to chunked encoding parsing state */
+     uint64_t remainingStreamingBytes = 0;
++    bool hasDeclaredBodyLength_ = false;
++
++    [[nodiscard]] std::string_view trustedProxyHeaderName() const noexcept {
++        switch (transportConfig_->trustedProxyHeader) {
++        case TrustedProxyHeader::XForwardedFor:
++            return "x-forwarded-for";
++        case TrustedProxyHeader::XRealIp:
++            return "x-real-ip";
++        case TrustedProxyHeader::None:
++            return {};
++        }
++        return {};
++    }
+ 
+-    /* Returns UINT64_MAX on error. Maximum 999999999 is allowed. */
++    /* Returns UINT64_MAX on error. Content-Length is exposed to JavaScript as a
++     * Number, so reject values above its largest exactly representable integer. */
+     static uint64_t toUnsignedInteger(std::string_view str) {
+-        /* We assume at least 64-bit integer giving us safely 999999999999999999 (18 number of 9s) */
+-        if (str.length() > 18) {
++        static constexpr uint64_t MAX_SAFE_CONTENT_LENGTH = 9007199254740991ull;
++
++        if (!str.length()) {
+             return UINT64_MAX;
+         }
+ 
+         uint64_t unsignedIntegerValue = 0;
+         for (char c : str) {
+-            /* As long as the letter is 0-9 we cannot overflow. */
+             if (c < '0' || c > '9') {
+                 return UINT64_MAX;
+             }
+-            unsignedIntegerValue = unsignedIntegerValue * 10ull + ((unsigned int) c - (unsigned int) '0');
++            const uint64_t digit = (unsigned int) c - (unsigned int) '0';
++            if (unsignedIntegerValue > (MAX_SAFE_CONTENT_LENGTH - digit) / 10ull) {
++                return UINT64_MAX;
++            }
++            unsignedIntegerValue = unsignedIntegerValue * 10ull + digit;
+         }
+         return unsignedIntegerValue;
+     }
++
++    static bool isChunkedTransferEncoding(std::string_view value) {
++        static constexpr std::string_view chunked = "chunked";
++
++        if (value.length() != chunked.length()) {
++            return false;
++        }
++
++        for (size_t i = 0; i < chunked.length(); i++) {
++            unsigned char c = (unsigned char) value[i];
++
++            if (c >= 'A' && c <= 'Z') {
++                c |= 32;
++            }
++
++            if (c != (unsigned char) chunked[i]) {
++                return false;
++            }
++        }
++
++        return true;
++    }
+     
+     static inline uint64_t hasLess(uint64_t x, uint64_t n) {
+         return (((x)-~0ULL/255*(n))&~(x)&~0ULL/255*128);
+@@ -364,30 +404,31 @@ private:
+     }
+ 
+     /* End is only used for the proxy parser. The HTTP parser recognizes "\ra" as invalid "\r\n" scan and breaks. */
+-    static unsigned int getHeaders(char *postPaddedBuffer, char *end, struct HttpRequest::Header *headers, void *reserved, unsigned int &err) {
++    unsigned int getHeaders(char *postPaddedBuffer, char *end, struct HttpRequest::Header *headers, void *reserved, unsigned int &err) {
+         char *preliminaryKey, *preliminaryValue, *start = postPaddedBuffer;
+ 
+         #ifdef UWS_WITH_PROXY
+-            /* ProxyParser is passed as reserved parameter */
+-            ProxyParser *pp = (ProxyParser *) reserved;
+-
+-            /* Parse PROXY protocol */
+-            auto [done, offset] = pp->parse({postPaddedBuffer, (size_t) (end - postPaddedBuffer)});
+-            if (!done) {
+-                /* We do not reset the ProxyParser (on filure) since it is tied to this
+-                * connection, which is really only supposed to ever get one PROXY frame
+-                * anyways. We do however allow multiple PROXY frames to be sent (overwrites former). */
+-                return 0;
+-            } else {
+-                /* We have consumed this data so skip it */
++            if (reserved) {
++                /* Parse PROXY protocol only in legacy mode. */
++                ProxyParser *pp = (ProxyParser *) reserved;
++                auto [done, offset] = pp->parse({postPaddedBuffer, (size_t) (end - postPaddedBuffer)});
++                if (!done) {
++                    return 0;
++                }
+                 postPaddedBuffer += offset;
+             }
+         #else
+-            /* This one is unused */
+             (void) reserved;
+             (void) end;
+         #endif
+ 
++        /* A trusted-header App intentionally does not accept binary PROXY v2. */
++        if (!reserved && end - postPaddedBuffer >= 4 &&
++            !memcmp(postPaddedBuffer, "\r\n\r\n", 4)) {
++            err = HTTP_ERROR_400_BAD_REQUEST;
++            return 0;
++        }
++
+         /* It is critical for fallback buffering logic that we only return with success
+          * if we managed to parse a complete HTTP request (minus data). Returning success
+          * for PROXY means we can end up succeeding, yet leaving bytes in the fallback buffer
+@@ -396,13 +437,13 @@ private:
+         /* The request line is different from the field names / field values */
+         if ((char *) 2 > (postPaddedBuffer = consumeRequestLine(postPaddedBuffer, end, headers[0]))) {
+             /* Error - invalid request line */
+-            /* Assuming it is 400 Bad Request */
+-            err = postPaddedBuffer ? HTTP_ERROR_400_BAD_REQUEST : 0;
++            /* Preserve the binding contract for unsupported HTTP versions. */
++            err = postPaddedBuffer ? HTTP_ERROR_505_HTTP_VERSION_NOT_SUPPORTED : 0;
+             return 0;
+         }
+         headers++;
+ 
+-        for (unsigned int i = 1; i < UWS_HTTP_MAX_HEADERS_COUNT - 1; i++) {
++        for (unsigned int i = 0; i < transportConfig_->maxHeaderCount; i++) {
+             /* Lower case and consume the field name */
+             preliminaryKey = postPaddedBuffer;
+             postPaddedBuffer = (char *) consumeFieldName(postPaddedBuffer);
+@@ -477,7 +518,8 @@ private:
+             }
+         }
+         /* We ran out of header space, too large request */
+-        err = HTTP_ERROR_400_BAD_REQUEST;//HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE;
++        limitViolation_ = LimitViolation::HeaderCount;
++        err = HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE;
+         return 0;
+     }
+ 
+@@ -490,7 +532,7 @@ private:
+         }
+         return false;
+     }
+-    
++
+     /* This is the only caller of getHeaders and is thus the deepest part of the parser.
+      * From here we return either [consumed, user] for "keep going",
+       * or [consumed, nullptr] for "break; I am closed or upgraded to websocket"
+@@ -513,32 +555,65 @@ private:
+             consumedTotal += consumed;
+ 
+             /* Even if we could parse it, check for length here as well */
+-            if (consumed > MAX_FALLBACK_SIZE) {
+-                return {HTTP_ERROR_400_BAD_REQUEST /*HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE*/, FULLPTR};
++            if (consumed > transportConfig_->maxHeaderSize) {
++                limitViolation_ = LimitViolation::HeaderSize;
++                return {HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE, FULLPTR};
+             }
+ 
+             /* Store HTTP version (ancient 1.0 or 1.1) */
+             req->ancientHttp = false;
+ 
+-            /* Add all headers to bloom filter */
++            /* Add all headers to bloom filter and reject request framing fields
++             * that cannot be combined safely by downstream HTTP hops. */
+             req->bf.reset();
++            bool hasHost = false;
++            bool hasContentLength = false;
++            bool hasTransferEncoding = false;
++            bool hasTrustedProxyHeader = false;
++            std::string_view contentLengthString;
++            std::string_view transferEncodingString;
++            std::string_view trustedProxyValue;
++            forwardedAddress_.reset();
+             for (HttpRequest::Header *h = req->headers; (++h)->key.length(); ) {
+-                if (req->bf.mightHave(h->key)) [[unlikely]] {
+-                    /* Host header is not allowed twice */
+-                    if (h->key == "host" && req->getHeader("host").data()) {
++                if (h->key == "host") {
++                    if (hasHost) [[unlikely]] {
++                        return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++                    }
++                    hasHost = true;
++                } else if (h->key == "content-length") {
++                    if (hasContentLength) [[unlikely]] {
++                        return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++                    }
++                    hasContentLength = true;
++                    contentLengthString = h->value;
++                } else if (h->key == "transfer-encoding") {
++                    if (hasTransferEncoding) [[unlikely]] {
++                        return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++                    }
++                    hasTransferEncoding = true;
++                    transferEncodingString = h->value;
++                }
++                if (transportConfig_->trustedProxyHeader != TrustedProxyHeader::None &&
++                    h->key == trustedProxyHeaderName()) {
++                    if (hasTrustedProxyHeader) [[unlikely]] {
+                         return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+                     }
++                    hasTrustedProxyHeader = true;
++                    trustedProxyValue = h->value;
+                 }
+                 req->bf.add(h->key);
+             }
+-            
+-            /* Break if no host header or empty string */
+-            if (!req->getHeader("host").length()) {
++
++            if (hasTrustedProxyHeader &&
++                !forwardedAddress_.assign(
++                    transportConfig_->trustedProxyHeader,
++                    transportConfig_->trustedProxyHops,
++                    trustedProxyValue)) [[unlikely]] {
+                 return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+             }
+ 
+-            /* Break if invalid host */
+-            if (isInvalidHost(req->getHeader("host"))) {
++            /* Require one nonempty Host value with the upstream syntax checks. */
++            if (!hasHost || req->getHeader("host").empty() || isInvalidHost(req->getHeader("host"))) {
+                 return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+             }
+ 
+@@ -547,19 +622,40 @@ private:
+             * the Transfer-Encoding overrides the Content-Length. Such a message might indicate an attempt
+             * to perform request smuggling (Section 11.2) or response splitting (Section 11.1) and
+             * ought to be handled as an error. */
+-            std::string_view transferEncodingString = req->getHeader("transfer-encoding");
+-            std::string_view contentLengthString = req->getHeader("content-length");
+-            if (transferEncodingString.data() != nullptr && contentLengthString.data() != nullptr) {
++            if (hasTransferEncoding && hasContentLength) {
+                 /* Returning fullptr is the same as calling the errorHandler */
+                 /* We could be smart and set an error in the context along with this, to indicate what 
+                  * http error response we might want to return */
+                 return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+             }
+ 
++            /* This parser only implements chunked transfer coding. Accepting any
++             * other value as chunked creates a different request boundary than a
++             * conforming proxy and enables request smuggling. */
++            if (hasTransferEncoding && !isChunkedTransferEncoding(transferEncodingString)) {
++                return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++            }
++
+             /* Parse query */
+             const char *querySeparatorPtr = (const char *) memchr(req->headers->value.data(), '?', req->headers->value.length());
+             req->querySeparator = (unsigned int) ((querySeparatorPtr ? querySeparatorPtr : req->headers->value.data() + req->headers->value.length()) - req->headers->value.data());
+ 
++            /* Resolve request framing before the route handler so native bindings can
++             * expose the parsed numeric body length without another header lookup. */
++            if (hasTransferEncoding) {
++                hasDeclaredBodyLength_ = false;
++                remainingStreamingBytes = STATE_IS_CHUNKED;
++            } else if (hasContentLength) {
++                hasDeclaredBodyLength_ = true;
++                remainingStreamingBytes = toUnsignedInteger(contentLengthString);
++                if (remainingStreamingBytes == UINT64_MAX) {
++                    return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
++                }
++            } else {
++                hasDeclaredBodyLength_ = false;
++                remainingStreamingBytes = 0;
++            }
++
+             /* If returned socket is not what we put in we need
+              * to break here as we either have upgraded to
+              * WebSockets or otherwise closed the socket. */
+@@ -571,47 +667,32 @@ private:
+ 
+             /* The rules at play here according to RFC 9112 for requests are essentially:
+              * If both content-length and transfer-encoding then invalid message; must break.
+-             * If has transfer-encoding then must be chunked regardless of value.
++             * If transfer-encoding is present, its only supported value is chunked.
+              * If content-length then fixed length even if 0.
+              * If none of the above then fixed length is 0. */
+ 
+             /* RFC 9112 6.3
+              * If a message is received with both a Transfer-Encoding and a Content-Length header field,
+              * the Transfer-Encoding overrides the Content-Length. */
+-            if (transferEncodingString.data() != nullptr) {
+-
+-                /* Transfer-coding names are case-insensitive (RFC 9112 7), so lowercase the value */
+-                for (unsigned int i = 0; i < transferEncodingString.length(); i++) {
+-                    char &c = ((char *) transferEncodingString.data())[i];
+-                    if (c >= 'A' && c <= 'Z') {
+-                        c |= 32;
+-                    }
+-                }
+-
+-                /* The app can support any framing including gzip, deflate, but it always needs to end with chunked */
+-                if (transferEncodingString.length() < 7 || transferEncodingString.substr(transferEncodingString.length() - 7) != "chunked") {
+-                    return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+-                }
+-
+-                /* If a proxy sent us the transfer-encoding header that 100% means it must be chunked or else the proxy is
+-                 * not RFC 9112 compliant. Therefore it is always better to assume this is the case, since that entirely eliminates 
+-                 * all forms of transfer-encoding obfuscation tricks. We just rely on the header. */
++            if (hasTransferEncoding) {
+ 
+                 /* RFC 9112 6.3
+                  * If a Transfer-Encoding header field is present in a request and the chunked transfer coding is not the
+                  * final encoding, the message body length cannot be determined reliably; the server MUST respond with the
+                  * 400 (Bad Request) status code and then close the connection. */
+ 
+-                /* In this case we fail later by having the wrong interpretation (assuming chunked).
+-                 * This could be made stricter but makes no difference either way, unless forwarding the identical message as a proxy. */
+-
+-                remainingStreamingBytes = STATE_IS_CHUNKED;
+                 /* If consume minimally, we do not want to consume anything but we want to mark this as being chunked */
+                 if (!CONSUME_MINIMALLY) {
+                     /* Go ahead and parse it (todo: better heuristics for emitting FIN to the app level) */
+                     std::string_view dataToConsume(data, length);
+                     for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
+-                        dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                        void *returnedUser =
++                            dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                        if (returnedUser != user) {
++                            consumedTotal +=
++                                length - (unsigned int)dataToConsume.length();
++                            return {consumedTotal, returnedUser};
++                        }
+                     }
+                     if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
+                         return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+@@ -621,31 +702,28 @@ private:
+                     length = (unsigned int) dataToConsume.length();
+                     consumedTotal += consumed;
+                 }
+-            } else if (contentLengthString.data() != nullptr) {
+-
+-                /* Content-Length must be the same */
+-                if (!req->areIdentical("content-length", contentLengthString)) {
+-                    return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+-                }
+-                
+-                remainingStreamingBytes = toUnsignedInteger(contentLengthString);
+-                if (remainingStreamingBytes == UINT64_MAX || contentLengthString.length() == 0) {
+-                    /* Parser error */
+-                    return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+-                }
+-
++            } else if (hasContentLength) {
+                 if (!CONSUME_MINIMALLY) {
+                     unsigned int emittable = (unsigned int) std::min<uint64_t>(remainingStreamingBytes, length);
+-                    dataHandler(user, std::string_view(data, emittable), remainingStreamingBytes - emittable);
+-                    remainingStreamingBytes -= emittable;
++                    std::string_view chunk(data, emittable);
++                    uint64_t remainingAfterChunk = remainingStreamingBytes - emittable;
++                    remainingStreamingBytes = remainingAfterChunk;
+ 
+                     data += emittable;
+                     length -= emittable;
+                     consumedTotal += emittable;
++
++                    void *returnedUser = dataHandler(user, chunk, remainingAfterChunk);
++                    if (returnedUser != user) {
++                        return {consumedTotal, returnedUser};
++                    }
+                 }
+             } else {
+                 /* If we came here without a body; emit an empty data chunk to signal no data */
+-                dataHandler(user, {}, 0);
++                void *returnedUser = dataHandler(user, {}, 0);
++                if (returnedUser != user) {
++                    return {consumedTotal, returnedUser};
++                }
+             }
+ 
+             /* Consume minimally should break as easrly as possible */
+@@ -661,8 +739,38 @@ private:
+     }
+ 
+ public:
++    explicit HttpParser(const HttpTransportConfig *transportConfig)
++        : transportConfig_(transportConfig) {}
++
++    /* Returns the request length selected by HTTP framing, or UINT64_MAX for chunked. */
++    [[nodiscard]] uint64_t maxRemainingBodyLength() const {
++        return isParsingChunkedEncoding(remainingStreamingBytes)
++            ? UINT64_MAX
++            : remainingStreamingBytes;
++    }
++
++    /* Distinguishes an explicit Content-Length, including zero, from chunked
++     * framing and requests without a body-length declaration. */
++    [[nodiscard]] bool hasDeclaredBodyLength() const {
++        return hasDeclaredBodyLength_;
++    }
++
++    [[nodiscard]] std::string_view trustedProxyAddress() const noexcept {
++        return forwardedAddress_.bytes();
++    }
++
++    [[nodiscard]] LimitViolation GetLimitViolation() const {
++        return limitViolation_;
++    }
++
++    [[nodiscard]] bool HasIncompleteHeaders() const {
++        return !remainingStreamingBytes && !fallback.empty();
++    }
++
+     std::pair<unsigned int, void *> consumePostPadded(char *data, unsigned int length, void *user, void *reserved, MoveOnlyFunction<void *(void *, HttpRequest *)> &&requestHandler, MoveOnlyFunction<void *(void *, std::string_view, uint64_t)> &&dataHandler) {
+ 
++        limitViolation_ = LimitViolation::None;
++
+         /* This resets BloomFilter by construction, but later we also reset it again.
+          * Optimize this to skip resetting twice (req could be made global) */
+         HttpRequest req;
+@@ -674,7 +782,11 @@ public:
+                 std::string_view dataToConsume(data, length);
+                 for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
+                     /* If we got the zero size chunk, maxRemainingBodyLength is 0, else it is practically infinity */
+-                    dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                    void *returnedUser =
++                        dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                    if (returnedUser != user) {
++                        return {0, returnedUser};
++                    }
+                 }
+                 if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
+                     return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+@@ -685,16 +797,20 @@ public:
+                 // this is exactly the same as below!
+                 // todo: refactor this
+                 if (remainingStreamingBytes >= length) {
+-                    void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes - length);
+-                    remainingStreamingBytes -= length;
++                    uint64_t remainingAfterChunk = remainingStreamingBytes - length;
++                    remainingStreamingBytes = remainingAfterChunk;
++                    void *returnedUser =
++                        dataHandler(user, std::string_view(data, length), remainingAfterChunk);
+                     return {0, returnedUser};
+                 } else {
+-                    void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), 0);
++                    unsigned int emittable = (unsigned int)remainingStreamingBytes;
++                    std::string_view chunk(data, emittable);
++                    remainingStreamingBytes = 0;
+ 
+-                    data += (unsigned int) remainingStreamingBytes;
+-                    length -= (unsigned int) remainingStreamingBytes;
++                    data += emittable;
++                    length -= emittable;
+ 
+-                    remainingStreamingBytes = 0;
++                    void *returnedUser = dataHandler(user, chunk, 0);
+ 
+                     if (returnedUser != user) {
+                         return {0, returnedUser};
+@@ -705,7 +821,7 @@ public:
+         } else if (fallback.length()) {
+             unsigned int had = (unsigned int) fallback.length();
+ 
+-            size_t maxCopyDistance = std::min<size_t>(MAX_FALLBACK_SIZE - fallback.length(), (size_t) length);
++            size_t maxCopyDistance = std::min<size_t>(transportConfig_->maxHeaderSize - fallback.length(), (size_t) length);
+ 
+             /* We don't want fallback to be short string optimized, since we want to move it */
+             fallback.reserve(fallback.length() + maxCopyDistance + std::max<unsigned int>(MINIMUM_HTTP_POST_PADDING, sizeof(std::string)));
+@@ -731,7 +847,11 @@ public:
+                     if (isParsingChunkedEncoding(remainingStreamingBytes)) {
+                         std::string_view dataToConsume(data, length);
+                         for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
+-                            dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                            void *returnedUser =
++                                dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
++                            if (returnedUser != user) {
++                                return {0, returnedUser};
++                            }
+                         }
+                         if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
+                             return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
+@@ -741,16 +861,20 @@ public:
+                     } else {
+                         // this is exactly the same as above!
+                         if (remainingStreamingBytes >= (unsigned int) length) {
+-                            void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes - (unsigned int) length);
+-                            remainingStreamingBytes -= length;
++                            uint64_t remainingAfterChunk = remainingStreamingBytes - length;
++                            remainingStreamingBytes = remainingAfterChunk;
++                            void *returnedUser =
++                                dataHandler(user, std::string_view(data, length), remainingAfterChunk);
+                             return {0, returnedUser};
+                         } else {
+-                            void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), 0);
++                            unsigned int emittable = (unsigned int)remainingStreamingBytes;
++                            std::string_view chunk(data, emittable);
++                            remainingStreamingBytes = 0;
+ 
+-                            data += (unsigned int) remainingStreamingBytes;
+-                            length -= (unsigned int) remainingStreamingBytes;
++                            data += emittable;
++                            length -= emittable;
+ 
+-                            remainingStreamingBytes = 0;
++                            void *returnedUser = dataHandler(user, chunk, 0);
+ 
+                             if (returnedUser != user) {
+                                 return {0, returnedUser};
+@@ -760,8 +884,9 @@ public:
+                 }
+ 
+             } else {
+-                if (fallback.length() == MAX_FALLBACK_SIZE) {
+-                    return {HTTP_ERROR_400_BAD_REQUEST /*HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE*/, FULLPTR};
++                if (fallback.length() == transportConfig_->maxHeaderSize) {
++                    limitViolation_ = LimitViolation::HeaderSize;
++                    return {HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE, FULLPTR};
+                 }
+                 return {0, user};
+             }
+@@ -776,16 +901,20 @@ public:
+         length -= consumed.first;
+ 
+         if (length) {
+-            if (length < MAX_FALLBACK_SIZE) {
++            if (length < transportConfig_->maxHeaderSize) {
+                 fallback.append(data, length);
+             } else {
+-                return {HTTP_ERROR_400_BAD_REQUEST /*HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE*/, FULLPTR};
++                limitViolation_ = LimitViolation::HeaderSize;
++                return {HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE, FULLPTR};
+             }
+         }
+ 
+         // added for now
+         return {0, user};
+     }
++
++private:
++    LimitViolation limitViolation_ = LimitViolation::None;
+ };
+ 
+ }
+diff --git a/src/HttpResponse.h b/src/HttpResponse.h
+index 9c4b370..9087c1c 100644
+--- a/src/HttpResponse.h
++++ b/src/HttpResponse.h
+@@ -40,19 +40,40 @@ namespace uWS {
+ /* Some pre-defined status constants to use with writeStatus */
+ static const char *HTTP_200_OK = "200 OK";
+ 
+-/* The general timeout for HTTP sockets */
+-static const int HTTP_TIMEOUT_S = 10;
+-
+ template <bool SSL>
+ struct HttpResponse : public AsyncSocket<SSL> {
+     /* Solely used for getHttpResponseData() */
+     template <bool> friend struct TemplatedApp;
++    template <bool> friend struct HttpContext;
+     typedef AsyncSocket<SSL> Super;
+ private:
+     HttpResponseData<SSL> *getHttpResponseData() {
+         return (HttpResponseData<SSL> *) Super::getAsyncSocketData();
+     }
+ 
++    void armTransportTimeout(HttpTransportPhase phase, unsigned int timeoutSeconds) {
++        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
++        httpResponseData->transportPhase = phase;
++        Super::timeout(timeoutSeconds);
++    }
++
++    void armAfterResponseProgress() {
++        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
++        if (Super::getBufferedAmount()) {
++            armTransportTimeout(
++                HttpTransportPhase::ResponseBlocked,
++                httpResponseData->transportConfig->responseWriteTimeoutSeconds);
++        } else if ((httpResponseData->state &
++                    HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
++            armTransportTimeout(
++                HttpTransportPhase::KeepAliveIdle,
++                httpResponseData->transportConfig->keepAliveTimeoutSeconds);
++        } else {
++            httpResponseData->transportPhase = HttpTransportPhase::HandlerResponse;
++            Super::timeout(0);
++        }
++    }
++
+     /* Write an unsigned 32-bit integer in hex */
+     void writeUnsignedHex(unsigned int value) {
+         /* Buf really only needs to be 8 long but building with
+@@ -172,7 +193,7 @@ private:
+             }
+ 
+             /* tryEnd can never fail when in chunked mode, since we do not have tryWrite (yet), only write */
+-            Super::timeout(HTTP_TIMEOUT_S);
++            armAfterResponseProgress();
+             return true;
+         } else {
+             /* Write content-length on first call */
+@@ -214,16 +235,19 @@ private:
+             bool success = written == data.length() && !failed;
+ 
+             /* If we are now at the end, start a timeout. Also start a timeout if we failed. */
+-            if (!success || httpResponseData->offset == totalSize) {
+-                Super::timeout(HTTP_TIMEOUT_S);
++            if (!success || Super::getBufferedAmount()) {
++                armTransportTimeout(
++                    HttpTransportPhase::ResponseBlocked,
++                    httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+             }
+ 
+             /* Remove onAborted, onWritable function and mark done if we reach the end, or if we were given no data (faked size like in HEAD response) */
+             /* I need to figure out if this line should rather be simply httpResponseData->offset == data.length() */
+             /* No that can't be right, tryEnd with fake length should not complete the response even if the smaller chunk wrote in one go */
+             /* Possibly need  to separate endWithoutBody and tryEnd with fake length into two separate calls with a boolean that explicitly marks isHeadOnly */
+-            if (httpResponseData->offset == totalSize || !data.length()) {
++            if (httpResponseData->offset == totalSize || (!optional && !data.length())) {
+                 httpResponseData->markDone();
++                armAfterResponseProgress();
+ 
+                 /* We need to check if we should close this socket here now */
+                 if (!Super::isCorked()) {
+@@ -245,10 +269,13 @@ private:
+     }
+ 
+ public:
+-    /* If we have proxy support; returns the proxed source address as reported by the proxy. */
+-#ifdef UWS_WITH_PROXY
++    /* Uses a trusted HTTP header when present, otherwise preserves the upstream peer address. */
+     std::string_view getProxiedRemoteAddress() {
+-        return getHttpResponseData()->proxyParser.getSourceAddress();
++        if (getHttpResponseData()->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
++            return getHttpResponseData()->proxyParser.getSourceAddress();
++        }
++        const std::string_view trustedAddress = getHttpResponseData()->trustedProxyAddress();
++        return trustedAddress.empty() ? Super::getRemoteAddress() : trustedAddress;
+     }
+ 
+     std::string_view getProxiedRemoteAddressAsText() {
+@@ -256,9 +283,11 @@ public:
+     }
+ 
+     unsigned int getProxiedRemotePort() {
+-        return getHttpResponseData()->proxyParser.getSourcePort();
++        if (getHttpResponseData()->transportConfig->trustedProxyHeader == TrustedProxyHeader::None) {
++            return getHttpResponseData()->proxyParser.getSourcePort();
++        }
++        return getHttpResponseData()->trustedProxyAddress().empty() ? Super::getRemotePort() : 0;
+     }
+-#endif
+ 
+     /* Manually upgrade to WebSocket. Typically called in upgrade handler. Immediately calls open handler.
+      * NOTE: Will invalidate 'this' as socket might change location in memory. Throw away after use. */
+@@ -336,10 +365,16 @@ public:
+         HttpContext<SSL> *httpContext = (HttpContext<SSL> *) us_socket_context(SSL, (struct us_socket_t *) this);
+ 
+         /* Move any backpressure out of HttpResponse */
+-        BackPressure backpressure(std::move(((AsyncSocketData<SSL> *) getHttpResponseData())->buffer));
++        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
++        BackPressure backpressure(std::move(((AsyncSocketData<SSL> *) httpResponseData)->buffer));
++
++        /* The socket leaves the HTTP transport context when it upgrades. */
++        if (httpResponseData->transportStats->activeConnections) {
++            httpResponseData->transportStats->activeConnections--;
++        }
+ 
+         /* Destroy HttpResponseData */
+-        getHttpResponseData()->~HttpResponseData();
++        httpResponseData->~HttpResponseData();
+ 
+         /* Before we adopt and potentially change socket, check if we are corked */
+         bool wasCorked = Super::isCorked();
+@@ -396,7 +431,10 @@ public:
+ 
+     HttpResponse *resume() {
+         Super::resume();
+-        Super::timeout(HTTP_TIMEOUT_S);
++        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
++        armTransportTimeout(
++            HttpTransportPhase::BodyReading,
++            httpResponseData->transportConfig->bodyIdleTimeoutSeconds);
+         return this;
+     }
+ 
+@@ -492,8 +530,8 @@ public:
+         ensureChunkedBodyStarted();
+ 
+         bool ok = writeChunk(data);
+-        if (!ok) {
+-            Super::timeout(HTTP_TIMEOUT_S);
++        if (!ok || Super::getBufferedAmount()) {
++            armAfterResponseProgress();
+         }
+ 
+         /* If we did not fail the write, accept more */
+@@ -514,6 +552,13 @@ public:
+         return httpResponseData->maxRemainingBodyLength();
+     }
+ 
++    /* Whether this request was framed by an explicit Content-Length header. */
++    bool hasDeclaredBodyLength() {
++        HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
++
++        return httpResponseData->hasDeclaredBodyLength();
++    }
++
+     /* If you are messing around with sendfile you might want to override the offset. */
+     void overrideWriteOffset(uintmax_t offset) {
+         HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+@@ -543,6 +588,14 @@ public:
+              * from here downwards. The corking is done with corkUnchecked() in upgrade. It steals cork. */
+             auto *newCorkedSocket = loopData->corkedSocket;
+ 
++            /* The handler can close either the HTTP socket or a reallocated
++             * upgraded socket. Only inspect the current corked allocation. */
++            if (newCorkedSocket &&
++                us_socket_is_closed(SSL, (us_socket_t *) newCorkedSocket)) {
++                static_cast<Super *>(newCorkedSocket)->uncork();
++                return static_cast<HttpResponse *>(newCorkedSocket);
++            }
++
+             /* If nobody is corked, it means most probably that large amounts of data has
+              * been written and the cork buffer has already been sent off and uncorked.
+              * We are done here, if that is the case. */
+@@ -563,14 +616,14 @@ public:
+                 return static_cast<HttpResponse *>(newCorkedSocket);
+             }
+ 
++            HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+             if (failed) {
+-                /* For now we only have one single timeout so let's use it */
+-                /* This behavior should equal the behavior in HttpContext when uncorking fails */
+-                Super::timeout(HTTP_TIMEOUT_S);
++                armTransportTimeout(
++                    HttpTransportPhase::ResponseBlocked,
++                    httpResponseData->transportConfig->responseWriteTimeoutSeconds);
+             }
+ 
+             /* If we have no backbuffer and we are connection close and we responded fully then close */
+-            HttpResponseData<SSL> *httpResponseData = getHttpResponseData();
+             if (httpResponseData->state & HttpResponseData<SSL>::HTTP_CONNECTION_CLOSE) {
+                 if ((httpResponseData->state & HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
+                     if (((AsyncSocket<SSL> *) this)->getBufferedAmount() == 0) {
+@@ -620,6 +673,7 @@ public:
+     void onDataV2(MoveOnlyFunction<void(std::string_view, uint64_t)> &&handler) {
+         HttpResponseData<SSL> *data = getHttpResponseData();
+         data->inStream = std::move(handler);
++        data->inStreamGeneration++;
+ 
+         /* Always reset this counter here */
+         data->received_bytes_per_timeout = 0;
+diff --git a/src/HttpResponseData.h b/src/HttpResponseData.h
+index f17690d..6796ac3 100644
+--- a/src/HttpResponseData.h
++++ b/src/HttpResponseData.h
+@@ -33,6 +33,13 @@ struct HttpResponseData : AsyncSocketData<SSL>, HttpParser {
+     template <bool> friend struct HttpResponse;
+     template <bool> friend struct HttpContext;
+ 
++    HttpResponseData(
++        const HttpTransportConfig *transportConfig,
++        HttpTransportStats *transportStats)
++        : HttpParser(transportConfig),
++          transportConfig(transportConfig),
++          transportStats(transportStats) {}
++
+     /* When we are done with a response we mark it like so */
+     void markDone() {
+         onAborted = nullptr;
+@@ -104,18 +111,25 @@ private:
+     MoveOnlyFunction<bool(uintmax_t)> onWritable;
+     MoveOnlyFunction<void()> onAborted;
+     MoveOnlyFunction<void(std::string_view, uint64_t)> inStream; // onData
++    uint64_t inStreamGeneration = 0;
+     /* Outgoing offset */
+     uintmax_t offset = 0;
+ 
+     /* Let's track number of bytes since last timeout reset in data handler */
+-    unsigned int received_bytes_per_timeout = 0;
++    std::uint64_t received_bytes_per_timeout = 0;
++
++    bool receivedBodySinceTimeout = false;
++
++    const HttpTransportConfig *transportConfig;
++    HttpTransportStats *transportStats;
++    HttpTransportPhase transportPhase = HttpTransportPhase::HeadersReading;
++
++    /* Used only when the App retains the legacy PROXY v2 transport mode. */
++    ProxyParser proxyParser;
+ 
+     /* Current state (content-length sent, status sent, write called, etc */
+     int state = 0;
+ 
+-#ifdef UWS_WITH_PROXY
+-    ProxyParser proxyParser;
+-#endif
+ };
+ 
+ }
+diff --git a/src/HttpTransportConfig.h b/src/HttpTransportConfig.h
+new file mode 100644
+index 0000000..9790771
+--- /dev/null
++++ b/src/HttpTransportConfig.h
+@@ -0,0 +1,150 @@
++/*
++ * SwarmMachina transport-policy extension for vendored uWebSockets.
++ *
++ * Licensed under the Apache License, Version 2.0.
++ */
++
++#ifndef UWS_HTTPTRANSPORTCONFIG_H
++#define UWS_HTTPTRANSPORTCONFIG_H
++
++#include "libusockets.h"
++
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++
++namespace uWS {
++
++inline constexpr std::size_t MAX_HEADER_COUNT_CAPACITY = 100;
++
++enum class HttpTransportPhase : std::uint8_t {
++    HeadersReading,
++    HandlerResponse,
++    BodyReading,
++    ResponseBlocked,
++    KeepAliveIdle,
++};
++
++enum class TrustedProxyHeader : std::uint8_t {
++    None,
++    XForwardedFor,
++    XRealIp,
++};
++
++class HttpTransportConfig final {
++public:
++    static constexpr std::size_t DEFAULT_MAX_HEADER_SIZE = 4096;
++    static constexpr std::uint16_t DEFAULT_MAX_HEADER_COUNT = 100;
++    static constexpr std::uint32_t DEFAULT_HEADERS_TIMEOUT_MS = 10000;
++    static constexpr std::uint32_t DEFAULT_KEEP_ALIVE_TIMEOUT_MS = 10000;
++    static constexpr std::uint32_t DEFAULT_BODY_IDLE_TIMEOUT_MS = 10000;
++    static constexpr std::uint32_t DEFAULT_MIN_BODY_RATE_BYTES_PER_SEC = 16384;
++    static constexpr std::uint32_t DEFAULT_RESPONSE_WRITE_TIMEOUT_MS = 10000;
++    /*
++     * The uSockets short timeout wheel has 240 four-second slots. Explicit
++     * millisecond deadlines add one full slot before rounding so they cannot
++     * expire early. 956 seconds is therefore the largest requested deadline
++     * that remains representable without wrapping the wheel.
++     */
++    static constexpr std::uint32_t MAX_EXPLICIT_TIMEOUT_MS = 956000;
++
++    HttpTransportConfig(
++        std::size_t maxHeaderSize = DEFAULT_MAX_HEADER_SIZE,
++        std::uint16_t maxHeaderCount = DEFAULT_MAX_HEADER_COUNT,
++        std::uint32_t headersTimeoutMs = DEFAULT_HEADERS_TIMEOUT_MS,
++        std::uint32_t keepAliveTimeoutMs = DEFAULT_KEEP_ALIVE_TIMEOUT_MS,
++        std::uint32_t bodyIdleTimeoutMs = DEFAULT_BODY_IDLE_TIMEOUT_MS,
++        std::optional<std::uint32_t> minBodyRateBytesPerSec =
++            DEFAULT_MIN_BODY_RATE_BYTES_PER_SEC,
++        std::uint32_t responseWriteTimeoutMs = DEFAULT_RESPONSE_WRITE_TIMEOUT_MS,
++        TrustedProxyHeader trustedProxyHeader = TrustedProxyHeader::None,
++        std::uint8_t trustedProxyHops = 1,
++        bool headersTimeoutExplicit = false,
++        bool keepAliveTimeoutExplicit = false,
++        bool bodyIdleTimeoutExplicit = false,
++        bool responseWriteTimeoutExplicit = false)
++        : maxHeaderSize(maxHeaderSize),
++          maxHeaderCount(maxHeaderCount),
++          headersTimeoutMs(headersTimeoutMs),
++          keepAliveTimeoutMs(keepAliveTimeoutMs),
++          bodyIdleTimeoutMs(bodyIdleTimeoutMs),
++          minBodyRateBytesPerSec(minBodyRateBytesPerSec),
++          responseWriteTimeoutMs(responseWriteTimeoutMs),
++          trustedProxyHeader(trustedProxyHeader),
++          trustedProxyHops(trustedProxyHops),
++          headersTimeoutSeconds(
++              ComputeTimeoutSeconds(headersTimeoutMs, headersTimeoutExplicit)),
++          keepAliveTimeoutSeconds(
++              ComputeTimeoutSeconds(keepAliveTimeoutMs, keepAliveTimeoutExplicit)),
++          bodyIdleTimeoutSeconds(
++              ComputeTimeoutSeconds(bodyIdleTimeoutMs, bodyIdleTimeoutExplicit)),
++          responseWriteTimeoutSeconds(
++              ComputeTimeoutSeconds(
++                  responseWriteTimeoutMs,
++                  responseWriteTimeoutExplicit)),
++          bodyRateResetThresholdBytes(
++              ComputeBodyRateResetThreshold(
++                  minBodyRateBytesPerSec,
++                  bodyIdleTimeoutMs)) {}
++
++    const std::size_t maxHeaderSize;
++    const std::uint16_t maxHeaderCount;
++    const std::uint32_t headersTimeoutMs;
++    const std::uint32_t keepAliveTimeoutMs;
++    const std::uint32_t bodyIdleTimeoutMs;
++    const std::optional<std::uint32_t> minBodyRateBytesPerSec;
++    const std::uint32_t responseWriteTimeoutMs;
++    const TrustedProxyHeader trustedProxyHeader;
++    const std::uint8_t trustedProxyHops;
++    const unsigned int headersTimeoutSeconds;
++    const unsigned int keepAliveTimeoutSeconds;
++    const unsigned int bodyIdleTimeoutSeconds;
++    const unsigned int responseWriteTimeoutSeconds;
++    const std::uint64_t bodyRateResetThresholdBytes;
++
++private:
++    [[nodiscard]] static unsigned int ComputeTimeoutSeconds(
++        std::uint32_t timeoutMs,
++        bool explicitTimeout) {
++        if (!explicitTimeout) {
++            return static_cast<unsigned int>(
++                (static_cast<std::uint64_t>(timeoutMs) + 999) / 1000);
++        }
++
++        /*
++         * uSockets uses a four-second timeout wheel. Add one complete wheel
++         * interval before rounding so a configured deadline is never shortened
++         * by the position of the next sweep. Actual expiry is therefore up to
++         * eight seconds later than the requested millisecond value.
++         */
++        const std::uint64_t requestedSeconds =
++            (static_cast<std::uint64_t>(timeoutMs) + 999) / 1000;
++        const std::uint64_t safeSeconds =
++            requestedSeconds + LIBUS_TIMEOUT_GRANULARITY;
++        return safeSeconds > UINT32_MAX
++            ? UINT32_MAX
++            : static_cast<unsigned int>(safeSeconds);
++    }
++
++    [[nodiscard]] static std::uint64_t ComputeBodyRateResetThreshold(
++        std::optional<std::uint32_t> minimumRate,
++        std::uint32_t timeoutMs) {
++        return minimumRate
++            ? (static_cast<std::uint64_t>(*minimumRate) * timeoutMs + 999) / 1000
++            : 1;
++    }
++};
++
++struct HttpTransportStats {
++    std::uint64_t activeConnections = 0;
++    std::uint64_t headerTooLarge = 0;
++    std::uint64_t headerCountExceeded = 0;
++    std::uint64_t headerTimeouts = 0;
++    std::uint64_t bodyTimeouts = 0;
++    std::uint64_t bodyRateViolations = 0;
++    std::uint64_t responseWriteTimeouts = 0;
++};
++
++}  // namespace uWS
++
++#endif  // UWS_HTTPTRANSPORTCONFIG_H
+diff --git a/src/ProxyParser.h b/src/ProxyParser.h
+index ffe4bf6..6e71bdc 100644
+--- a/src/ProxyParser.h
++++ b/src/ProxyParser.h
+@@ -104,10 +104,10 @@ public:
+ 
+         if ((family & 0xf0) >> 4 == 1) {
+             /* Family 1 is INET4 */
+-            return addr.ipv4_addr.src_port;
++            return _cond_byte_swap<uint16_t>(addr.ipv4_addr.src_port);
+         } else {
+             /* Family 2 is INET6 */
+-            return addr.ipv6_addr.src_port;
++            return _cond_byte_swap<uint16_t>(addr.ipv6_addr.src_port);
+         }
+     }
+ 
+diff --git a/src/TopicTree.h b/src/TopicTree.h
+index 16b3f71..3609413 100644
+--- a/src/TopicTree.h
++++ b/src/TopicTree.h
+@@ -18,6 +18,7 @@
+ #ifndef UWS_TOPICTREE_H
+ #define UWS_TOPICTREE_H
+ 
++#include <cstdint>
+ #include <map>
+ #include <list>
+ #include <iostream>
+@@ -84,13 +85,25 @@ struct TopicTree {
+         FIRST = 2
+     };
+ 
++    struct SubscriptionChange {
++        std::string topic;
++        int newCount;
++        int oldCount;
++    };
++
+     /* Whomever is iterating this topic is locked to not modify its own list */
+     Subscriber *iteratingSubscriber = nullptr;
+ 
+ private:
+ 
+-    /* The drain callback must not publish, unsubscribe or subscribe.
+-     * It must only cork, uncork, send, write */
++    enum class DrainResult {
++        Complete,
++        Stopped,
++        Invalidated
++    };
++
++    /* Drain callbacks can enter user code via WebSocket::send. Topology changes
++     * stop the current traversal before any invalidated iterator is advanced. */
+     std::function<bool(Subscriber *, T &, IteratorFlags)> cb;
+ 
+     /* The topics */
+@@ -102,6 +115,17 @@ private:
+     /* Palette of outgoing messages, up to 64k */
+     std::vector<T> outgoingMessages;
+ 
++    /* Invalidates subscriber iterators when a callback mutates topic membership. */
++    std::uint64_t topologyVersion = 0;
++
++    /* Invalidates message indices when a nested drain clears the shared palette. */
++    std::uint64_t outgoingMessagesVersion = 0;
++
++    void clearOutgoingMessages() {
++        outgoingMessages.clear();
++        outgoingMessagesVersion++;
++    }
++
+     void checkIteratingSubscriber(Subscriber *s) {
+         /* Notify user that they are doing something wrong here */
+         if (iteratingSubscriber == s) {
+@@ -111,7 +135,7 @@ private:
+     }
+ 
+     /* Warning: does NOT unlink from drainableSubscribers or modify next, prev. */
+-    void drainImpl(Subscriber *s) {
++    DrainResult drainImpl(Subscriber *s) {
+         /* Before we call cb we need to make sure this subscriber will not report needsDrainage()
+          * since WebSocket::send will call drain from within the cb in that case.*/
+         int numMessageIndices = s->numMessageIndices;
+@@ -124,10 +148,19 @@ private:
+             int flags = (i == numMessageIndices - 1) ? LAST : 0;
+ 
+             /* Returning true will stop drainage short (such as when backpressure is too high) */
+-            if (cb(s, outgoingMessage, (IteratorFlags)(flags | (i == 0 ? FIRST : 0)))) {
+-                break;
++            std::uint64_t topologyVersionBeforeCallback = topologyVersion;
++            std::uint64_t outgoingMessagesVersionBeforeCallback = outgoingMessagesVersion;
++            bool stopped = cb(s, outgoingMessage, (IteratorFlags)(flags | (i == 0 ? FIRST : 0)));
++            if (topologyVersionBeforeCallback != topologyVersion ||
++                outgoingMessagesVersionBeforeCallback != outgoingMessagesVersion) {
++                return DrainResult::Invalidated;
++            }
++            if (stopped) {
++                return DrainResult::Stopped;
+             }
+         }
++
++        return DrainResult::Complete;
+     }
+ 
+     void unlinkDrainableSubscriber(Subscriber *s) {
+@@ -177,6 +210,7 @@ public:
+             return nullptr;
+         }
+         topicPtr->insert(s);
++        topologyVersion++;
+ 
+         /* Success */
+         return topicPtr;
+@@ -198,6 +232,7 @@ public:
+         if (s->topics.erase(topicPtr) == 0) {
+             return {false, false, -1};
+         }
++        topologyVersion++;
+ 
+         /* Remove us from topic */
+         topicPtr->erase(s);
+@@ -219,12 +254,25 @@ public:
+         return new Subscriber();
+     }
+ 
+-    /* This is used to end a Subscriber, before freeing it */
+-    void freeSubscriber(Subscriber *s) {
++    /* This is used to end a Subscriber, before freeing it. When requested,
++     * removal notifications are copied before any Topic can be deleted so
++     * user callbacks can run only after the topology is stable. */
++    std::vector<SubscriptionChange> freeSubscriber(Subscriber *s, bool captureChanges = false) {
++        std::vector<SubscriptionChange> changes;
+ 
+         /* I guess we call this one even if we are not subscribers */
+         if (!s) {
+-            return;
++            return changes;
++        }
++
++        topologyVersion++;
++        if (captureChanges) {
++            changes.reserve(s->topics.size());
++            for (Topic *topicPtr : s->topics) {
++                changes.push_back({topicPtr->name,
++                                   (int)topicPtr->size() - 1,
++                                   (int)topicPtr->size()});
++            }
+         }
+ 
+         /* For all topics, unsubscribe */
+@@ -244,10 +292,11 @@ public:
+         }
+ 
+         delete s;
++        return changes;
+     }
+ 
+     /* Mainly used by WebSocket::send to drain one socket before sending */
+-    void drain(Subscriber *s) {
++    bool drain(Subscriber *s) {
+         /* The list is undefined and cannot be touched unless needsDrainage(). */
+         if (s->needsDrainage()) {
+             /* This function differs from drainImpl by properly unlinking
+@@ -256,28 +305,32 @@ public:
+ 
+             /* This one always resets needsDrainage before it calls any cb's.
+              * Otherwise we would stackoverflow when sending after publish but before drain. */
+-            drainImpl(s);
+-            
++            DrainResult result = drainImpl(s);
++
+             /* If we drained last subscriber, also clear outgoingMessages */
+             if (!drainableSubscribers) {
+-                outgoingMessages.clear();
++                clearOutgoingMessages();
+             }
++            return result != DrainResult::Complete;
+         }
++        return false;
+     }
+ 
+     /* Called everytime we call send, to drain published messages so to sync outgoing messages */
+-    void drain() {
+-        if (drainableSubscribers) {
+-            /* Drain one socket a time */
+-            for (Subscriber *s = drainableSubscribers; s; s = s->next) {
+-                /* Instead of unlinking every single subscriber, we just leave the list undefined
+-                 * and reset drainableSubscribers ptr below. */
+-                drainImpl(s);
++    /* Returns true only when re-entrancy invalidates the shared traversal. */
++    bool drain() {
++        while (drainableSubscribers) {
++            Subscriber *s = drainableSubscribers;
++            unlinkDrainableSubscriber(s);
++            if (drainImpl(s) == DrainResult::Invalidated) {
++                if (!drainableSubscribers) {
++                    clearOutgoingMessages();
++                }
++                return true;
+             }
+-            /* Drain always clears drainableSubscribers and outgoingMessages */
+-            drainableSubscribers = nullptr;
+-            outgoingMessages.clear();
+         }
++        clearOutgoingMessages();
++        return false;
+     }
+ 
+     /* Big messages bypass all buffering and land directly in backpressure */
+@@ -294,7 +347,11 @@ public:
+ 
+             /* If we are sender then ignore us */
+             if (sender != s) {
++                std::uint64_t versionBeforeCallback = topologyVersion;
+                 cb(s, bigMessage);
++                if (versionBeforeCallback != topologyVersion) {
++                    return true;
++                }
+             }
+         }
+ 
+@@ -303,17 +360,19 @@ public:
+ 
+     /* Linear in number of affected subscribers */
+     bool publish(Subscriber *sender, std::string_view topic, T &&message) {
+-        /* Do we even have this topic? */
+-        auto it = topics.find(topic);
+-        if (it == topics.end()) {
+-            return false;
+-        }
+-
+         /* If we have more than 65k messages we need to drain every socket. */
+         if (outgoingMessages.size() == UINT16_MAX) {
+             /* If there is a socket that is currently corked, this will be ugly as all sockets will drain
+              * to their own backpressure */
+-            drain();
++            if (drain()) {
++                return false;
++            }
++        }
++
++        /* Do we even have this topic? Re-resolve after drain callbacks. */
++        auto it = topics.find(topic);
++        if (it == topics.end()) {
++            return false;
+         }
+ 
+         /* If nobody references this message, don't buffer it */
+@@ -331,7 +390,9 @@ public:
+                 /* If we already have too many outgoing messages on this subscriber, drain it now */
+                 if (s->numMessageIndices == 32) {
+                     /* This one does not need to check needsDrainage here but still does. */
+-                    drain(s);
++                    if (drain(s)) {
++                        return referencedMessage;
++                    }
+                 }
+ 
+                 /* Finally we can continue */
+diff --git a/src/WebSocket.h b/src/WebSocket.h
+index 00da781..647f969 100644
+--- a/src/WebSocket.h
++++ b/src/WebSocket.h
+@@ -158,7 +158,9 @@ public:
+ 
+             if (webSocketData->subscriber) {
+                 /* This will call back into us, send. */
+-                webSocketContextData->topicTree->drain(webSocketData->subscriber);
++                if (webSocketContextData->topicTree->drain(webSocketData->subscriber)) {
++                    return DROPPED;
++                }
+             }
+ 
+             /* Transform the message to compressed domain if requested */
+@@ -227,6 +229,7 @@ public:
+ 
+         /* We postpone any FIN sending to either drainage or uncorking */
+         webSocketData->isShuttingDown = true;
++        webSocketData->requestFragmentBufferClear();
+ 
+         /* Format and send the close frame */
+         static const int MAX_CLOSE_PAYLOAD = 123;
+@@ -235,6 +238,11 @@ public:
+         size_t closePayloadLength = protocol::formatClosePayload(closePayload, (uint16_t) code, message.data(), length);
+         bool ok = send(std::string_view(closePayload, closePayloadLength), OpCode::CLOSE);
+ 
++        /* A dropped handler can synchronously close this socket or its App. */
++        if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
++            return;
++        }
++
+         /* FIN if we are ok and not corked */
+         if (!this->isCorked()) {
+             if (ok) {
+@@ -251,22 +259,37 @@ public:
+         /* Set shorter timeout (use ping-timeout) to avoid long hanging sockets after end() on broken connections */
+         Super::timeout(webSocketContextData->idleTimeoutComponents.second);
+ 
+-        /* At this point we iterate all currently held subscriptions and emit an event for all of them */
+-        if (webSocketData->subscriber && webSocketContextData->subscriptionHandler) {
+-            for (Topic *t : webSocketData->subscriber->topics) {
+-                webSocketContextData->subscriptionHandler(this, t->name, (int) t->size() - 1, (int) t->size());
++        /* Stabilize the topic tree before user callbacks can unsubscribe, close
++         * this socket, or close the entire App re-entrantly. */
++        auto subscriptionChanges = webSocketContextData->topicTree->freeSubscriber(
++            webSocketData->subscriber,
++            (bool)webSocketContextData->subscriptionHandler);
++        webSocketData->subscriber = nullptr;
++        if (webSocketContextData->subscriptionHandler) {
++            for (const auto &change : subscriptionChanges) {
++                webSocketContextData->subscriptionHandler(
++                    this,
++                    change.topic,
++                    change.newCount,
++                    change.oldCount);
++                if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
++                    return;
++                }
+             }
+         }
+ 
+-        /* Make sure to unsubscribe from any pub/sub node at exit */
+-        webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
+-        webSocketData->subscriber = nullptr;
+-
+         /* Emit close event */
++        webSocketData->closeEventEmitted = true;
+         if (webSocketContextData->closeHandler) {
+             webSocketContextData->closeHandler(this, code, message);
++            if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
++                return;
++            }
+         }
++        webSocketData->userDataDestroyed = true;
+         ((USERDATA *) this->getUserData())->~USERDATA();
++        webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
++        webSocketData->subscriber = nullptr;
+     }
+ 
+     /* Corks the response if possible. Leaves already corked socket be. */
+@@ -275,6 +298,10 @@ public:
+             Super::cork();
+             handler();
+ 
++            if (us_socket_is_closed(SSL, (us_socket_t *) this)) {
++                return;
++            }
++
+             /* There is no timeout when failing to uncork for WebSockets,
+              * as that is handled by idleTimeout */
+             auto [written, failed] = Super::uncork();
+diff --git a/src/WebSocketContext.h b/src/WebSocketContext.h
+index d8b3fd0..b6a1324 100644
+--- a/src/WebSocketContext.h
++++ b/src/WebSocketContext.h
+@@ -103,10 +103,6 @@ private:
+                     }
+                 }
+             } else {
+-                /* Allocate fragment buffer up front first time */
+-                if (!webSocketData->fragmentBuffer.length()) {
+-                    webSocketData->fragmentBuffer.reserve(length + remainingBytes);
+-                }
+                 /* Fragments forming a big message are not caught until appending them */
+                 if (refusePayloadLength(length + webSocketData->fragmentBuffer.length(), webSocketState, s)) {
+                     forceClose(webSocketState, s, ERR_TOO_BIG_MESSAGE);
+@@ -162,14 +158,18 @@ private:
+ 
+                     /* Emit message and check for shutdown or close */
+                     if (webSocketContextData->messageHandler) {
++                        webSocketData->beginFragmentBufferView();
+                         webSocketContextData->messageHandler((WebSocket<SSL, isServer, USERDATA> *) s, std::string_view(data, length), (OpCode) opCode);
+-                        if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
++                        if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
+                             return true;
+                         }
++                        webSocketData->endFragmentBufferView();
++                    }
++                    bool isShuttingDown = webSocketData->isShuttingDown;
++                    webSocketData->clearFragmentBuffer();
++                    if (isShuttingDown) {
++                        return true;
+                     }
+-
+-                    /* If we shutdown or closed, this will be taken care of elsewhere */
+-                    webSocketData->fragmentBuffer.clear();
+                 }
+             }
+         } else {
+@@ -184,6 +184,10 @@ private:
+                 } else {
+                     if (opCode == PING) {
+                         webSocket->send(std::string_view(data, length), (OpCode) OpCode::PONG);
++                        if (us_socket_is_closed(SSL, (us_socket_t *) s) ||
++                            webSocketData->isShuttingDown) {
++                            return true;
++                        }
+                         if (webSocketContextData->pingHandler) {
+                             webSocketContextData->pingHandler(webSocket, {data, length});
+                             if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
+@@ -208,21 +212,41 @@ private:
+                     char *controlBuffer = (char *) webSocketData->fragmentBuffer.data() + webSocketData->fragmentBuffer.length() - webSocketData->controlTipLength;
+                     if (opCode == CLOSE) {
+                         protocol::CloseFrame closeFrame = protocol::parseClosePayload(controlBuffer, webSocketData->controlTipLength);
++                        webSocketData->beginFragmentBufferView();
+                         webSocket->end(closeFrame.code, std::string_view(closeFrame.message, closeFrame.length));
++                        if (!us_socket_is_closed(SSL, (us_socket_t *) s)) {
++                            webSocketData->endFragmentBufferView();
++                        }
+                         return true;
+                     } else {
+                         if (opCode == PING) {
+                             webSocket->send(std::string_view(controlBuffer, webSocketData->controlTipLength), (OpCode) OpCode::PONG);
++                            if (us_socket_is_closed(SSL, (us_socket_t *) s) ||
++                                webSocketData->isShuttingDown) {
++                                return true;
++                            }
+                             if (webSocketContextData->pingHandler) {
++                                webSocketData->beginFragmentBufferView();
+                                 webSocketContextData->pingHandler(webSocket, std::string_view(controlBuffer, webSocketData->controlTipLength));
+-                                if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
++                                if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
++                                    return true;
++                                }
++                                bool isShuttingDown = webSocketData->isShuttingDown;
++                                webSocketData->endFragmentBufferView();
++                                if (isShuttingDown) {
+                                     return true;
+                                 }
+                             }
+                         } else if (opCode == PONG) {
+                             if (webSocketContextData->pongHandler) {
++                                webSocketData->beginFragmentBufferView();
+                                 webSocketContextData->pongHandler(webSocket, std::string_view(controlBuffer, webSocketData->controlTipLength));
+-                                if (us_socket_is_closed(SSL, (us_socket_t *) s) || webSocketData->isShuttingDown) {
++                                if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
++                                    return true;
++                                }
++                                bool isShuttingDown = webSocketData->isShuttingDown;
++                                webSocketData->endFragmentBufferView();
++                                if (isShuttingDown) {
+                                     return true;
+                                 }
+                             }
+@@ -252,30 +276,42 @@ private:
+ 
+         /* Handle socket disconnections */
+         us_socket_context_on_close(SSL, getSocketContext(), [](auto *s, int code, void *reason) {
+-            /* For whatever reason, if we already have emitted close event, do not emit it again */
+             WebSocketData *webSocketData = (WebSocketData *) (us_socket_ext(SSL, s));
+-            if (!webSocketData->isShuttingDown) {
+-                /* Emit close event */
+-                auto *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
+-
+-                /* At this point we iterate all currently held subscriptions and emit an event for all of them */
+-                if (webSocketData->subscriber && webSocketContextData->subscriptionHandler) {
+-                    for (Topic *t : webSocketData->subscriber->topics) {
+-                        webSocketContextData->subscriptionHandler((WebSocket<SSL, isServer, USERDATA> *) s, t->name, (int) t->size() - 1, (int) t->size());
+-                    }
++            auto *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
++            auto *ws = (WebSocket<SSL, isServer, USERDATA> *) s;
++
++            /* Copy and unlink subscriptions before callbacks can mutate either
++             * side of the relationship while it is being traversed. */
++            auto subscriptionChanges = webSocketContextData->topicTree->freeSubscriber(
++                webSocketData->subscriber,
++                (bool)webSocketContextData->subscriptionHandler);
++            webSocketData->subscriber = nullptr;
++            if (webSocketContextData->subscriptionHandler) {
++                for (const auto &change : subscriptionChanges) {
++                    webSocketContextData->subscriptionHandler(
++                        ws,
++                        change.topic,
++                        change.newCount,
++                        change.oldCount);
+                 }
++            }
+ 
+-                /* Make sure to unsubscribe from any pub/sub node at exit */
+-                webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
+-                webSocketData->subscriber = nullptr;
+-
+-                auto *ws = (WebSocket<SSL, isServer, USERDATA> *) s;
++            if (!webSocketData->closeEventEmitted) {
++                webSocketData->closeEventEmitted = true;
+                 if (webSocketContextData->closeHandler) {
+                     webSocketContextData->closeHandler(ws, 1006, {(char *) reason, (size_t) code});
+                 }
++            }
++            if (!webSocketData->userDataDestroyed) {
++                webSocketData->userDataDestroyed = true;
+                 ((USERDATA *) ws->getUserData())->~USERDATA();
+             }
+ 
++            /* A close callback must not be able to leave a newly-created
++             * subscriber linked after WebSocketData is destroyed. */
++            webSocketContextData->topicTree->freeSubscriber(webSocketData->subscriber);
++            webSocketData->subscriber = nullptr;
++
+             /* Destruct in-placed data struct */
+             webSocketData->~WebSocketData();
+ 
+@@ -310,6 +346,12 @@ private:
+             /* Uncorking a closed socekt is fine, in fact it is needed */
+             asyncSocket->uncork();
+ 
++            /* User callbacks can synchronously close the socket and destroy
++             * WebSocketData while the protocol parser is on the stack. */
++            if (us_socket_is_closed(SSL, (us_socket_t *) s)) {
++                return s;
++            }
++
+             /* If uncorking was successful and we are in shutdown state then send TCP FIN */
+             if (asyncSocket->getBufferedAmount() == 0) {
+                 /* We can now be in shutdown state */
+@@ -348,7 +390,9 @@ private:
+             /* Also reset timeout if we came here with 0 backpressure */
+             if (!backpressure || backpressure > asyncSocket->getBufferedAmount()) {
+                 auto *webSocketContextData = (WebSocketContextData<SSL, USERDATA> *) us_socket_context_ext(SSL, us_socket_context(SSL, (us_socket_t *) s));
+-                asyncSocket->timeout(webSocketContextData->idleTimeoutComponents.first);
++                asyncSocket->timeout(webSocketData->isShuttingDown
++                    ? webSocketContextData->idleTimeoutComponents.second
++                    : webSocketContextData->idleTimeoutComponents.first);
+                 webSocketData->hasTimedOut = false;
+             }
+ 
+diff --git a/src/WebSocketContextData.h b/src/WebSocketContextData.h
+index 7f04aa6..277bf3b 100644
+--- a/src/WebSocketContextData.h
++++ b/src/WebSocketContextData.h
+@@ -84,6 +84,12 @@ public:
+ 
+     /* This is run once on start-up */
+     void calculateIdleTimeoutCompnents(unsigned short idleTimeout) {
++        if (!idleTimeout) {
++            /* Disable idle pings/timeouts while retaining the short shutdown
++             * deadline used after an explicit WebSocket end(). */
++            idleTimeoutComponents = {0, 4};
++            return;
++        }
+         unsigned short margin = 4;
+         /* 4, 8 or 16 seconds margin based on idleTimeout */
+         while ((int) idleTimeout - margin * 2 >= margin * 2 && margin < 16) {
+diff --git a/src/WebSocketData.h b/src/WebSocketData.h
+index 21e96a7..ec5b7c9 100644
+--- a/src/WebSocketData.h
++++ b/src/WebSocketData.h
+@@ -34,9 +34,16 @@ struct WebSocketData : AsyncSocketData<false>, WebSocketState<true> {
+     template <bool, bool, typename> friend struct WebSocket;
+     template <bool> friend struct HttpContext;
+ private:
++    /* Retain buffers through the 16-bit payload range, but do not pin large-message peaks per socket. */
++    static constexpr size_t MAX_RETAINED_FRAGMENT_BUFFER_CAPACITY = 64 * 1024;
++
+     std::string fragmentBuffer;
+     unsigned int controlTipLength = 0;
++    bool fragmentBufferClearPending = false;
++    bool fragmentBufferViewActive = false;
+     bool isShuttingDown = 0;
++    bool closeEventEmitted = false;
++    bool userDataDestroyed = false;
+     bool hasTimedOut = false;
+     enum CompressionStatus : char {
+         DISABLED,
+@@ -51,6 +58,38 @@ private:
+ 
+     /* We could be a subscriber */
+     Subscriber *subscriber = nullptr;
++
++    void clearFragmentBuffer() {
++        fragmentBufferClearPending = false;
++        controlTipLength = 0;
++        if (fragmentBuffer.capacity() > MAX_RETAINED_FRAGMENT_BUFFER_CAPACITY) [[unlikely]] {
++            std::string empty;
++            fragmentBuffer.swap(empty);
++            return;
++        }
++
++        fragmentBuffer.clear();
++    }
++
++    void beginFragmentBufferView() {
++        fragmentBufferViewActive = true;
++    }
++
++    void endFragmentBufferView() {
++        fragmentBufferViewActive = false;
++        if (fragmentBufferClearPending) {
++            clearFragmentBuffer();
++        }
++    }
++
++    void requestFragmentBufferClear() {
++        if (fragmentBufferViewActive) {
++            fragmentBufferClearPending = true;
++            return;
++        }
++
++        clearFragmentBuffer();
++    }
+ public:
+     WebSocketData(bool perMessageDeflate, CompressOptions compressOptions, BackPressure &&backpressure) : AsyncSocketData<false>(std::move(backpressure)), WebSocketState<true>() {
+         compressionStatus = perMessageDeflate ? ENABLED : DISABLED;
+diff --git a/src/WebSocketProtocol.h b/src/WebSocketProtocol.h
+index a6c1730..fe3b708 100644
+--- a/src/WebSocketProtocol.h
++++ b/src/WebSocketProtocol.h
+@@ -183,6 +183,9 @@ struct CloseFrame {
+ static inline CloseFrame parseClosePayload(char *src, size_t length) {
+     /* If we get no code or message, default to reporting 1005 no status code present */
+     CloseFrame cf = {1005, nullptr, 0};
++    if (length == 1) {
++        return {1006, (char *) ERR_INVALID_CLOSE_PAYLOAD.data(), ERR_INVALID_CLOSE_PAYLOAD.length()};
++    }
+     if (length >= 2) {
+         memcpy(&cf.code, src, 2);
+         cf = {cond_byte_swap<uint16_t>(cf.code), src + 2, length - 2};
+@@ -289,6 +292,7 @@ protected:
+     static inline bool isFin(char *frame) {return *((unsigned char *) frame) & 128;}
+     static inline unsigned char getOpCode(char *frame) {return *((unsigned char *) frame) & 15;}
+     static inline unsigned char payloadLength(char *frame) {return ((unsigned char *) frame)[1] & 127;}
++    static inline bool isMasked(char *frame) {return ((unsigned char *) frame)[1] & 128;}
+     static inline bool rsv23(char *frame) {return *((unsigned char *) frame) & 48;}
+     static inline bool rsv1(char *frame) {return *((unsigned char *) frame) & 64;}
+ 
+@@ -482,7 +486,18 @@ public:
+         }
+         if (wState->state.wantsHead) {
+             parseNext:
+-            while (length >= SHORT_MESSAGE_HEADER) {
++            while (length >= 2) {
++
++                /* RFC 6455 5.1: every frame sent from a client to a server is masked. */
++                if constexpr (isServer) {
++                    if (!isMasked(src)) {
++                        Impl::forceClose(wState, user, ERR_PROTOCOL);
++                        return;
++                    }
++                    if (length < SHORT_MESSAGE_HEADER) {
++                        break;
++                    }
++                }
+ 
+                 // invalid reserved bits / invalid opcodes / invalid control frames / set compressed frame
+                 if ((rsv1(src) && !Impl::setCompressed(wState, user)) || rsv23(src) || (getOpCode(src) > 2 && getOpCode(src) < 8) ||
+@@ -498,13 +513,28 @@ public:
+                 } else if (payloadLength(src) == 126) {
+                     if (length < MEDIUM_MESSAGE_HEADER) {
+                         break;
+-                    } else if(consumeMessage<MEDIUM_MESSAGE_HEADER, uint16_t>(protocol::cond_byte_swap<uint16_t>(protocol::bit_cast<uint16_t>(src + 2)), src, length, wState, user)) {
++                    }
++                    uint16_t extendedLength =
++                        protocol::cond_byte_swap<uint16_t>(protocol::bit_cast<uint16_t>(src + 2));
++                    if (extendedLength < 126) {
++                        Impl::forceClose(wState, user, ERR_PROTOCOL);
++                        return;
++                    }
++                    if (consumeMessage<MEDIUM_MESSAGE_HEADER, uint16_t>(extendedLength, src, length, wState, user)) {
+                         return;
+                     }
+                 } else if (length < LONG_MESSAGE_HEADER) {
+                     break;
+-                } else if (consumeMessage<LONG_MESSAGE_HEADER, uint64_t>(protocol::cond_byte_swap<uint64_t>(protocol::bit_cast<uint64_t>(src + 2)), src, length, wState, user)) {
+-                    return;
++                } else {
++                    uint64_t extendedLength =
++                        protocol::cond_byte_swap<uint64_t>(protocol::bit_cast<uint64_t>(src + 2));
++                    if (extendedLength <= UINT16_MAX || (extendedLength >> 63)) {
++                        Impl::forceClose(wState, user, ERR_PROTOCOL);
++                        return;
++                    }
++                    if (consumeMessage<LONG_MESSAGE_HEADER, uint64_t>(extendedLength, src, length, wState, user)) {
++                        return;
++                    }
+                 }
+             }
+             if (length) {

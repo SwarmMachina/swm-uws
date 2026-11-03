@@ -3,13 +3,13 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { execNpmSync } from './npm-cli.js'
+import { execNpmSync, parseNpmPackOutput } from './npm-cli.js'
 
 const root = resolve(import.meta.dirname, '../..')
 const temp = mkdtempSync(join(tmpdir(), 'swm-uws-package-'))
 
 try {
-  const [packed] = JSON.parse(
+  const packed = parseNpmPackOutput(
     execNpmSync(['pack', '--json', '--ignore-scripts', '--pack-destination', temp], {
       cwd: root,
       encoding: 'utf8',

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/SwarmMachina/swm-uws/actions/workflows/quality.yml/badge.svg)](https://github.com/SwarmMachina/swm-uws/actions/workflows/quality.yml)
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
-[![Node.js](https://img.shields.io/badge/node-22%20%7C%2024-brightgreen.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-22%20%7C%2024%20%7C%2026-brightgreen.svg)](https://nodejs.org/)
 [![runtime dependencies](https://img.shields.io/badge/runtime_dependencies-0-brightgreen.svg)](#runtime-requirements)
 [![stability](https://img.shields.io/badge/stability-experimental-orange.svg)](#stability)
 
@@ -10,7 +10,7 @@ A high-performance non-TLS HTTP and WebSocket binding compatible with the
 standard uWebSockets.js `App()` API. Used by
 [`@swarmmachina/swm-core`](https://www.npmjs.com/package/@swarmmachina/swm-core).
 
-The binding tracks uWebSockets.js `20.69.0`. See the
+The binding tracks uWebSockets.js `20.71.0`. See the
 [vendored revisions](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/VERSIONS.md),
 [local patches](https://github.com/SwarmMachina/swm-uws/blob/master/vendor/PATCHES.md),
 and [TypeScript API](lib/index.d.ts).
@@ -18,7 +18,7 @@ and [TypeScript API](lib/index.d.ts).
 ## Features
 
 - **uWebSockets.js compatibility** - Non-TLS `App()` API for existing applications.
-- **Native HTTP + WebSocket transport** - Both protocols on Node.js 22 and 24.
+- **Native HTTP + WebSocket transport** - Both protocols on Node.js 22, 24 and 26.
 - **TypeScript declarations** - Typed APIs and helpers for standalone callbacks.
 - **Request-body control** - Zero-copy streaming, bounded collection, pause and resume.
 - **HTTP transport policy** - Per-`App` parser limits, timeouts, trusted proxy support, and counters.
@@ -35,10 +35,12 @@ pnpm add @swarmmachina/swm-uws
 
 The binding ships platform-specific native prebuilds:
 
-- **Node.js 22 or 24** - Other majors are rejected by the package engine constraint.
+- **Node.js 22, 24 or 26** - Other majors are rejected by the package engine constraint.
 - **Linux x64 with glibc** - Use a `bookworm`/`slim` image rather than Alpine/musl.
 - **Windows x64** and **macOS arm64/x64** are supported.
 - **Linux ARM64, Windows ARM64 and musl are not supported.**
+- **Experimental upstream microcaching (`get(path, handler, options)`) is not supported.**
+  Route registration accepts exactly the path and handler.
 - **TLS, `SSLApp`, `H3App`, and WebSocket compression are disabled.** Terminate TLS
   before the application.
 

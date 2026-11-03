@@ -1,5 +1,5 @@
 /*
- * Authored by Alex Hultman, 2018-2024.
+ * Authored by Alex Hultman, 2018-2026.
  * Intellectual property of third-party.
 
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -101,6 +101,17 @@ public:
     /* If you do not want to handle this route */
     void setYield(bool yield) {
         didYield = yield;
+    }
+
+    bool areIdentical(std::string_view lowerCasedHeader, std::string_view expectedValue) {
+        for (Header *h = headers; (++h)->key.length(); ) {
+            if (h->key.length() == lowerCasedHeader.length() && !strncmp(h->key.data(), lowerCasedHeader.data(), lowerCasedHeader.length())) {
+                if (expectedValue != h->value) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     std::string_view getHeader(std::string_view lowerCasedHeader) {
@@ -426,7 +437,7 @@ private:
         /* The request line is different from the field names / field values */
         if ((char *) 2 > (postPaddedBuffer = consumeRequestLine(postPaddedBuffer, end, headers[0]))) {
             /* Error - invalid request line */
-            /* Assuming it is 505 HTTP Version Not Supported */
+            /* Preserve the binding contract for unsupported HTTP versions. */
             err = postPaddedBuffer ? HTTP_ERROR_505_HTTP_VERSION_NOT_SUPPORTED : 0;
             return 0;
         }
@@ -439,7 +450,8 @@ private:
             headers->key = std::string_view(preliminaryKey, (size_t) (postPaddedBuffer - preliminaryKey));
 
             /* We should not accept whitespace between key and colon, so colon must foloow immediately */
-            if (postPaddedBuffer[0] != ':') {
+            /* We also cannot accept empty strings as keys */
+            if (postPaddedBuffer[0] != ':' || preliminaryKey == postPaddedBuffer) {
                 /* If we stand at the end, we are fragmented */
                 if (postPaddedBuffer == end) {
                     return 0;
@@ -509,6 +521,16 @@ private:
         limitViolation_ = LimitViolation::HeaderCount;
         err = HTTP_ERROR_431_REQUEST_HEADER_FIELDS_TOO_LARGE;
         return 0;
+    }
+
+    bool isInvalidHost(std::string_view host) {
+        for (char c : host) {
+            unsigned char uc = static_cast<unsigned char>(c);
+            if (uc < 33 || c == ',' || c == '@') {
+                return true; // Invalid character found
+            }
+        }
+        return false;
     }
 
     /* This is the only caller of getHeaders and is thus the deepest part of the parser.
@@ -589,9 +611,9 @@ private:
                     trustedProxyValue)) [[unlikely]] {
                 return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
             }
-            
-            /* Break if no host header (but we can have empty string which is different from nullptr) */
-            if (!hasHost) {
+
+            /* Require one nonempty Host value with the upstream syntax checks. */
+            if (!hasHost || req->getHeader("host").empty() || isInvalidHost(req->getHeader("host"))) {
                 return {HTTP_ERROR_400_BAD_REQUEST, FULLPTR};
             }
 

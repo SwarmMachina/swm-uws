@@ -12,7 +12,8 @@ mkdirSync(prebuildDirectory, { recursive: true })
 
 for (const [nodeVersion, abi] of [
   ['22', '127'],
-  ['24', '137']
+  ['24', '137'],
+  ['26', '147']
 ]) {
   const outputDirectory = mkdtempSync(join(evidenceRoot, `node-${nodeVersion}-`))
 
