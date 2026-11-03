@@ -113,7 +113,8 @@ async function runSide({ block, position, role }, options, temporaryDirectory) {
 async function startServer() {
   const implementation = requiredEnvironment('SWM_FEATURE_IMPLEMENTATION')
   const feature = requiredEnvironment('SWM_FEATURE_KIND')
-  const binding = await import(pathToFileURL(requiredEnvironment('SWM_FEATURE_BINDING')).href)
+  const bindingModule = await import(pathToFileURL(requiredEnvironment('SWM_FEATURE_BINDING')).href)
+  const binding = bindingModule.default ?? bindingModule
   const maxBodySize = Number(requiredEnvironment('SWM_FEATURE_MAX_BODY'))
   const metrics = new Metrics()
   const state = { value: 0 }
@@ -125,9 +126,7 @@ async function startServer() {
     app = binding.createApp()
     installSwmFeature({ app, binding, feature, maxBodySize, state })
   } else if (implementation === 'upstream') {
-    const uWS = binding.default ?? binding
-
-    app = uWS.App()
+    app = binding.App()
     installUpstreamFeature({ app, feature, maxBodySize, state })
   } else {
     throw new Error(`unsupported SWM_FEATURE_IMPLEMENTATION: ${implementation}`)
