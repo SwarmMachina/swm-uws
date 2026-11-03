@@ -352,6 +352,10 @@ try {
         expectedBodies[index],
         'collected body must outlive its response and application'
       )
+      const transferred = structuredClone(body, { transfer: [body] })
+
+      assert.equal(body.byteLength, 0)
+      assert.deepEqual(Buffer.from(transferred), expectedBodies[index], 'owned collected bodies remain transferable')
     }
   } else if (scenario.startsWith('collector-')) {
     const responses = []

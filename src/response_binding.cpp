@@ -577,14 +577,13 @@ void ResponseGetWriteOffset(const FunctionCallbackInfo<Value> &args) {
 Local<ArrayBuffer> CopyToArrayBuffer(Isolate *isolate, std::string_view value) {
     // Every byte is overwritten before the ArrayBuffer becomes visible to JavaScript.
 #if V8_MAJOR_VERSION >= 13
-    std::unique_ptr<v8::BackingStore> backing = ArrayBuffer::NewBackingStore(
+    Local<ArrayBuffer> buffer = ArrayBuffer::New(
         isolate, value.length(), v8::BackingStoreInitializationMode::kUninitialized);
 #else
-    std::unique_ptr<v8::BackingStore> backing =
-        ArrayBuffer::NewBackingStore(isolate, value.length());
+    Local<ArrayBuffer> buffer = ArrayBuffer::New(isolate, value.length());
 #endif
-    if (!value.empty()) std::memcpy(backing->Data(), value.data(), value.length());
-    return ArrayBuffer::New(isolate, std::move(backing));
+    if (!value.empty()) std::memcpy(buffer->Data(), value.data(), value.length());
+    return buffer;
 }
 
 Local<ArrayBuffer> ExternalArrayBuffer(Isolate *isolate, std::string_view value) {
@@ -718,7 +717,7 @@ void ResponseOnData(const FunctionCallbackInfo<Value> &args) {
         Isolate *isolate = state->Isolate();
         HandleScope scope(isolate);
         NativeCallbackScope callbackScope(*state->Metadata().app, state);
-        EphemeralArrayBuffer buffer(ExternalArrayBuffer(isolate, chunk));
+        EphemeralArrayBuffer buffer(isolate, ExternalArrayBuffer(isolate, chunk));
         Local<Value> argv[] = {buffer.Value(), Boolean::New(isolate, isLast)};
         const bool callbackSucceeded = CallJs(isolate, state->DataHandler(), 2, argv);
         if (!callbackSucceeded) CloseAsyncResponseAfterCallbackFailure(state);
@@ -744,7 +743,7 @@ void ResponseOnDataV2(const FunctionCallbackInfo<Value> &args) {
         Isolate *isolate = state->Isolate();
         HandleScope scope(isolate);
         NativeCallbackScope callbackScope(*state->Metadata().app, state);
-        EphemeralArrayBuffer buffer(ExternalArrayBuffer(isolate, chunk));
+        EphemeralArrayBuffer buffer(isolate, ExternalArrayBuffer(isolate, chunk));
         Local<Value> argv[] = {buffer.Value(),
                                BigInt::NewFromUnsigned(isolate, maxRemainingBodyLength)};
         const bool callbackSucceeded = CallJs(isolate, state->DataHandler(), 2, argv);

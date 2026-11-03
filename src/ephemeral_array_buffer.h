@@ -7,7 +7,7 @@ namespace swm::binding {
 
 class EphemeralArrayBuffer final {
 public:
-    explicit EphemeralArrayBuffer(v8::Local<v8::ArrayBuffer> buffer);
+    explicit EphemeralArrayBuffer(v8::Isolate *isolate, v8::Local<v8::ArrayBuffer> buffer);
     ~EphemeralArrayBuffer();
 
     EphemeralArrayBuffer(const EphemeralArrayBuffer &) = delete;
@@ -17,6 +17,7 @@ public:
 
 private:
     v8::Local<v8::ArrayBuffer> buffer_;
+    v8::Local<v8::Value> detachKey_;
 };
 
 } // namespace swm::binding

@@ -3,14 +3,18 @@
 
 namespace swm::binding {
 
+constexpr int SOCKET_RECEIVER_TOKEN_FIELD = 4;
+
 constexpr unsigned int MAX_WEBSOCKET_PAYLOAD_LENGTH = 64U * 1024U * 1024U;
 
 SocketState *GetSocketState(const FunctionCallbackInfo<Value> &args) {
-    if (!HasBindingObjectKind(args.This(), BindingObjectKind::Socket, 1)) {
+    const Local<Object> receiver = args.This();
+    if (receiver->InternalFieldCount() <= SOCKET_RECEIVER_TOKEN_FIELD ||
+        receiver->GetInternalField(SOCKET_RECEIVER_TOKEN_FIELD) != args.Data()) {
         ThrowTypeError(args.GetIsolate(), "WebSocket method called with incompatible receiver");
         return nullptr;
     }
-    auto *state = static_cast<SocketState *>(GetInternalPointer(args.This()));
+    auto *state = static_cast<SocketState *>(GetValidatedInternalPointer(receiver));
     if (!state || !state->Socket() || state->App().IsClosed()) {
         ThrowError(args.GetIsolate(), "WebSocket is no longer valid");
         return nullptr;
@@ -760,7 +764,7 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
             return;
         }
         SocketCallbackScope callbackScope(*socketState);
-        EphemeralArrayBuffer buffer(ExternalArrayBuffer(callbackIsolate, payload));
+        EphemeralArrayBuffer buffer(callbackIsolate, ExternalArrayBuffer(callbackIsolate, payload));
         Local<Value> argv[] = {socketObject,
                                buffer.Value(),
                                Boolean::New(callbackIsolate, opcode == uWS::OpCode::BINARY)};
@@ -781,7 +785,7 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
         }
         std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
         /* A dropped callback may publish re-entrantly and invalidate TopicTree storage. */
-        EphemeralArrayBuffer buffer(CopyToArrayBuffer(callbackIsolate, payload));
+        EphemeralArrayBuffer buffer(callbackIsolate, CopyToArrayBuffer(callbackIsolate, payload));
         Local<Value> argv[] = {socketObject,
                                buffer.Value(),
                                Boolean::New(callbackIsolate, opcode == uWS::OpCode::BINARY)};
@@ -816,7 +820,7 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
         }
         std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
         NativeCallbackScope callbackScope(*state, socketState);
-        EphemeralArrayBuffer buffer(ExternalArrayBuffer(callbackIsolate, payload));
+        EphemeralArrayBuffer buffer(callbackIsolate, ExternalArrayBuffer(callbackIsolate, payload));
         Local<Value> argv[] = {socketObject, buffer.Value()};
         const bool callbackSucceeded = CallJs(callbackIsolate, ping.Get(callbackIsolate), 2, argv);
         if (!callbackSucceeded) {
@@ -834,7 +838,7 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
         }
         std::shared_ptr<SocketState> socketState = socket->getUserData()->state;
         NativeCallbackScope callbackScope(*state, socketState);
-        EphemeralArrayBuffer buffer(ExternalArrayBuffer(callbackIsolate, payload));
+        EphemeralArrayBuffer buffer(callbackIsolate, ExternalArrayBuffer(callbackIsolate, payload));
         Local<Value> argv[] = {socketObject, buffer.Value()};
         const bool callbackSucceeded = CallJs(callbackIsolate, pong.Get(callbackIsolate), 2, argv);
         if (!callbackSucceeded) {
@@ -855,7 +859,8 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
             }
             socketState = socket->getUserData()->state;
             NativeCallbackScope callbackScope(*state, socketState);
-            EphemeralArrayBuffer topicBuffer(ExternalArrayBuffer(callbackIsolate, topic));
+            EphemeralArrayBuffer topicBuffer(callbackIsolate,
+                                             ExternalArrayBuffer(callbackIsolate, topic));
             Local<Value> argv[] = {socketObject,
                                    topicBuffer.Value(),
                                    Number::New(callbackIsolate, newCount),
@@ -881,7 +886,8 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
         (void)socketState->DetachSocket();
         if (!close.IsEmpty() && !socketState->CallbackFailed() && hasObject) {
             NativeCallbackScope callbackScope(*state, socketState);
-            EphemeralArrayBuffer reasonBuffer(ExternalArrayBuffer(callbackIsolate, reason));
+            EphemeralArrayBuffer reasonBuffer(callbackIsolate,
+                                              ExternalArrayBuffer(callbackIsolate, reason));
             Local<Value> argv[] = {
                 socketObject, Number::New(callbackIsolate, code), reasonBuffer.Value()};
             const bool callbackSucceeded =
@@ -900,30 +906,39 @@ void AppWs(const FunctionCallbackInfo<Value> &args) {
 void InitializeWebSocketBinding(BindingEnvironment *context, Local<External>) {
     Isolate *isolate = context->Isolate();
     Local<FunctionTemplate> socket = FunctionTemplate::New(isolate);
-    socket->InstanceTemplate()->SetInternalFieldCount(2);
-    SetPrototypeMethod(isolate, socket, "send", SocketSend);
-    SetPrototypeMethod(isolate, socket, "sendFirstFragment", SocketSendFirstFragment);
-    SetPrototypeMethod(isolate, socket, "sendFragment", SocketSendFragment);
-    SetPrototypeMethod(isolate, socket, "sendLastFragment", SocketSendLastFragment);
-    SetPrototypeMethod(isolate, socket, "ping", SocketPing);
-    SetPrototypeMethod(isolate, socket, "publish", SocketPublish);
-    SetPrototypeMethod(isolate, socket, "cork", SocketCork);
-    SetPrototypeMethod(isolate, socket, "end", SocketEnd);
-    SetPrototypeMethod(isolate, socket, "close", SocketClose);
-    SetPrototypeMethod(isolate, socket, "getBufferedAmount", SocketGetBufferedAmount);
-    SetPrototypeMethod(isolate, socket, "getRemoteAddress", SocketGetRemoteAddress);
-    SetPrototypeMethod(isolate, socket, "getRemoteAddressAsText", SocketGetRemoteAddressAsText);
-    SetPrototypeMethod(isolate, socket, "getRemotePort", SocketGetRemotePort);
-    SetPrototypeMethod(isolate, socket, "getUserData", SocketGetUserData);
-    SetPrototypeMethod(isolate, socket, "subscribe", SocketSubscribe);
-    SetPrototypeMethod(isolate, socket, "unsubscribe", SocketUnsubscribe);
-    SetPrototypeMethod(isolate, socket, "isSubscribed", SocketIsSubscribed);
-    SetPrototypeMethod(isolate, socket, "getTopics", SocketGetTopics);
+    socket->InstanceTemplate()->SetInternalFieldCount(SOCKET_RECEIVER_TOKEN_FIELD + 1);
+    Local<v8::Symbol> receiverToken = v8::Symbol::New(isolate);
+    SetPrototypeMethod(isolate, socket, "send", SocketSend, receiverToken);
+    SetPrototypeMethod(
+        isolate, socket, "sendFirstFragment", SocketSendFirstFragment, receiverToken);
+    SetPrototypeMethod(isolate, socket, "sendFragment", SocketSendFragment, receiverToken);
+    SetPrototypeMethod(isolate, socket, "sendLastFragment", SocketSendLastFragment, receiverToken);
+    SetPrototypeMethod(isolate, socket, "ping", SocketPing, receiverToken);
+    SetPrototypeMethod(isolate, socket, "publish", SocketPublish, receiverToken);
+    SetPrototypeMethod(isolate, socket, "cork", SocketCork, receiverToken);
+    SetPrototypeMethod(isolate, socket, "end", SocketEnd, receiverToken);
+    SetPrototypeMethod(isolate, socket, "close", SocketClose, receiverToken);
+    SetPrototypeMethod(
+        isolate, socket, "getBufferedAmount", SocketGetBufferedAmount, receiverToken);
+    SetPrototypeMethod(isolate, socket, "getRemoteAddress", SocketGetRemoteAddress, receiverToken);
+    SetPrototypeMethod(
+        isolate, socket, "getRemoteAddressAsText", SocketGetRemoteAddressAsText, receiverToken);
+    SetPrototypeMethod(isolate, socket, "getRemotePort", SocketGetRemotePort, receiverToken);
+    SetPrototypeMethod(isolate, socket, "getUserData", SocketGetUserData, receiverToken);
+    SetPrototypeMethod(isolate, socket, "subscribe", SocketSubscribe, receiverToken);
+    SetPrototypeMethod(isolate, socket, "unsubscribe", SocketUnsubscribe, receiverToken);
+    SetPrototypeMethod(isolate, socket, "isSubscribed", SocketIsSubscribed, receiverToken);
+    SetPrototypeMethod(isolate, socket, "getTopics", SocketGetTopics, receiverToken);
     Local<Object> socketTemplate = socket->GetFunction(isolate->GetCurrentContext())
                                        .ToLocalChecked()
                                        ->NewInstance(isolate->GetCurrentContext())
                                        .ToLocalChecked();
+    SetInternalPointer(socketTemplate, nullptr, 0);
     SetBindingObjectKind(socketTemplate, BindingObjectKind::Socket, 1);
+    // Other binding receiver guards inspect fields 2/3 as aligned pointers.
+    SetInternalPointer(socketTemplate, nullptr, 2);
+    SetInternalPointer(socketTemplate, nullptr, 3);
+    socketTemplate->SetInternalField(SOCKET_RECEIVER_TOKEN_FIELD, receiverToken);
     context->SetSocketTemplate(socketTemplate);
 }
 

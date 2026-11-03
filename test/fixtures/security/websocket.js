@@ -91,6 +91,18 @@ export const webSocketCases = {
         retainedPayload = payload
         assert.equal(Buffer.from(payload).toString(), 'payload')
         assert.throws(() => structuredClone(payload, { transfer: [payload] }), /detachkey/i)
+
+        // V8 12 aborts inside ArrayBufferTransfer when a detach key is present.
+        if (Number(process.versions.v8.split('.')[0]) >= 13) {
+          for (const method of ['transfer', 'transferToFixedLength']) {
+            const transfer = ArrayBuffer.prototype[method]
+
+            if (typeof transfer === 'function') {
+              assert.throws(() => transfer.call(payload), /detach|transfer/i)
+            }
+          }
+        }
+
         assert.equal(payload.byteLength, 'payload'.length)
         socket.send('ready')
       }

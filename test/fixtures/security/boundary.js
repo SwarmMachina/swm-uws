@@ -219,10 +219,18 @@ export const boundaryCases = {
     const { app } = fixture
     const plan = new RequestPrefetchPlan({ headers: ['host'] })
 
+    let requestMethod
+    let responseMethod
+    let snapshotMethod
+
     assert.throws(() => app.get.call({}, '/', () => {}), /App method called with incompatible receiver/)
 
     app.get('/receiver', (res, req) => {
       const snapshot = req.prefetch(plan)
+
+      requestMethod = req.getUrl
+      responseMethod = res.end
+      snapshotMethod = snapshot.getHeader
 
       assert.throws(() => app.get.call(req, '/wrong', () => {}), /App method called with incompatible receiver/)
       assert.throws(() => req.getUrl.call(app), /HTTP request method called with incompatible receiver/)
@@ -235,6 +243,14 @@ export const boundaryCases = {
       open(ws) {
         assert.throws(() => ws.send.call(app, 'wrong'), /WebSocket method called with incompatible receiver/)
         assert.throws(() => app.ws.call(ws, '/wrong', {}), /App method called with incompatible receiver/)
+        assert.throws(() => requestMethod.call(ws), /HTTP request method called with incompatible receiver/)
+        assert.throws(() => responseMethod.call(ws, 'wrong'), /HTTP response method called with incompatible receiver/)
+        assert.throws(() => snapshotMethod.call(ws, 'host'), /invalid RequestPrefetchSnapshot receiver/)
+
+        for (const receiver of [{}, Object.create(ws), new Proxy(ws, {})]) {
+          assert.throws(() => ws.send.call(receiver, 'wrong'), /WebSocket method called with incompatible receiver/)
+        }
+
         ws.send('ready')
       }
     })

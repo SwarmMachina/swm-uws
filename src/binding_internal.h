@@ -73,13 +73,18 @@ enum class HttpMethod : std::uint8_t {
     Any,
 };
 
-inline void *GetInternalPointer(const Local<Object> &object, int index = 0) {
-    if (index < 0 || object->InternalFieldCount() <= index) return nullptr;
+// The caller must first validate the receiver brand and the field bounds.
+inline void *GetValidatedInternalPointer(const Local<Object> &object, int index = 0) {
 #if V8_MAJOR_VERSION == 14
     return object->GetAlignedPointerFromInternalField(index, 0);
 #else
     return object->GetAlignedPointerFromInternalField(index);
 #endif
+}
+
+inline void *GetInternalPointer(const Local<Object> &object, int index = 0) {
+    if (index < 0 || object->InternalFieldCount() <= index) return nullptr;
+    return GetValidatedInternalPointer(object, index);
 }
 
 inline void SetInternalPointer(const Local<Object> &object, void *pointer, int index = 0) {
