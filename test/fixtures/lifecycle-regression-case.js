@@ -305,15 +305,16 @@ try {
     await collectGarbage()
     assert.ok(retained - process.memoryUsage().external > 10 * 1024 * 1024, 'snapshot backing stores retained after GC')
   } else if (scenario === 'collector-buffer-lifetime') {
-    const payload = Buffer.alloc(64 * 1024, 0x5a)
+    const payloads = [Buffer.alloc(4096, 0x5a), Buffer.alloc(64 * 1024, 0x6b)]
     const bodies = []
+    const expectedBodies = []
     const responses = []
     const methods = ['collectBody', 'collectBodyWithLength']
 
     for (const method of methods) {
       app.post(`/${method}`, (res) => {
         responses.push(new WeakRef(res))
-        res[method](payload.length, (body) => {
+        res[method](payloads[1].length, (body) => {
           bodies.push(body)
           res.end('ok')
         })
@@ -323,23 +324,34 @@ try {
     server = await NativeAppServer.listen(app)
 
     for (const method of methods) {
-      const result = await exchange([
-        `POST /${method} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: ${payload.length}\r\n\r\n`,
-        payload.subarray(0, payload.length / 2),
-        payload.subarray(payload.length / 2)
-      ])
+      for (const payload of payloads) {
+        const header = Buffer.from(
+          `POST /${method} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: ${payload.length}\r\n\r\n`
+        )
+        const chunks =
+          payload.length === 4096
+            ? [Buffer.concat([header, payload])]
+            : [header, payload.subarray(0, payload.length / 2), payload.subarray(payload.length / 2)]
 
-      assert.match(result.toString(), /200 OK/)
+        expectedBodies.push(payload)
+        const result = await exchange(chunks)
+
+        assert.match(result.toString(), /200 OK/)
+      }
     }
 
     server.close()
     await collectGarbage()
-    assert.equal(bodies.length, methods.length)
+    assert.equal(bodies.length, methods.length * payloads.length)
     assert.ok(responses.every((reference) => reference.deref() === undefined))
 
-    for (const body of bodies) {
+    for (const [index, body] of bodies.entries()) {
       assert.ok(body instanceof ArrayBuffer)
-      assert.deepEqual(Buffer.from(body), payload, 'collected body must outlive its response and application')
+      assert.deepEqual(
+        Buffer.from(body),
+        expectedBodies[index],
+        'collected body must outlive its response and application'
+      )
     }
   } else if (scenario.startsWith('collector-')) {
     const responses = []

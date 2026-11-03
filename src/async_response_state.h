@@ -7,8 +7,10 @@
 #include "body_collection.h"
 #include "response_metadata.h"
 
+#include <cassert>
 #include <cstddef>
 #include <memory>
+#include <optional>
 
 namespace swm::binding {
 
@@ -96,10 +98,11 @@ public:
     }
 
     void StartCollection(std::size_t maximumSize) {
-        collection_ = std::make_unique<BodyCollection>(maximumSize);
+        collection_.emplace(maximumSize);
     }
 
     [[nodiscard]] BodyCollection &Collection() noexcept {
+        assert(collection_.has_value());
         return *collection_;
     }
 
@@ -151,7 +154,7 @@ private:
     v8::Global<v8::Function> writableHandler_;
     v8::Global<v8::Object> object_;
     ResponseMetadata metadata_;
-    std::unique_ptr<BodyCollection> collection_;
+    std::optional<BodyCollection> collection_;
 };
 
 } // namespace swm::binding

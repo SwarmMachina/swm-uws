@@ -11,6 +11,7 @@ class BodyCollection final {
 public:
     explicit BodyCollection(std::size_t maximumSize) noexcept;
     [[nodiscard]] bool Completed() const noexcept;
+    [[nodiscard]] bool TryCompleteSingleChunk(std::size_t byteLength) noexcept;
     [[nodiscard]] bool Append(std::string_view chunk);
     [[nodiscard]] std::vector<char> Take();
     void Discard() noexcept;

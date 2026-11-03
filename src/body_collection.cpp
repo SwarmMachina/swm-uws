@@ -10,6 +10,12 @@ bool BodyCollection::Completed() const noexcept {
     return completed_;
 }
 
+bool BodyCollection::TryCompleteSingleChunk(std::size_t byteLength) noexcept {
+    if (completed_ || !bytes_.empty() || byteLength > maximumSize_) return false;
+    completed_ = true;
+    return true;
+}
+
 bool BodyCollection::Append(std::string_view chunk) {
     if (chunk.size() > maximumSize_ - bytes_.size()) {
         Discard();

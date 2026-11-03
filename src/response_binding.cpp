@@ -575,8 +575,14 @@ void ResponseGetWriteOffset(const FunctionCallbackInfo<Value> &args) {
 }
 
 Local<ArrayBuffer> CopyToArrayBuffer(Isolate *isolate, std::string_view value) {
+    // Every byte is overwritten before the ArrayBuffer becomes visible to JavaScript.
+#if V8_MAJOR_VERSION >= 13
+    std::unique_ptr<v8::BackingStore> backing = ArrayBuffer::NewBackingStore(
+        isolate, value.length(), v8::BackingStoreInitializationMode::kUninitialized);
+#else
     std::unique_ptr<v8::BackingStore> backing =
         ArrayBuffer::NewBackingStore(isolate, value.length());
+#endif
     if (!value.empty()) std::memcpy(backing->Data(), value.data(), value.length());
     return ArrayBuffer::New(isolate, std::move(backing));
 }
@@ -793,6 +799,14 @@ void ResponseCollectBodyImpl(const FunctionCallbackInfo<Value> &args, bool retur
 
         Isolate *callbackIsolate = state->Isolate();
         HandleScope scope(callbackIsolate);
+        if (maxRemainingBodyLength == 0 && collection.TryCompleteSingleChunk(chunk.size())) {
+            NativeCallbackScope callbackScope(*state->Metadata().app, state);
+            Local<Value> argv[] = {CopyToArrayBuffer(callbackIsolate, chunk)};
+            const bool callbackSucceeded = CallJs(callbackIsolate, state->DataHandler(), 1, argv);
+            state->ResetDataHandler();
+            if (!callbackSucceeded) CloseAsyncResponseAfterCallbackFailure(state);
+            return;
+        }
         if (!collection.Append(chunk)) {
             NativeCallbackScope callbackScope(*state->Metadata().app, state);
             Local<Value> argv[] = {Null(callbackIsolate)};
