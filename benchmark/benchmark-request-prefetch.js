@@ -264,7 +264,7 @@ function renderReport(artifact) {
     `| Cell | Baseline req/s | Prefetch req/s | RPS delta | Prefetch p95 ms | Prefetch p99 ms | Target ELU | Target RSS MiB |\n` +
     `| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${rows.join('\n')}\n\n` +
     `Results are medians across all role runs. Treat quick/local runs as suite validation, not a release gate; ` +
-    `the release gate requires an even number of balanced ABBA/BAAB blocks on isolated Node 22 and Node 24 hosts.\n`
+    `the release gate requires an even number of balanced ABBA/BAAB blocks on isolated hosts for every supported Node.js major.\n`
   )
 }
 

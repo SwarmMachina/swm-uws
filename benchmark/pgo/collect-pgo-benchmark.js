@@ -7,6 +7,8 @@ import { spawnSync } from 'node:child_process'
 import { relativeMetricGuard } from '@swarmmachina/benchkit/regression'
 import { metricMedians, pairedComparison } from '@swarmmachina/benchkit/statistics'
 
+import { pinnedUpstreamCommit } from '../lib/upstream-release.js'
+
 if (process.argv.length !== 5) {
   throw new Error('usage: collect-pgo-benchmark.js <raw-dir> <out-dir> <candidate-binary>')
 }
@@ -19,6 +21,13 @@ const referenceBinding = resolve(requiredEnvironment('SWM_BENCH_REFERENCE'))
 const runCount = numberEnvironment('SWM_BENCH_RUNS', 6)
 const packageJson = readJson(resolve('package.json'))
 const referencePackageJson = readJson(resolve(dirname(referenceBinding), 'package.json'))
+const upstreamVersions = readFileSync(resolve('vendor/VERSIONS.md'), 'utf8')
+const upstreamCommit = pinnedUpstreamCommit(upstreamVersions, packageJson.upstream.uWebSocketsJs)
+
+if (`v${referencePackageJson.version}` !== packageJson.upstream.uWebSocketsJs) {
+  throw new Error('Benchmark reference version does not match the pinned upstream release')
+}
+
 const runs = []
 
 for (let round = 1; round <= runCount; round++) {
@@ -44,8 +53,6 @@ const binary = readFileSync(candidateBinary)
 const binaryStat = statSync(candidateBinary)
 const fileDescription = commandOutput('file', [candidateBinary])
 const dynamicDependencies = parseDynamicDependencies(commandOutput('ldd', [candidateBinary]))
-const upstreamVersions = readFileSync(resolve('vendor/VERSIONS.md'), 'utf8')
-const upstreamCommit = /v20\.69\.0` \/ `([0-9a-f]{40})`/.exec(upstreamVersions)?.[1]
 const throughputComparison = pairedComparison(runs.map((run) => ({ candidate: run.swmRps, reference: run.uwsRps })))
 const swmRpsMedian = throughputComparison.medianCandidate
 const uwsRpsMedian = throughputComparison.medianReference
@@ -53,11 +60,6 @@ const swmLatencyMedian = metricMedians(runs.map((run) => run.swmLatencyMs))
 const uwsLatencyMedian = metricMedians(runs.map((run) => run.uwsLatencyMs))
 const swmRuntimeMedian = metricMedians(runs.map((run) => run.swmRuntime))
 const uwsRuntimeMedian = metricMedians(runs.map((run) => run.uwsRuntime))
-
-if (!upstreamCommit) {
-  throw new Error('failed to read the pinned upstream release commit')
-}
-
 const guard = performanceGuard({
   swmRpsMedian,
   uwsRpsMedian,
