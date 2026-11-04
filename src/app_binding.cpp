@@ -42,16 +42,17 @@ void RegisterHttpRoute(const FunctionCallbackInfo<Value> &args,
         Local<Object> requestObject = context->CloneRequestTemplate();
         ResponseCallbackLifetime callbackLifetime{state};
         ResponseMetadata responseMetadata{state, &callbackLifetime};
-        SetInternalPointer(responseObject, response, 0);
-        SetInternalPointer(responseObject, &responseMetadata, 2);
-        SetInternalPointer(requestObject, request);
-        SetInternalPointer(requestObject, &callbackLifetime, 2);
+        // Both objects are binding-owned clones with fixed internal-field layouts.
+        SetValidatedInternalPointer(responseObject, response, 0);
+        SetValidatedInternalPointer(responseObject, &responseMetadata, 2);
+        SetValidatedInternalPointer(requestObject, request);
+        SetValidatedInternalPointer(requestObject, &callbackLifetime, 2);
         Local<Value> argv[] = {responseObject, requestObject};
         const bool callbackSucceeded =
             CallJs(callbackIsolate, handlerPointer->Get(callbackIsolate), 2, argv);
         callbackLifetime.Invalidate();
-        SetInternalPointer(requestObject, nullptr);
-        SetInternalPointer(requestObject, nullptr, 2);
+        SetValidatedInternalPointer(requestObject, nullptr);
+        SetValidatedInternalPointer(requestObject, nullptr, 2);
         if (ResponseMetadata *metadata = GetResponseMetadata(responseObject)) {
             metadata->callbackLifetime = nullptr;
         }
@@ -61,7 +62,7 @@ void RegisterHttpRoute(const FunctionCallbackInfo<Value> &args,
             return;
         }
 
-        if (GetInternalPointer(responseObject)) {
+        if (GetValidatedInternalPointer(responseObject)) {
             if (callbackSucceeded && request->getYield()) {
                 InvalidateResponseState(responseObject);
                 response->onAborted(nullptr);
@@ -69,7 +70,8 @@ void RegisterHttpRoute(const FunctionCallbackInfo<Value> &args,
                 response->onDataV2(nullptr);
                 return;
             }
-            auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(responseObject, 1));
+            auto *async =
+                static_cast<AsyncResponseState *>(GetValidatedInternalPointer(responseObject, 1));
             if (!callbackSucceeded && async) {
                 CloseAsyncResponseAfterCallbackFailure(async->shared_from_this());
             } else if (!async) {

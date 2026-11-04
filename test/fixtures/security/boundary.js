@@ -236,6 +236,19 @@ export const boundaryCases = {
       assert.throws(() => req.getUrl.call(app), /HTTP request method called with incompatible receiver/)
       assert.throws(() => res.end.call(req, 'wrong'), /HTTP response method called with incompatible receiver/)
       assert.throws(() => snapshot.getHeader.call(res, 'host'), /invalid RequestPrefetchSnapshot receiver/)
+
+      for (const receiver of [{}, app, req, snapshot, Object.create(res), new Proxy(res, {})]) {
+        assert.throws(() => res.end.call(receiver, 'wrong'), /HTTP response method called with incompatible receiver/)
+        assert.throws(
+          () => res.onAborted.call(receiver, () => {}),
+          /HTTP response method called with incompatible receiver/
+        )
+        assert.throws(
+          () => res.collectBodyWithLength.call(receiver, 4096, () => {}),
+          /HTTP response method called with incompatible receiver/
+        )
+      }
+
       res.end('ok')
     })
 

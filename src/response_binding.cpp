@@ -23,8 +23,9 @@ bool ResponseStillMatches(const FunctionCallbackInfo<Value> &args, HttpResponse 
 void InvalidateResponseObject(Local<Object> object) {
     // A normal response can finish before the JavaScript route callback returns.
     // The route scope owns request invalidation; close and upgrade invalidate it early below.
-    SetInternalPointer(object, nullptr, 0);
-    SetInternalPointer(object, nullptr, 2);
+    // This is a binding-owned Response clone, including after re-entrant JavaScript.
+    SetValidatedInternalPointer(object, nullptr, 0);
+    SetValidatedInternalPointer(object, nullptr, 2);
 }
 
 void InvalidateRequestLifetime(Local<Object> responseObject) {
@@ -40,7 +41,7 @@ void InvalidateAsyncResponse(const std::shared_ptr<AsyncResponseState> &state) {
     if (!state->IsValid()) return;
     Local<Object> object = state->Object();
     InvalidateResponseObject(object);
-    SetInternalPointer(object, nullptr, 1);
+    SetValidatedInternalPointer(object, nullptr, 1);
     state->Invalidate();
 }
 
@@ -62,20 +63,21 @@ void CloseAsyncResponseAfterCallbackFailure(const std::shared_ptr<AsyncResponseS
 }
 
 std::shared_ptr<AsyncResponseState> PromoteResponse(const FunctionCallbackInfo<Value> &args) {
-    auto *existing = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
+    // Every caller has already passed GetResponse's brand and lifetime checks.
+    auto *existing = static_cast<AsyncResponseState *>(GetValidatedInternalPointer(args.This(), 1));
     if (existing) {
         return existing->shared_from_this();
     }
 
     auto state = std::make_shared<AsyncResponseState>(
         args.GetIsolate(),
-        static_cast<HttpResponse *>(GetInternalPointer(args.This())),
+        static_cast<HttpResponse *>(GetValidatedInternalPointer(args.This())),
         args.This());
     if (ResponseMetadata *metadata = GetResponseMetadata(args.This())) {
         state->Metadata() = *metadata;
     }
-    SetInternalPointer(args.This(), state.get(), 1);
-    SetInternalPointer(args.This(), &state->Metadata(), 2);
+    SetValidatedInternalPointer(args.This(), state.get(), 1);
+    SetValidatedInternalPointer(args.This(), &state->Metadata(), 2);
     state->Response()->onAborted([state]() {
         Isolate *isolate = state->Isolate();
         HandleScope scope(isolate);
@@ -109,7 +111,7 @@ void ResponseEnd(const FunctionCallbackInfo<Value> &args) {
         return;
     }
     const bool closeConnection = args.Length() > 1 && args[1]->BooleanValue(args.GetIsolate());
-    auto *async = static_cast<AsyncResponseState *>(GetInternalPointer(args.This(), 1));
+    auto *async = static_cast<AsyncResponseState *>(GetValidatedInternalPointer(args.This(), 1));
     if (async) {
         std::shared_ptr<AsyncResponseState> asyncState = async->shared_from_this();
         InvalidateAsyncResponse(asyncState);

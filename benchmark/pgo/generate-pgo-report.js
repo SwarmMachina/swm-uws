@@ -172,7 +172,7 @@ function summarizeFeaturePath(name, artifact) {
     name: name.replace(/\.json$/, ''),
     feature,
     label: featureLabel({ ...parameters, feature }),
-    upstreamPath: upstreamPath(feature),
+    upstreamPath: upstreamPath(feature, parameters.bodyOwnership),
     parameters: {
       bodySize: parameters.bodySize,
       blocks: parameters.blocks,
@@ -181,7 +181,8 @@ function summarizeFeaturePath(name, artifact) {
       warmupMs: parameters.warmupMs,
       durationMs: parameters.durationMs,
       workers: parameters.workers,
-      serverCpu: parameters.serverCpu
+      serverCpu: parameters.serverCpu,
+      ...(parameters.bodyOwnership ? { bodyOwnership: parameters.bodyOwnership } : {})
     },
     upstream: medians.upstreamManual,
     swm: medians.swmHelper,
@@ -253,7 +254,11 @@ function featureLabel(parameters) {
   return parameters.feature
 }
 
-function upstreamPath(feature) {
+function upstreamPath(feature, bodyOwnership) {
+  if (feature === 'collect-length' && bodyOwnership === 'exact-size-transferable') {
+    return 'onDataV2 + standalone owned body'
+  }
+
   const paths = {
     'collect-length': 'onDataV2 + allocate/copy body',
     'end-batch': 'cork + status/header writes + end',

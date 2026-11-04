@@ -273,7 +273,8 @@ function installUpstreamFeature({ app, feature, maxBodySize, state }) {
             return
           }
 
-          body = Buffer.allocUnsafe(declaredLength)
+          // Match the collector's exact-size transferable backing store regardless of Buffer.poolSize.
+          body = Buffer.allocUnsafeSlow(declaredLength)
         }
 
         offset += view.copy(body, offset)
@@ -412,7 +413,10 @@ function summarize(options, results) {
       cpu: os.cpus()[0]?.model,
       logicalCpus: os.availableParallelism()
     },
-    parameters: options,
+    parameters: {
+      ...options,
+      ...(options.feature === 'collect-length' ? { bodyOwnership: 'exact-size-transferable' } : {})
+    },
     medians: {
       upstreamManual: baseline,
       swmHelper: candidate,

@@ -73,7 +73,7 @@ enum class HttpMethod : std::uint8_t {
     Any,
 };
 
-// The caller must first validate the receiver brand and the field bounds.
+// The caller must own the native template or first validate its brand and field bounds.
 inline void *GetValidatedInternalPointer(const Local<Object> &object, int index = 0) {
 #if V8_MAJOR_VERSION == 14
     return object->GetAlignedPointerFromInternalField(index, 0);
@@ -87,13 +87,18 @@ inline void *GetInternalPointer(const Local<Object> &object, int index = 0) {
     return GetValidatedInternalPointer(object, index);
 }
 
-inline void SetInternalPointer(const Local<Object> &object, void *pointer, int index = 0) {
-    if (index < 0 || object->InternalFieldCount() <= index) return;
+// The caller must own the native template or first validate its brand and field bounds.
+inline void SetValidatedInternalPointer(const Local<Object> &object, void *pointer, int index = 0) {
 #if V8_MAJOR_VERSION == 14
     object->SetAlignedPointerInInternalField(index, pointer, 0);
 #else
     object->SetAlignedPointerInInternalField(index, pointer);
 #endif
+}
+
+inline void SetInternalPointer(const Local<Object> &object, void *pointer, int index = 0) {
+    if (index < 0 || object->InternalFieldCount() <= index) return;
+    SetValidatedInternalPointer(object, pointer, index);
 }
 
 enum class BindingObjectKind : std::uint8_t {
@@ -307,12 +312,13 @@ inline HttpResponse *GetResponse(const FunctionCallbackInfo<Value> &args, bool i
         ThrowTypeError(args.GetIsolate(), "HTTP response method called with incompatible receiver");
         return nullptr;
     }
-    HttpResponse *response = static_cast<HttpResponse *>(GetInternalPointer(args.This()));
+    // The Response brand check above also validates all four internal fields.
+    HttpResponse *response = static_cast<HttpResponse *>(GetValidatedInternalPointer(args.This()));
     if (!response) {
         ThrowError(args.GetIsolate(), "HTTP response is no longer valid");
         return nullptr;
     }
-    auto *metadata = static_cast<ResponseMetadata *>(GetInternalPointer(args.This(), 2));
+    auto *metadata = static_cast<ResponseMetadata *>(GetValidatedInternalPointer(args.This(), 2));
     if (!metadata || !metadata->app || metadata->app->IsClosed() ||
         (metadata->readOnly && !inspection)) {
         ThrowError(args.GetIsolate(), "HTTP response is no longer valid");
