@@ -30,10 +30,11 @@ MeasureUtf8Length(v8::Isolate *isolate, v8::Local<v8::String> value, std::size_t
 #endif
 }
 
-// Arena-backed views remain valid while all enclosing NativeBytes instances
-// are alive: only the outermost construction resets the thread-local arena and
-// nested instances reserve later bytes. Fallback storage belongs to this
-// instance. A View() must never outlive its owner. Callers must not enter
+// String conversions lease the thread-local arena: only the outermost string
+// conversion resets it, and nested strings reserve later bytes. Binary values
+// retain their backing store without touching the string arena. An arena view
+// may outlive its converter while an enclosing string converter remains alive;
+// all other views must not outlive their owner. Callers must not enter
 // re-entrant JavaScript between acquiring an otherwise unstable view and its
 // final native use; copy first when that rule cannot be satisfied.
 class NativeBytes final {
@@ -41,11 +42,11 @@ public:
     explicit NativeBytes(v8::Isolate *isolate,
                          v8::Local<v8::Value> value,
                          bool allowUndefined = false) {
-        if (arenaDepth_++ == 0) arenaOffset_ = 0;
-
         if (allowUndefined && value->IsUndefined()) return;
 
         if (value->IsString()) {
+            if (arenaDepth_++ == 0) arenaOffset_ = 0;
+            arenaHeld_ = true;
             v8::Local<v8::String> string = value.As<v8::String>();
             if (string->IsOneByte()) {
                 const int characterLength = string->Length();
@@ -142,7 +143,7 @@ public:
     }
 
     ~NativeBytes() {
-        arenaDepth_--;
+        if (arenaHeld_) arenaDepth_--;
     }
 
     NativeBytes(const NativeBytes &) = delete;
@@ -161,7 +162,7 @@ public:
     }
 
     // String bytes in the shared arena remain valid until the outermost
-    // NativeBytes instance is destroyed. This lets callers retain a view
+    // string-converting NativeBytes is destroyed. This lets callers retain a view
     // across inner NativeBytes destructors without copying on the hot path.
     [[nodiscard]] bool IsArenaBacked() const noexcept {
         return arenaBacked_;
@@ -201,6 +202,7 @@ private:
     std::size_t length_ = 0;
     bool valid_ = true;
     bool arenaBacked_ = false;
+    bool arenaHeld_ = false;
 };
 
 } // namespace swm::binding

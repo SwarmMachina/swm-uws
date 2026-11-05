@@ -196,6 +196,7 @@ void ResponseEndBatch(const FunctionCallbackInfo<Value> &args) {
 
     Isolate *isolate = args.GetIsolate();
     Local<Context> context = isolate->GetCurrentContext();
+    // The required status string keeps arena-backed header views alive through the batch.
     NativeBytes status(isolate, args[0]);
     if (!IsValidStatus(status.View())) {
         ThrowTypeError(isolate, "res.endBatch(status, headerLines, body?) expects a valid status");

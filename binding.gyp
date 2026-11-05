@@ -59,7 +59,8 @@
           "OS=='linux'",
           {
             "cflags": [
-              "-flto"
+              "-flto",
+              "-fvisibility=hidden"
             ],
             "cflags_cc": [
               "-flto"

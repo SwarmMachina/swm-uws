@@ -48,6 +48,39 @@ test('route registration rejects the unsupported upstream microcache overload', 
   }
 })
 
+test('endBatch keeps nested header strings across binary and UTF-8 body conversions', async () => {
+  const app = createApp()
+  const headers = Array.from({ length: 10 }, (_, index) => [`x-value-${index}`, `value-${index}-café`])
+  const bodies = [Buffer.from(Array.from({ length: 512 }, (_, index) => index & 255)), 'body-🐿']
+
+  let requests = 0
+
+  app.get('/', (res) => {
+    res.endBatch('202 Accepted', headers.flat(), bodies[requests++ % bodies.length])
+  })
+  const server = await NativeAppServer.listen(app)
+
+  try {
+    for (let index = 0; index < 4; index++) {
+      const [response] = await requestAndParse(
+        server.port,
+        ['GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'],
+        1
+      )
+
+      assert.equal(response.status, 202)
+
+      for (const [name, value] of headers) {
+        assert.equal(response.headers.get(name), Buffer.from(value).toString('latin1'))
+      }
+
+      assert.deepEqual(response.body, Buffer.from(bodies[index % bodies.length]))
+    }
+  } finally {
+    server.close()
+  }
+})
+
 test('raw HTTP framing remains unambiguous across fast paths and pipelining', { timeout: 15_000 }, async () => {
   const app = createApp()
   const largeBatchHeader = 'a'.repeat(128 * 1024 + 1)
